@@ -60,11 +60,11 @@ Do not push a release tag until CI passes.
 4. Create and push the tag:
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
-The Windows workflow publishes a stable **Latest** release containing the installer, portable executable and signed `latest.json` updater manifest. Its **Changes** section is generated from the matching version in `docs/CHANGELOG.md`.
+The Windows workflow publishes a stable **Latest** release containing only the installer and portable executable. Its **Changes** section is generated from the matching version in `docs/CHANGELOG.md`. The signed updater manifest is written separately to the `updater` branch and is not shown among Release assets.
 
 ## Recommended repository settings
 

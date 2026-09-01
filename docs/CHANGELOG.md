@@ -6,6 +6,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-01
+
+### Added
+
+- A startup FFmpeg requirement dialog with an official download link and an in-app dependency recheck.
+- Automatic background update checks on every launch; an available release opens its update screen immediately.
+
+### Changed
+
+- The updater manifest now lives on a dedicated updater branch, leaving GitHub Release assets limited to Setup and Portable executables. Moving from v0.2.0 requires one manual v0.2.1 installation.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

@@ -80,7 +80,8 @@
   let availableEncoders: string[] | null = $state(null);
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
-  let appVersion = $state("0.2.0");
+  let dependencyPanel = $state(false);
+  let appVersion = $state("0.2.1");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let updateChecking = $state(false);
@@ -272,6 +273,7 @@
     if (busy) return;
     const dependency = ffmpegStatus ?? await refreshFfmpegStatus();
     if (!dependency.ready) {
+      dependencyPanel = true;
       error = language === "tr" ? "FFmpeg ve FFprobe bulunamadı. Devam etmek için ikisini PATH içine kur." : "FFmpeg and FFprobe were not found. Install both on PATH to continue.";
       jobStatus = "ffmpeg missing";
       return;
@@ -570,7 +572,7 @@
     return labels[value]?.[language==="tr"?0:1]??value;
   }
 
-  async function refreshFfmpegStatus(): Promise<FfmpegStatus> {
+  async function refreshFfmpegStatus(showWhenMissing = false): Promise<FfmpegStatus> {
     dependencyChecking = true;
     try {
       ffmpegStatus = await invoke<FfmpegStatus>("ffmpeg_status");
@@ -579,6 +581,8 @@
     } finally {
       dependencyChecking = false;
     }
+    if (ffmpegStatus?.ready) dependencyPanel = false;
+    else if (showWhenMissing) dependencyPanel = true;
     return ffmpegStatus;
   }
 
@@ -631,8 +635,12 @@
     document.documentElement.dataset.theme=theme;
     void updateWindowIcon(theme);
     void getVersion().then((version) => appVersion = version).catch(() => {});
-    void refreshFfmpegStatus();
-    void checkForUpdates(false);
+    // Run both checks on every launch. The UI stays quiet unless the user
+    // needs FFmpeg or a newer signed release is available.
+    void (async () => {
+      await refreshFfmpegStatus(true);
+      await checkForUpdates(false);
+    })();
     void invoke<string[]>("available_encoders").then((encoders) => {
       availableEncoders = encoders;
       if (selected?.id === "encode") {
@@ -724,6 +732,17 @@
     </div>
   {/if}
 
+  {#if dependencyPanel && !updatePanel}
+    <div class="update-layer dependency-layer">
+      <button class="update-backdrop" aria-label={language === "tr" ? "FFmpeg bildirimini kapat" : "Close FFmpeg notice"} onclick={() => dependencyPanel = false}></button>
+      <dialog class="update-dialog dependency-dialog panel" open aria-labelledby="dependency-title">
+        <header><div><span class="status-dot missing"></span><h2 id="dependency-title">{language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED"}</h2></div><button onclick={() => dependencyPanel = false} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
+        <div class="dependency-message"><span>!</span><div><h3>{language === "tr" ? "MEDYA ARAÇLARI HENÜZ KULLANILAMAZ" : "MEDIA TOOLS ARE NOT READY YET"}</h3><p>{language === "tr" ? "CONTAINER, bilgisayarındaki FFmpeg ve FFprobe’yu kullanır. Resmî indirme sayfasından güncel full build’i kur, bin klasörünü PATH’e ekle ve ardından tekrar kontrol et." : "CONTAINER uses FFmpeg and FFprobe installed on your computer. Install a current full build from the official download page, add its bin folder to PATH, then check again."}</p></div></div>
+        <footer><button class="ghost" onclick={() => dependencyPanel = false}>{language === "tr" ? "ŞİMDİ DEĞİL" : "NOT NOW"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button><button class="install-update" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "FFMPEG İNDİR" : "DOWNLOAD FFMPEG"}</button></footer>
+      </dialog>
+    </div>
+  {/if}
+
   {#if !media}
     <section class="landing">
       <button class="dropzone" class:active={dragActive} onclick={selectMedia} disabled={ffmpegStatus !== null && !ffmpegStatus.ready}>
@@ -735,7 +754,7 @@
       {#if ffmpegStatus && !ffmpegStatus.ready}
         <section class="dependency-card">
           <div><span>!</span><div><h3>{language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED"}</h3><p>{language === "tr" ? "CONTAINER dosyaları işlemez; bilgisayarındaki FFmpeg ve FFprobe’yu kullanır. Full build kurup bin klasörünü PATH’e ekle, ardından uygulamayı yeniden başlat." : "CONTAINER uses FFmpeg and FFprobe installed on your computer. Install a full build, add its bin folder to PATH, then restart the app."}</p></div></div>
-          <aside><button class="ghost" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "İNDİRME SAYFASI" : "DOWNLOAD PAGE"}</button><button class="dependency-check" onclick={refreshFfmpegStatus} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></aside>
+          <aside><button class="ghost" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "FFMPEG İNDİR" : "DOWNLOAD FFMPEG"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></aside>
         </section>
       {/if}
       <div class="landing-copy">

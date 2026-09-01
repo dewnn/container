@@ -57,15 +57,15 @@ Windows builds are published on the repository's **Releases** page:
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
 - `CONTAINER-Portable-<version>-x64.exe` — standalone app executable
 
-FFmpeg is intentionally not bundled. Install a current **full build** of both `ffmpeg` and `ffprobe`, add its `bin` folder to `PATH`, and restart CONTAINER. The app checks this dependency at startup and links to the official download page when it is missing. FFmpeg 9.0.1 is used by CI and is the tested reference version.
+FFmpeg is intentionally not bundled. On every launch, CONTAINER checks for both `ffmpeg` and `ffprobe` on `PATH`. If either one is missing, a setup notice appears before media tools are used, with a direct link to the official FFmpeg download page and a **Check again** action. Install a current **full build**, add its `bin` folder to `PATH`, and restart CONTAINER. FFmpeg 9.0.1 is used by CI and is the tested reference version.
 
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
 ## Updates
 
-Installed builds check the latest GitHub Release without sending media or analytics. Use the **Update** button to review the release notes, download the signed package and restart into the new version. Update packages are verified with CONTAINER's dedicated Tauri updater key before installation.
+Installed builds automatically check for a new version in the background every time CONTAINER starts, without sending media or analytics. When an update exists, the update screen opens with its release notes and an install action; the **Update** button can also run a manual check. Update packages are verified with CONTAINER's dedicated Tauri updater key before installation.
 
-`v0.2.0` is the first updater-enabled release and must be installed manually once. Later versions can update from inside the app. Portable builds should be replaced manually.
+`v0.2.1` moves the update channel out of Release assets, so it must be installed manually once when coming from `v0.2.0`. Installed releases after `v0.2.1` can update from inside the app. Portable builds should be replaced manually.
 
 ## Development
 
@@ -94,7 +94,7 @@ pnpm install --frozen-lockfile
 pnpm tauri build --no-sign
 ```
 
-To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag. The release workflow signs the updater artifact and publishes the installer, portable executable and `latest.json` updater manifest.
+To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag. The release workflow signs the updater artifact and publishes only the installer and portable executable. The machine-readable updater manifest is maintained separately on the `updater` branch so it does not clutter Release assets.
 
 ## Project layout
 
