@@ -46,6 +46,6 @@ Her işlem, seçilen dosyanın yanında `CONTAINER Output/<kategori>` klasörün
 
 ## Lisans durumu
 
-SmartCut yaklaşımı [cobanov/autocut](https://github.com/cobanov/autocut) projesinden esinlenmiştir. Autocut deposunda şu anda bir lisans dosyası bulunmadığı için, CONTAINER'a OSI lisansı eklenmeden önce türetilmiş kısımlar için yazılı izin alınmalı veya bu kısımlar bağımsız biçimde yeniden uygulanmalıdır. Ayrıntı: [OPEN_SOURCE_REVIEW.md](../OPEN_SOURCE_REVIEW.md).
+SmartCut yaklaşımı [cobanov/autocut](https://github.com/cobanov/autocut) projesinden esinlenmiştir. Autocut deposunda şu anda bir lisans dosyası bulunmadığı için, CONTAINER'a OSI lisansı eklenmeden önce türetilmiş kısımlar için yazılı izin alınmalı veya bu kısımlar bağımsız biçimde yeniden uygulanmalıdır. Ayrıntı: [OPEN_SOURCE_REVIEW.md](OPEN_SOURCE_REVIEW.md).
 
 Geliştirici: **dewn** — Codex ile vibe-coded.

@@ -6,20 +6,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dewnn/container/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/dewnn/container/releases"><img alt="Release" src="https://img.shields.io/github/v/release/dewnn/container?include_prereleases&label=release"></a>
-  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows11&logoColor=white">
-  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
-  <img alt="Rust" src="https://img.shields.io/badge/Rust-backend-000000?logo=rust&logoColor=white">
-  <img alt="Svelte 5" src="https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-alpha-f59e0b">
+  <a href="https://github.com/dewnn/container/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/dewnn/container?label=release&color=blue"></a>
+  <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="Build" src="https://github.com/dewnn/container/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="Tests" src="https://img.shields.io/badge/tests-15%20passing-brightgreen"></a>
+  <a href="https://github.com/dewnn/container/releases/latest"><img alt="Windows" src="https://img.shields.io/badge/Windows-shipping-0078D4?logo=windows11&logoColor=white"></a>
 </p>
 
 <p align="center">
   <a href="#download">Download</a> ·
   <a href="#features">Features</a> ·
   <a href="docs/README.tr.md">Türkçe</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a>
+  <a href=".github/CONTRIBUTING.md">Contributing</a>
 </p>
 
 ![CONTAINER Toolbox](docs/container-toolbox.png)
@@ -92,7 +89,7 @@ pnpm install --frozen-lockfile
 pnpm tauri build
 ```
 
-To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag such as `v0.1.0`. The release workflow builds and publishes a prerelease containing the installer and portable ZIP.
+To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag such as `v0.1.0`. The release workflow builds and publishes a stable release containing the installer and portable ZIP.
 
 ## Project layout
 
@@ -116,9 +113,9 @@ The pre-publication review is documented in [docs/SECURITY_AUDIT.md](docs/SECURI
 
 ## Attribution and licensing status
 
-The SmartCut workflow and interface were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled dependencies and attribution.
+The SmartCut workflow and interface were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for bundled dependencies and attribution.
 
-This repository is being prepared for open-source publication, but an OSI license is intentionally not attached yet. The referenced Autocut repository currently contains no license file, so rights for any derivative SmartCut portions must first be clarified or those portions must be independently reimplemented. See [OPEN_SOURCE_REVIEW.md](OPEN_SOURCE_REVIEW.md).
+This repository is being prepared for open-source publication, but an OSI license is intentionally not attached yet. The referenced Autocut repository currently contains no license file, so rights for any derivative SmartCut portions must first be clarified or those portions must be independently reimplemented. See the [open-source review](docs/OPEN_SOURCE_REVIEW.md).
 
 ## Author
 

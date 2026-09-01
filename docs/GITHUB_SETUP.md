@@ -55,7 +55,7 @@ Do not push a release tag until CI passes.
 ## First release
 
 1. Set the same version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`.
-2. Move the release notes from `CHANGELOG.md` out of Unreleased.
+2. Move the release notes from `docs/CHANGELOG.md` out of Unreleased.
 3. Commit and push the version change.
 4. Create and push the tag:
 
@@ -64,7 +64,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The Windows workflow publishes a **prerelease** containing the installer, portable ZIP and SHA-256 checksums. Review its generated notes and FFmpeg attribution after publishing.
+The Windows workflow publishes a stable **Latest** release containing the installer, portable ZIP and SHA-256 checksums. Review its generated notes and FFmpeg attribution after publishing.
 
 ## Recommended repository settings
 

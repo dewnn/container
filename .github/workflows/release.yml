@@ -76,7 +76,7 @@ jobs:
           Copy-Item -LiteralPath $app.FullName -Destination (Join-Path $portableDir 'CONTAINER.exe')
           Copy-Item -LiteralPath src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Destination (Join-Path $portableDir 'ffmpeg.exe')
           Copy-Item -LiteralPath src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Destination (Join-Path $portableDir 'ffprobe.exe')
-          Copy-Item -LiteralPath THIRD_PARTY_NOTICES.md -Destination $portableDir
+          Copy-Item -LiteralPath docs/THIRD_PARTY_NOTICES.md -Destination $portableDir
 
           $portableZip = Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip"
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableZip
@@ -98,11 +98,12 @@ jobs:
           name: CONTAINER-Windows-${{ steps.assets.outputs.version }}
           path: release-assets/*
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          name: CONTAINER ${{ github.ref_name }}
           draft: false
-          prerelease: true
+          prerelease: false
           generate_release_notes: true
           files: release-assets/*

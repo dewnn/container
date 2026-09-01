@@ -38,4 +38,4 @@ This document records the checks performed before CONTAINER's first public sourc
 - Rust tests: 15 passed, 0 failed.
 - Clean Windows release build and NSIS packaging: passed.
 
-Security reports should follow `SECURITY.md` and avoid attaching private media or personal paths.
+Security reports should follow [SECURITY.md](../.github/SECURITY.md) and avoid attaching private media or personal paths.
