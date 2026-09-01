@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-01
+
+### Fixed
+
+- The Original/Rendered image comparison handle now uses the full preview bounds, no longer jumps to an edge when pressed, and stays isolated from image panning.
+
 ## [0.2.1] - 2026-09-01
 
 ### Added

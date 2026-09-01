@@ -81,7 +81,7 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.2.1");
+  let appVersion = $state("0.2.2");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let updateChecking = $state(false);
@@ -353,20 +353,29 @@
   }
 
   function startImageCompare(event: PointerEvent) {
+    if (event.button !== 0) return;
     event.preventDefault();
-    const element = event.currentTarget as HTMLElement;
-    const rectangle = element.getBoundingClientRect();
+    event.stopPropagation();
+    const handle = event.currentTarget as HTMLElement;
+    const comparison = handle.closest<HTMLElement>(".image-compare");
+    if (!comparison) return;
+    const rectangle = comparison.getBoundingClientRect();
+    const pointerId = event.pointerId;
     const update = (clientX: number) => {
       imageCompare = Math.max(0, Math.min(100, (clientX - rectangle.left) / rectangle.width * 100));
     };
     update(event.clientX);
-    const move = (moveEvent: PointerEvent) => update(moveEvent.clientX);
+    const move = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId === pointerId) update(moveEvent.clientX);
+    };
     const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   }
 
   function imageCompareKey(event: KeyboardEvent) {
