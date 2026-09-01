@@ -55,9 +55,17 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 Windows builds are published on the repository's **Releases** page:
 
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
-- `CONTAINER-Portable-<version>-x64.zip` — app plus FFmpeg sidecars
+- `CONTAINER-Portable-<version>-x64.exe` — standalone app executable
 
-The app is currently unsigned. Windows SmartScreen may therefore show an “Unknown publisher” warning until code signing is added.
+FFmpeg is intentionally not bundled. Install a current **full build** of both `ffmpeg` and `ffprobe`, add its `bin` folder to `PATH`, and restart CONTAINER. The app checks this dependency at startup and links to the official download page when it is missing. FFmpeg 9.0.1 is used by CI and is the tested reference version.
+
+The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
+
+## Updates
+
+Installed builds check the latest GitHub Release without sending media or analytics. Use the **Update** button to review the release notes, download the signed package and restart into the new version. Update packages are verified with CONTAINER's dedicated Tauri updater key before installation.
+
+`v0.2.0` is the first updater-enabled release and must be installed manually once. Later versions can update from inside the app. Portable builds should be replaced manually.
 
 ## Development
 
@@ -77,16 +85,16 @@ pnpm build
 pnpm tauri dev
 ```
 
-The build script copies `ffmpeg.exe` and `ffprobe.exe` from `PATH` into Tauri's ignored sidecar folder. These large binaries are deliberately not stored in Git.
+FFmpeg remains a system dependency during development and is never copied into the application bundle.
 
 ## Build a Windows release
 
 ```powershell
 pnpm install --frozen-lockfile
-pnpm tauri build
+pnpm tauri build --no-sign
 ```
 
-To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag such as `v0.1.0`. The release workflow builds and publishes a stable release containing the installer and portable ZIP.
+To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag. The release workflow signs the updater artifact and publishes the installer, portable executable and `latest.json` updater manifest.
 
 ## Project layout
 
@@ -110,7 +118,7 @@ The pre-publication review is documented in [docs/SECURITY_AUDIT.md](docs/SECURI
 
 ## Attribution and licensing status
 
-The SmartCut workflow and interface were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for bundled dependencies and attribution.
+The SmartCut workflow and interface were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for dependencies and attribution.
 
 This repository is being prepared for open-source publication, but an OSI license is intentionally not attached yet. The referenced Autocut repository currently contains no license file, so rights for any derivative SmartCut portions must first be clarified or those portions must be independently reimplemented. See the [open-source review](docs/OPEN_SOURCE_REVIEW.md).
 

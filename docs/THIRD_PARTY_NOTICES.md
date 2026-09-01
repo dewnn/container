@@ -4,13 +4,13 @@ CONTAINER uses open-source libraries listed in `package.json`, `pnpm-lock.yaml`,
 
 ## FFmpeg
 
-Release packages bundle FFmpeg and FFprobe. The currently tested Windows build reports FFmpeg 9.0.1 with GPLv3-enabled configuration. FFmpeg is a separate program invoked by CONTAINER and is not relicensed by this project.
+Release packages do not bundle FFmpeg or FFprobe. CONTAINER invokes the user's system-installed copies as separate programs. CI and release verification currently use FFmpeg 9.0.1 full build; that software is not relicensed by this project.
 
-Redistributors must comply with the exact FFmpeg build's license and source-code offer requirements. Release notes should identify the FFmpeg provider/version and link to its corresponding source and license information.
+Users and redistributors remain responsible for the license terms of the FFmpeg build they install separately.
 
 - Project: https://ffmpeg.org/
 - License information: https://ffmpeg.org/legal.html
-- Current Windows build provider: https://www.gyan.dev/ffmpeg/builds/
+- Windows build links: https://ffmpeg.org/download.html#build-windows
 
 ## Geist and Geist Mono
 

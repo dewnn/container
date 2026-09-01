@@ -83,6 +83,41 @@ struct MediaInfo {
     start_timecode: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct FfmpegStatus {
+    ready: bool,
+    ffmpeg_version: Option<String>,
+    ffprobe_version: Option<String>,
+}
+
+async fn component_version(program: &str) -> Option<String> {
+    let output = hidden_command(program)
+        .arg("-version")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+#[tauri::command]
+async fn ffmpeg_status() -> FfmpegStatus {
+    let (ffmpeg_version, ffprobe_version) =
+        tokio::join!(component_version("ffmpeg"), component_version("ffprobe"));
+    FfmpegStatus {
+        ready: ffmpeg_version.is_some() && ffprobe_version.is_some(),
+        ffmpeg_version,
+        ffprobe_version,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OperationRequest {
     input: String,
@@ -3046,11 +3081,13 @@ async fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(JobState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             probe_media,
+            ffmpeg_status,
             available_encoders,
             hash_file,
             list_media_files,
@@ -3064,20 +3101,6 @@ pub fn run() {
             cancel_job
         ])
         .setup(|app| {
-            // Bundled FFmpeg sidecars live next to the installed executable.
-            // Put that directory first so every existing command automatically
-            // uses the self-contained copy instead of depending on system PATH.
-            if let Ok(executable) = std::env::current_exe() {
-                if let Some(directory) = executable.parent() {
-                    let existing = std::env::var_os("PATH").unwrap_or_default();
-                    if let Ok(path) = std::env::join_paths(
-                        std::iter::once(directory.to_path_buf())
-                            .chain(std::env::split_paths(&existing)),
-                    ) {
-                        std::env::set_var("PATH", path);
-                    }
-                }
-            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("CONTAINER — FFmpeg Media Toolbox");
             }

@@ -31,16 +31,16 @@ jobs:
         run: |
           choco install ffmpeg-full --version 9.0.1 --yes --no-progress
           $tools = Join-Path $env:ChocolateyInstall 'lib\ffmpeg-full\tools'
-          $sidecarDir = Join-Path $PWD 'src-tauri\binaries'
-          New-Item -ItemType Directory -Force $sidecarDir | Out-Null
-          foreach ($tool in @('ffmpeg', 'ffprobe')) {
-            $binary = Get-ChildItem -Path $tools -Recurse -Filter "$tool.exe" -File |
-              Where-Object Length -GT 1MB |
-              Sort-Object Length -Descending |
-              Select-Object -First 1
-            if (-not $binary) { throw "The real $tool executable was not found under $tools." }
-            Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $sidecarDir "$tool-x86_64-pc-windows-msvc.exe")
-          }
+          $ffmpeg = Get-ChildItem -Path $tools -Recurse -Filter 'ffmpeg.exe' -File |
+            Where-Object Length -GT 1MB |
+            Sort-Object Length -Descending |
+            Select-Object -First 1
+          $ffprobe = Get-ChildItem -Path $tools -Recurse -Filter 'ffprobe.exe' -File |
+            Where-Object Length -GT 1MB |
+            Sort-Object Length -Descending |
+            Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw "Real FFmpeg binaries were not found under $tools." }
+          $ffmpeg.DirectoryName >> $env:GITHUB_PATH
 
       - name: Verify release versions
         if: startsWith(github.ref, 'refs/tags/v')
@@ -57,7 +57,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - run: pnpm tauri build
+      - name: Build signed updater package
+        run: pnpm tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - name: Assemble release assets
         id: assets
@@ -65,26 +69,21 @@ jobs:
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           $releaseDir = Join-Path $PWD 'release-assets'
-          $portableDir = Join-Path $releaseDir 'CONTAINER-Portable'
-          New-Item -ItemType Directory -Force $portableDir | Out-Null
+          New-Item -ItemType Directory -Force $releaseDir | Out-Null
 
           $app = Get-ChildItem src-tauri/target/release -Filter '*.exe' -File |
             Where-Object Name -NotMatch '^(ffmpeg|ffprobe)' |
             Select-Object -First 1
           if (-not $app) { throw 'Portable application executable was not found.' }
 
-          Copy-Item -LiteralPath $app.FullName -Destination (Join-Path $portableDir 'CONTAINER.exe')
-          Copy-Item -LiteralPath src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Destination (Join-Path $portableDir 'ffmpeg.exe')
-          Copy-Item -LiteralPath src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Destination (Join-Path $portableDir 'ffprobe.exe')
-          Copy-Item -LiteralPath docs/THIRD_PARTY_NOTICES.md -Destination $portableDir
-
-          $portableZip = Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip"
-          Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableZip
+          Copy-Item -LiteralPath $app.FullName -Destination (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.exe")
 
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
           if (-not $installer) { throw 'NSIS installer was not found.' }
           $setupPath = Join-Path $releaseDir "CONTAINER-Setup-$version-x64.exe"
           Copy-Item -LiteralPath $installer.FullName -Destination $setupPath
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path -LiteralPath $signaturePath)) { throw 'Signed updater manifest was not created.' }
 
           $changelog = Get-Content docs/CHANGELOG.md
           $start = -1
@@ -107,6 +106,19 @@ jobs:
             $releaseNotes += $changelog[($start + 1)..($end - 1)]
           }
           Set-Content -Path release-notes.md -Value $releaseNotes
+
+          $manifest = @{
+            version = $version
+            notes = ($releaseNotes -join "`n")
+            pub_date = (Get-Date).ToUniversalTime().ToString('o')
+            platforms = @{
+              'windows-x86_64' = @{
+                signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+                url = "https://github.com/dewnn/container/releases/download/v$version/CONTAINER-Setup-$version-x64.exe"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $releaseDir 'latest.json')
 
           "version=$version" >> $env:GITHUB_OUTPUT
 

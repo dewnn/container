@@ -21,9 +21,9 @@ After that decision, add an appropriate root `LICENSE` file and matching license
 - [ ] Resolve SmartCut provenance and select the project license.
 - [ ] Add the final root `LICENSE` file.
 - [ ] Confirm every image, icon, font and model can be redistributed.
-- [ ] Record the exact bundled FFmpeg version, provider and license/source link.
+- [x] Do not bundle FFmpeg; document the tested system dependency and official source link.
 - [ ] Run secret and large-file scans.
 - [ ] Run frontend checks, Rust formatting/tests and a clean Windows installer build.
-- [ ] Test installer and portable ZIP on a Windows machine without system FFmpeg.
+- [ ] Test the missing-FFmpeg guidance and dependency recheck on a clean Windows machine.
 - [ ] Create the public GitHub repository and set its About text/topics.
-- [ ] Push a `v0.1.0` tag only after all version fields agree.
+- [x] Verify matching version fields before every release tag in GitHub Actions.

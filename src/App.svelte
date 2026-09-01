@@ -3,11 +3,13 @@
   import "@fontsource-variable/geist-mono";
   import { onMount } from "svelte";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+  import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { check, Update } from "@tauri-apps/plugin-updater";
   import { localizedForSection, localizedTool, type Field, type MediaKind, type Tool } from "./lib/tools";
   import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
@@ -36,6 +38,7 @@
   interface JobResult { output: string; elapsed: number }
   interface QualityCandidate { crf: number; vmaf: number; estimated_size_mb: number; rating: string }
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
+  interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
 
   let media: MediaInfo | null = $state(null);
   let mediaUrl = $state("");
@@ -75,6 +78,16 @@
   let language: "tr" | "en" = $state("en");
   let theme: "dark" | "light" = $state("dark");
   let availableEncoders: string[] | null = $state(null);
+  let ffmpegStatus: FfmpegStatus | null = $state(null);
+  let dependencyChecking = $state(false);
+  let appVersion = $state("0.2.0");
+  let availableUpdate: Update | null = $state(null);
+  let updatePanel = $state(false);
+  let updateChecking = $state(false);
+  let updateInstalling = $state(false);
+  let updateStatus = $state("");
+  let updateDownloaded = $state(0);
+  let updateTotal = $state(0);
   const messages:Record<"tr"|"en",Record<string,string>>={
     tr:{tagline:"FFMPEG MEDYA ARAÇ KUTUSU",close:"kapat",drop:"medyayı buraya bırak",browse:"veya dosya seçmek için tıkla",landingTitle:"tek dosya. bütün araçlar.",landingCopy:"CONTAINER’ın bütün FFmpeg işlemleri, ayrıntılı ayarlar ve canlı ilerleme bilgisiyle tek çalışma alanında.",local:"yalnızca yerel işlem",untouched:"orijinal dosyalar değişmez",tools:"ARAÇLAR",available:"mevcut",video:"video",audio:"ses",image:"görsel",search:"araçlarda ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen",showOutput:"çıktıyı göster",cancelJob:"işlemi iptal et",parameters:"PARAMETRELER",defaults:"varsayılanlar",what:"NE YAPAR?",forVideo:"BU VİDEO İÇİN",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktı yeni klasöre yazılır. Kaynak dosya değiştirilmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
     en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one file. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to a new folder. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
@@ -257,6 +270,12 @@
 
   async function loadMedia(path: string) {
     if (busy) return;
+    const dependency = ffmpegStatus ?? await refreshFfmpegStatus();
+    if (!dependency.ready) {
+      error = language === "tr" ? "FFmpeg ve FFprobe bulunamadı. Devam etmek için ikisini PATH içine kur." : "FFmpeg and FFprobe were not found. Install both on PATH to continue.";
+      jobStatus = "ffmpeg missing";
+      return;
+    }
     error = "";
     output = "";
     jobStatus = "probing media";
@@ -551,6 +570,58 @@
     return labels[value]?.[language==="tr"?0:1]??value;
   }
 
+  async function refreshFfmpegStatus(): Promise<FfmpegStatus> {
+    dependencyChecking = true;
+    try {
+      ffmpegStatus = await invoke<FfmpegStatus>("ffmpeg_status");
+    } catch {
+      ffmpegStatus = { ready:false, ffmpeg_version:null, ffprobe_version:null };
+    } finally {
+      dependencyChecking = false;
+    }
+    return ffmpegStatus;
+  }
+
+  async function checkForUpdates(manual = true) {
+    if (updateChecking || updateInstalling) return;
+    if (manual) updatePanel = true;
+    updateChecking = true;
+    updateStatus = language === "tr" ? "Güncellemeler denetleniyor…" : "Checking for updates…";
+    try {
+      const result = await check({ timeout: 15000 });
+      if (availableUpdate && availableUpdate !== result) await availableUpdate.close().catch(() => {});
+      availableUpdate = result;
+      updateStatus = result
+        ? (language === "tr" ? `CONTAINER ${result.version} hazır.` : `CONTAINER ${result.version} is available.`)
+        : (language === "tr" ? "CONTAINER güncel." : "CONTAINER is up to date.");
+      if (result) updatePanel = true;
+    } catch (reason) {
+      updateStatus = language === "tr" ? "Güncelleme denetlenemedi. İnternet bağlantını kontrol et." : "Could not check for updates. Check your internet connection.";
+      if (!manual) updatePanel = false;
+      console.warn("Update check failed", reason);
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  async function installAvailableUpdate() {
+    if (!availableUpdate || updateInstalling) return;
+    updateInstalling = true;
+    updateDownloaded = 0;
+    updateTotal = 0;
+    updateStatus = language === "tr" ? "Güncelleme indiriliyor…" : "Downloading update…";
+    try {
+      await availableUpdate.downloadAndInstall((event) => {
+        if (event.event === "Started") updateTotal = event.data.contentLength ?? 0;
+        if (event.event === "Progress") updateDownloaded += event.data.chunkLength;
+        if (event.event === "Finished") updateStatus = language === "tr" ? "Güncelleme kuruluyor; CONTAINER yeniden başlayacak…" : "Installing update; CONTAINER will restart…";
+      }, { timeout: 300000, restartAfterInstall: true });
+    } catch (reason) {
+      updateStatus = language === "tr" ? `Güncelleme kurulamadı: ${String(reason)}` : `Update could not be installed: ${String(reason)}`;
+      updateInstalling = false;
+    }
+  }
+
   onMount(() => {
     const saved=localStorage.getItem("container-language");
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
@@ -559,6 +630,9 @@
     theme=savedTheme==="dark"||savedTheme==="light"?savedTheme:window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
     document.documentElement.dataset.theme=theme;
     void updateWindowIcon(theme);
+    void getVersion().then((version) => appVersion = version).catch(() => {});
+    void refreshFfmpegStatus();
+    void checkForUpdates(false);
     void invoke<string[]>("available_encoders").then((encoders) => {
       availableEncoders = encoders;
       if (selected?.id === "encode") {
@@ -613,6 +687,7 @@
 <main class="shell" class:drag-active={dragActive}>
   <header class="topbar">
     <span class="brand"><img class="brand-logo" src={theme==="dark"?"/logo-dark.png":"/logo-light.png"} alt="CONTAINER logo">CONTAINER</span>
+    <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
     {#if media}
       <span class="slash">/</span><span class="filename mono">{media.name}</span>
       <div class="chips mono">
@@ -629,19 +704,45 @@
     {/if}
   </header>
 
+  {#if updatePanel}
+    <div class="update-layer">
+      <button class="update-backdrop" aria-label={language === "tr" ? "Güncelleme penceresini kapat" : "Close update dialog"} onclick={() => { if (!updateInstalling) updatePanel = false; }}></button>
+      <dialog class="update-dialog panel" open aria-labelledby="update-title">
+        <header><div><span class="status-dot"></span><h2 id="update-title">CONTAINER UPDATE</h2></div><button onclick={() => updatePanel = false} disabled={updateInstalling} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
+        <div class="update-version"><span>v{appVersion}</span><b>→</b><strong>{availableUpdate ? `v${availableUpdate.version}` : `v${appVersion}`}</strong></div>
+        <p>{updateStatus}</p>
+        {#if availableUpdate?.body}<pre>{availableUpdate.body}</pre>{/if}
+        {#if updateInstalling}
+          <div class="update-progress"><i style:width={`${updateTotal ? Math.min(100, updateDownloaded / updateTotal * 100) : 8}%`}></i></div>
+          <small class="mono">{updateTotal ? `${(updateDownloaded/1048576).toFixed(1)} / ${(updateTotal/1048576).toFixed(1)} MB` : (language === "tr" ? "hazırlanıyor…" : "preparing…")}</small>
+        {/if}
+        <footer>
+          <button class="ghost" onclick={() => checkForUpdates(true)} disabled={updateChecking || updateInstalling}>{language === "tr" ? "TEKRAR DENE" : "CHECK AGAIN"}</button>
+          {#if availableUpdate}<button class="install-update" onclick={installAvailableUpdate} disabled={updateInstalling}>{updateInstalling ? (language === "tr" ? "KURULUYOR…" : "INSTALLING…") : (language === "tr" ? "İNDİR VE GÜNCELLE" : "DOWNLOAD & UPDATE")}</button>{/if}
+        </footer>
+      </dialog>
+    </div>
+  {/if}
+
   {#if !media}
     <section class="landing">
-      <button class="dropzone" class:active={dragActive} onclick={selectMedia}>
+      <button class="dropzone" class:active={dragActive} onclick={selectMedia} disabled={ffmpegStatus !== null && !ffmpegStatus.ready}>
         <span class="drop-icon">↳</span>
         <h1>{t("drop")}</h1>
         <p>{t("browse")}</p>
         <div class="format-row"><span>{t("video")}</span><span>{t("audio")}</span><span>{t("image")}</span></div>
       </button>
+      {#if ffmpegStatus && !ffmpegStatus.ready}
+        <section class="dependency-card">
+          <div><span>!</span><div><h3>{language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED"}</h3><p>{language === "tr" ? "CONTAINER dosyaları işlemez; bilgisayarındaki FFmpeg ve FFprobe’yu kullanır. Full build kurup bin klasörünü PATH’e ekle, ardından uygulamayı yeniden başlat." : "CONTAINER uses FFmpeg and FFprobe installed on your computer. Install a full build, add its bin folder to PATH, then restart the app."}</p></div></div>
+          <aside><button class="ghost" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "İNDİRME SAYFASI" : "DOWNLOAD PAGE"}</button><button class="dependency-check" onclick={refreshFfmpegStatus} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></aside>
+        </section>
+      {/if}
       <div class="landing-copy">
         <h2>{t("landingTitle")}</h2>
         <p>{t("landingCopy")}</p>
       </div>
-      <footer><span class="status-dot"></span> ffmpeg {t("ready")} <b>·</b> {t("local")} <b>·</b> {t("untouched")}</footer>
+      <footer><span class="status-dot" class:missing={ffmpegStatus !== null && !ffmpegStatus.ready}></span> ffmpeg {ffmpegStatus?.ready ? t("ready") : (dependencyChecking ? "checking" : "required")} <b>·</b> {t("local")} <b>·</b> {t("untouched")}</footer>
     </section>
   {:else}
     <nav class="mode-tabs">

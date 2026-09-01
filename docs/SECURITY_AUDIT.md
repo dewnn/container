@@ -6,12 +6,12 @@ This document records the checks performed before CONTAINER's first public sourc
 
 ## Runtime behavior
 
-- No telemetry, analytics, updater, upload endpoint or application-level network client is implemented.
-- Media processing is local through the bundled `ffmpeg.exe` and `ffprobe.exe` programs.
+- No telemetry, analytics or media-upload endpoint is implemented. The only application network request checks the public GitHub Release updater manifest.
+- Media processing is local through the system-installed `ffmpeg.exe` and `ffprobe.exe` programs.
 - External programs are launched directly with argument arrays; CONTAINER does not construct commands through `cmd.exe`, PowerShell or a shell interpreter.
 - Windows worker processes use `CREATE_NO_WINDOW`, preventing FFmpeg/FFprobe console flashes without hiding their captured error/progress output.
-- The only opener permission reveals a completed output in Windows Explorer.
-- Tauri permissions are limited to core defaults, file selection, window icon changes and revealing output files.
+- Opener permissions reveal completed output files and open the official FFmpeg download page.
+- Tauri permissions are limited to core defaults, file selection, window icon changes, the signed updater and the two opener actions above.
 - The Content Security Policy blocks arbitrary remote scripts and connections.
 
 ## Filesystem behavior
@@ -25,7 +25,8 @@ This document records the checks performed before CONTAINER's first public sourc
 
 - pnpm lifecycle builds are limited to `esbuild`; unrestricted dependency build scripts are disabled.
 - GitHub Actions are pinned to full commit hashes.
-- Release FFmpeg is pinned to the tested 9.0.1 full build.
+- CI uses the tested FFmpeg 9.0.1 full build. Release packages do not redistribute FFmpeg.
+- Update packages are signed with a dedicated Tauri updater key; only its public verification key is committed.
 - Lockfiles are committed for pnpm and Cargo.
 - The production npm dependency audit reported no known vulnerabilities on the review date.
 - Dependabot's `glib` 0.18 advisory was reviewed and dismissed as not used: `cargo tree --target x86_64-pc-windows-msvc` confirms the affected Linux GTK dependency is absent from CONTAINER's Windows build graph.

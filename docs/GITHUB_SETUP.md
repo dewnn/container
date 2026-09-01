@@ -28,7 +28,7 @@ windows
 
 ## GitHub sidebar sections
 
-- **Languages** is calculated automatically from tracked source files. `.gitattributes` excludes generated lock files and bundled binaries from the percentage.
+- **Languages** is calculated automatically from tracked source files. `.gitattributes` excludes generated lock files and binaries from the percentage.
 - **Contributors** is calculated automatically from commit authors. Set the correct Git author before the first commit.
 - **Releases** is populated by `.github/workflows/release.yml` when a version tag is pushed.
 
@@ -60,11 +60,11 @@ Do not push a release tag until CI passes.
 4. Create and push the tag:
 
 ```powershell
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-The Windows workflow publishes a stable **Latest** release containing the installer and portable ZIP. Its **Changes** section is generated from the matching version in `docs/CHANGELOG.md`.
+The Windows workflow publishes a stable **Latest** release containing the installer, portable executable and signed `latest.json` updater manifest. Its **Changes** section is generated from the matching version in `docs/CHANGELOG.md`.
 
 ## Recommended repository settings
 
