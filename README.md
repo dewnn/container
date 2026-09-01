@@ -14,9 +14,7 @@
 
 <p align="center">
   <a href="#download">Download</a> ·
-  <a href="#features">Features</a> ·
-  <a href="docs/README.tr.md">Türkçe</a> ·
-  <a href=".github/CONTRIBUTING.md">Contributing</a>
+  <a href="#features">Features</a>
 </p>
 
 ![CONTAINER Toolbox](docs/container-toolbox.png)
