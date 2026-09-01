@@ -6,6 +6,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Image previews now open without upscaling small files and support cursor-centered wheel zoom, left-button panning, zoom controls and fit reset.
+
 ## [0.1.0] - 2026-09-01
 
 ### Added

@@ -61,6 +61,13 @@
   let qualityAnalysis: QualityAnalysis | null = $state(null);
   let hashResult = $state("");
   let imageCompare = $state(50);
+  let imageViewport: HTMLElement | null = $state(null);
+  let imageZoom = $state(1);
+  let imageBaseScale = $state(1);
+  let imagePanX = $state(0);
+  let imagePanY = $state(0);
+  let imageDragging = $state(false);
+  let imageViewInitialized = $state(false);
   let customNumberFields: Record<string, boolean> = $state({});
   let toolboxFilmstripUrl = $state("");
   let toolboxFilmstripLoading = $state(false);
@@ -263,6 +270,12 @@
       renderedImageUrl = "";
       qualityAnalysis = null;
       imageCompare = 50;
+      imageZoom = 1;
+      imageBaseScale = 1;
+      imagePanX = 0;
+      imagePanY = 0;
+      imageDragging = false;
+      imageViewInitialized = false;
       toolboxFilmstripUrl="";toolboxFilmstripLoading=false;
       const first = kindTools(activeKind)[0];
       if (first) chooseTool(first);
@@ -290,6 +303,12 @@
     renderedImageUrl = "";
     qualityAnalysis = null;
     imageCompare = 50;
+    imageZoom = 1;
+    imageBaseScale = 1;
+    imagePanX = 0;
+    imagePanY = 0;
+    imageDragging = false;
+    imageViewInitialized = false;
     toolboxFilmstripUrl="";toolboxFilmstripLoading=false;
   }
 
@@ -333,6 +352,74 @@
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
     imageCompare = Math.max(0, Math.min(100, imageCompare + (event.key === "ArrowRight" ? 2 : -2)));
+  }
+
+  function resetImageView() {
+    imageZoom = 1;
+    imagePanX = 0;
+    imagePanY = 0;
+    const rectangle = imageViewport?.getBoundingClientRect();
+    if (!rectangle || !media?.width || !media.height) {
+      imageBaseScale = 1;
+      return;
+    }
+    const fittedPixelScale = Math.min(rectangle.width / media.width, rectangle.height / media.height);
+    imageBaseScale = fittedPixelScale > 1 ? 1 / fittedPixelScale : 1;
+  }
+
+  function initializeImageView() {
+    if (imageViewInitialized) return;
+    imageViewInitialized = true;
+    resetImageView();
+  }
+
+  function imageTransform() {
+    return `translate3d(${imagePanX}px, ${imagePanY}px, 0) scale(${imageBaseScale * imageZoom})`;
+  }
+
+  function setImageZoom(nextZoom: number, clientX?: number, clientY?: number) {
+    const next = Math.max(0.1, Math.min(12, nextZoom));
+    if (Math.abs(next - imageZoom) < 0.0001) return;
+    const rectangle = imageViewport?.getBoundingClientRect();
+    if (rectangle && clientX != null && clientY != null) {
+      const anchorX = clientX - rectangle.left - rectangle.width / 2;
+      const anchorY = clientY - rectangle.top - rectangle.height / 2;
+      const ratio = next / imageZoom;
+      imagePanX = anchorX - (anchorX - imagePanX) * ratio;
+      imagePanY = anchorY - (anchorY - imagePanY) * ratio;
+    }
+    imageZoom = next;
+  }
+
+  function zoomImage(event: WheelEvent) {
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * 0.0015);
+    setImageZoom(imageZoom * factor, event.clientX, event.clientY);
+  }
+
+  function startImagePan(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const target = event.target as Element;
+    if (target.closest(".compare-handle, .image-view-controls")) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const originX = imagePanX;
+    const originY = imagePanY;
+    imageDragging = true;
+    const move = (moveEvent: PointerEvent) => {
+      imagePanX = originX + moveEvent.clientX - startX;
+      imagePanY = originY + moveEvent.clientY - startY;
+    };
+    const stop = () => {
+      imageDragging = false;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   }
 
   function paramsFrom(tool: Tool) {
@@ -613,16 +700,27 @@
             {:else if media.kind === "audio"}
               <div class="audio-visual"><div class="disc">◉</div><h2>{media.name}</h2><p>{media.codec.toUpperCase()} · {formatDuration(media.duration)}</p><audio src={mediaUrl} controls></audio></div>
             {:else}
-              {#if renderedImageUrl}
-                <div class="image-compare" onpointerdown={startImageCompare} onkeydown={imageCompareKey} role="slider" tabindex="0" aria-label="Original and rendered image comparison" aria-valuemin="0" aria-valuemax="100" aria-valuenow={imageCompare}>
-                  <img class="compare-rendered" src={renderedImageUrl} alt={`Rendered ${media.name}`} />
-                  <img class="compare-original" style:clip-path={`inset(0 ${100-imageCompare}% 0 0)`} src={mediaUrl} alt={`Original ${media.name}`} />
-                  <span class="compare-label original">{t("original")}</span><span class="compare-label rendered">{t("rendered")}</span>
-                  <i class="compare-handle" style:left={`${imageCompare}%`}><b>↔</b></i>
+              <div class="image-viewport" class:dragging={imageDragging} bind:this={imageViewport} onwheel={zoomImage} onpointerdown={startImagePan} ondblclick={resetImageView} role="presentation">
+                {#if renderedImageUrl}
+                  <div class="image-compare" onkeydown={imageCompareKey} role="slider" tabindex="0" aria-label="Original and rendered image comparison" aria-valuemin="0" aria-valuemax="100" aria-valuenow={imageCompare}>
+                    <img class="compare-rendered zoomable-image" style:transform={imageTransform()} src={renderedImageUrl} alt={`Rendered ${media.name}`} draggable="false" />
+                    <div class="compare-original-clip" style:clip-path={`inset(0 ${100-imageCompare}% 0 0)`}>
+                      <img class="compare-original zoomable-image" style:transform={imageTransform()} src={mediaUrl} alt={`Original ${media.name}`} draggable="false" onload={initializeImageView} />
+                    </div>
+                    <span class="compare-label original">{t("original")}</span><span class="compare-label rendered">{t("rendered")}</span>
+                    <button class="compare-handle" style:left={`${imageCompare}%`} onpointerdown={startImageCompare} title={language === "tr" ? "Karşılaştırma çizgisini sürükle" : "Drag the comparison line"}><b>↔</b></button>
+                  </div>
+                {:else}
+                  <img class="zoomable-image" style:transform={imageTransform()} src={mediaUrl} alt={media.name} draggable="false" onload={initializeImageView} />
+                {/if}
+                <div class="image-view-controls">
+                  <button onclick={() => setImageZoom(imageZoom / 1.2)} aria-label={language === "tr" ? "Uzaklaştır" : "Zoom out"}>−</button>
+                  <span class="mono">{Math.round(imageZoom * 100)}%</span>
+                  <button onclick={() => setImageZoom(imageZoom * 1.2)} aria-label={language === "tr" ? "Yakınlaştır" : "Zoom in"}>+</button>
+                  <button class="fit" onclick={resetImageView}>{language === "tr" ? "SIĞDIR" : "FIT"}</button>
                 </div>
-              {:else}
-                <img src={mediaUrl} alt={media.name} />
-              {/if}
+                <span class="image-view-hint mono">{language === "tr" ? "TEKERLEK: YAKINLAŞTIR · SÜRÜKLE: TAŞI" : "SCROLL: ZOOM · DRAG: PAN"}</span>
+              </div>
             {/if}
             {#if busy}<div class="busy-mask"><span></span><b>{jobStatus}</b><small>{progress.toFixed(1)}%</small></div>{/if}
           </div>
