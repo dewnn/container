@@ -12,9 +12,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 - Toolbox workspaces for video, audio and images.
 - SmartCut speech detection and editable keep regions.
+- Visual timeline controls for cutting, screenshots and GIF creation.
+- Target-size compression with hardware detection and CPU fallback.
 - Batch processing workspace.
 - English/Turkish interface and light/dark themes.
 - Windows installer and portable build support.
-- Public repository documentation and a clean product screenshot.
-- GitHub Actions checks and Windows release packaging.
-- Contribution, security, issue and pull-request templates.
+- Automated GitHub build checks and Windows release packaging.

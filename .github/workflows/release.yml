@@ -86,9 +86,27 @@ jobs:
           $setupPath = Join-Path $releaseDir "CONTAINER-Setup-$version-x64.exe"
           Copy-Item -LiteralPath $installer.FullName -Destination $setupPath
 
-          Get-FileHash -Algorithm SHA256 $setupPath,$portableZip |
-            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
-            Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS.txt')
+          $changelog = Get-Content docs/CHANGELOG.md
+          $start = -1
+          $end = $changelog.Count
+          for ($i = 0; $i -lt $changelog.Count; $i++) {
+            if ($changelog[$i] -match "^## \[$([regex]::Escape($version))\]") {
+              $start = $i
+              break
+            }
+          }
+          if ($start -lt 0) { throw "No changelog entry was found for version $version." }
+          for ($i = $start + 1; $i -lt $changelog.Count; $i++) {
+            if ($changelog[$i] -match '^## \[') {
+              $end = $i
+              break
+            }
+          }
+          $releaseNotes = @('# Changes', '')
+          if ($end -gt ($start + 1)) {
+            $releaseNotes += $changelog[($start + 1)..($end - 1)]
+          }
+          Set-Content -Path release-notes.md -Value $releaseNotes
 
           "version=$version" >> $env:GITHUB_OUTPUT
 
@@ -105,5 +123,5 @@ jobs:
           name: CONTAINER ${{ github.ref_name }}
           draft: false
           prerelease: false
-          generate_release_notes: true
+          body_path: release-notes.md
           files: release-assets/*

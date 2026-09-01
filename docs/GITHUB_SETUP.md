@@ -64,7 +64,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The Windows workflow publishes a stable **Latest** release containing the installer, portable ZIP and SHA-256 checksums. Review its generated notes and FFmpeg attribution after publishing.
+The Windows workflow publishes a stable **Latest** release containing the installer and portable ZIP. Its **Changes** section is generated from the matching version in `docs/CHANGELOG.md`.
 
 ## Recommended repository settings
 

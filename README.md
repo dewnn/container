@@ -56,7 +56,6 @@ Windows builds are published on the repository's **Releases** page:
 
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
 - `CONTAINER-Portable-<version>-x64.zip` — app plus FFmpeg sidecars
-- `SHA256SUMS.txt` — checksums for both downloads
 
 The app is currently unsigned. Windows SmartScreen may therefore show an “Unknown publisher” warning until code signing is added.
 
