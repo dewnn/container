@@ -1,0 +1,107 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg-full --version 9.0.1 --yes --no-progress
+          $tools = Join-Path $env:ChocolateyInstall 'lib\ffmpeg-full\tools'
+          $sidecarDir = Join-Path $PWD 'src-tauri\binaries'
+          New-Item -ItemType Directory -Force $sidecarDir | Out-Null
+          foreach ($tool in @('ffmpeg', 'ffprobe')) {
+            $binary = Get-ChildItem -Path $tools -Recurse -Filter "$tool.exe" -File |
+              Where-Object Length -GT 1MB |
+              Sort-Object Length -Descending |
+              Select-Object -First 1
+            if (-not $binary) { throw "The real $tool executable was not found under $tools." }
+            Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $sidecarDir "$tool-x86_64-pc-windows-msvc.exe")
+          }
+
+      - name: Verify release versions
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($tag -ne $packageVersion -or $tag -ne $tauriVersion -or $tag -ne $cargoVersion) {
+            throw "Tag v$tag must match package.json ($packageVersion), tauri.conf.json ($tauriVersion), and Cargo.toml ($cargoVersion)."
+          }
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: pnpm tauri build
+
+      - name: Assemble release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $releaseDir = Join-Path $PWD 'release-assets'
+          $portableDir = Join-Path $releaseDir 'CONTAINER-Portable'
+          New-Item -ItemType Directory -Force $portableDir | Out-Null
+
+          $app = Get-ChildItem src-tauri/target/release -Filter '*.exe' -File |
+            Where-Object Name -NotMatch '^(ffmpeg|ffprobe)' |
+            Select-Object -First 1
+          if (-not $app) { throw 'Portable application executable was not found.' }
+
+          Copy-Item -LiteralPath $app.FullName -Destination (Join-Path $portableDir 'CONTAINER.exe')
+          Copy-Item -LiteralPath src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Destination (Join-Path $portableDir 'ffmpeg.exe')
+          Copy-Item -LiteralPath src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Destination (Join-Path $portableDir 'ffprobe.exe')
+          Copy-Item -LiteralPath THIRD_PARTY_NOTICES.md -Destination $portableDir
+
+          $portableZip = Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip"
+          Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableZip
+
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer was not found.' }
+          $setupPath = Join-Path $releaseDir "CONTAINER-Setup-$version-x64.exe"
+          Copy-Item -LiteralPath $installer.FullName -Destination $setupPath
+
+          Get-FileHash -Algorithm SHA256 $setupPath,$portableZip |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS.txt')
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CONTAINER-Windows-${{ steps.assets.outputs.version }}
+          path: release-assets/*
+
+      - name: Create draft GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: release-assets/*

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.svelte-kit/
+
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/*.exe
+src-tauri/binaries/*.zip
+
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+
+.DS_Store
+Thumbs.db
