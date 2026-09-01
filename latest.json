@@ -1,11 +1,11 @@
 {
-  "version": "0.2.0",
-  "notes": "# Changes\n\n\n### Added\n\n- Image previews now open without upscaling small files and support cursor-centered wheel zoom, left-button panning, zoom controls and fit reset.\n- In-app update checks, release notes, signed downloads and restart installation through GitHub Releases.\n- Clear startup guidance and dependency recheck when system FFmpeg or FFprobe is missing.\n\n### Changed\n\n- FFmpeg and FFprobe are no longer bundled; CONTAINER uses the full build installed on the user's `PATH`.\n- Windows releases now contain a smaller Setup and standalone Portable executable.\n",
+  "version": "0.2.1",
+  "pub_date": "2026-09-01T19:24:14.3280170Z",
+  "notes": "# Changes\n\n\n### Added\n\n- A startup FFmpeg requirement dialog with an official download link and an in-app dependency recheck.\n- Automatic background update checks on every launch; an available release opens its update screen immediately.\n\n### Changed\n\n- The updater manifest now lives on a dedicated updater branch, leaving GitHub Release assets limited to Setup and Portable executables. Moving from v0.2.0 requires one manual v0.2.1 installation.\n",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVpva2V2eHJabHd1aWFWalRyem9od1VBSGRES1NFN3hocmZjdWpkaHNKbkEvZGNMQlFVSm1Idk5JcTg3SzFqMURpWTd4ZUt2YkdVNkViejdWZXRWQXc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4Mjg5MDg1CWZpbGU6Q09OVEFJTkVSXzAuMi4wX3g2NC1zZXR1cC5leGUKYldiWlNnQVNVTUlUelBlNlVSMXlFbG83em1BNDdxdFVialBWcDJGRlI4WVV5Um91eURVY1Bma3NsWnJZa0hTT0dOQzhsMFZPdGlHUkpxR0hGeXBzQmc9PQo=",
-      "url": "https://github.com/dewnn/container/releases/download/v0.2.0/CONTAINER-Setup-0.2.0-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.2.1/CONTAINER-Setup-0.2.1-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVkvTGF6S2UwL0l1WHp2eGU4cTNxS2RVc3FrNEpZTml4VjQ0cmRpdXBRODBnZDJwZFJaWDg5V1BLRkRzUkp6NjJVc0pBdFBGNzZsYXR0aHgrWExVK2dRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MjkwNjUzCWZpbGU6Q09OVEFJTkVSXzAuMi4xX3g2NC1zZXR1cC5leGUKcWNvVDU4N0Z0VlFTenhiOWNLNXowcWU4ajMxSUVJclJVUURNM1JrSzc4Wjh1aloyUGg0K0xtZTZhZk9idHFnSEpKdS9SVW0wVmwyZzBGWXJOTVovQVE9PQo="
     }
-  },
-  "pub_date": "2026-09-01T18:58:06.2576852Z"
+  }
 }
