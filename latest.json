@@ -1,11 +1,11 @@
 {
-  "version": "0.2.1",
-  "pub_date": "2026-09-01T19:24:14.3280170Z",
-  "notes": "# Changes\n\n\n### Added\n\n- A startup FFmpeg requirement dialog with an official download link and an in-app dependency recheck.\n- Automatic background update checks on every launch; an available release opens its update screen immediately.\n\n### Changed\n\n- The updater manifest now lives on a dedicated updater branch, leaving GitHub Release assets limited to Setup and Portable executables. Moving from v0.2.0 requires one manual v0.2.1 installation.\n",
+  "notes": "# Changes\n\n\n### Fixed\n\n- The Original/Rendered image comparison handle now uses the full preview bounds, no longer jumps to an edge when pressed, and stays isolated from image panning.\n",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.2.1/CONTAINER-Setup-0.2.1-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVkvTGF6S2UwL0l1WHp2eGU4cTNxS2RVc3FrNEpZTml4VjQ0cmRpdXBRODBnZDJwZFJaWDg5V1BLRkRzUkp6NjJVc0pBdFBGNzZsYXR0aHgrWExVK2dRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MjkwNjUzCWZpbGU6Q09OVEFJTkVSXzAuMi4xX3g2NC1zZXR1cC5leGUKcWNvVDU4N0Z0VlFTenhiOWNLNXowcWU4ajMxSUVJclJVUURNM1JrSzc4Wjh1aloyUGg0K0xtZTZhZk9idHFnSEpKdS9SVW0wVmwyZzBGWXJOTVovQVE9PQo="
+      "url": "https://github.com/dewnn/container/releases/download/v0.2.2/CONTAINER-Setup-0.2.2-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVpocTFUNU0xV0lRc3E5NDRzNEdtUHFYR2ZsUDNtTzFKdnphanUvNTlrQXlTOWJBK0ZQckdMZVM0VFNqeUZXTVVWSEdpUFBCMnFKRW0wM1ZkL0QrUVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MjkyMTQxCWZpbGU6Q09OVEFJTkVSXzAuMi4yX3g2NC1zZXR1cC5leGUKR0Z3SjJuaVhseDlSS0lpTGRLcmV0cmp4MEV2UFgvNXdESmFaRUNuYkF2czVMVGhXSThNUit1ZW1yNDJzVzRQVElYNXpQR2QyTXYza1IzTG4vYWUxQ1E9PQo="
     }
-  }
+  },
+  "version": "0.2.2",
+  "pub_date": "2026-09-01T19:49:02.2164609Z"
 }
