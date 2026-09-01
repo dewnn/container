@@ -6,6 +6,19 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-02
+
+### Added
+
+- Social Ratio / Crop for images, with common post, portrait, story, landscape and Pinterest ratios.
+- Lossless PNG and high-quality JPEG output choices for social crops.
+
+### Changed
+
+- Discord Compressor's detailed quality explanation is now tucked into an optional help panel so its controls stay in focus.
+- The update action now sits with language and theme controls.
+- The start screen is cleaner: only the FFmpeg readiness indicator remains below the drop area.
+
 ## [0.2.2] - 2026-09-01
 
 ### Fixed

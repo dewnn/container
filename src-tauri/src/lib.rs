@@ -616,7 +616,7 @@ fn category(operation: &str) -> &str {
         "remove_audio" | "extract_audio" | "replace_audio" | "distortion" | "audio_convert" => {
             "audio"
         }
-        "image_potatoify" => "image",
+        "image_ratio" | "image_potatoify" => "image",
         "proxy" => "proxy",
         "autocut" | "smartcut" => "smartcut",
         _ => "export",
@@ -1378,6 +1378,40 @@ async fn build_command(
             };
             args.extend(["-vf".into(), format!("crop='if(gt(iw/ih,{rw}/{rh}),trunc(ih*{rw}/{rh}/2)*2,iw)':'if(gt(iw/ih,{rw}/{rh}),ih,trunc(iw*{rh}/{rw}/2)*2)'"), "-c:v".into(), "libx264".into(), "-crf".into(), "16".into(), "-preset".into(), "veryfast".into(), "-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
             extension = "mp4".into();
+        }
+        "image_ratio" => {
+            if info.kind != "image" {
+                return Err("Social Ratio / Crop requires an image file.".into());
+            }
+            let ratio = param(p, "ratio")?;
+            let (rw, rh) = match ratio {
+                "1:1" => (1, 1),
+                "4:5" => (4, 5),
+                "9:16" => (9, 16),
+                "16:9" => (16, 9),
+                "191:100" => (191, 100),
+                "2:3" => (2, 3),
+                "3:2" => (3, 2),
+                "4:3" => (4, 3),
+                _ => return Err("Invalid image ratio.".into()),
+            };
+            args.extend([
+                "-vf".into(),
+                format!("crop='if(gt(iw/ih,{rw}/{rh}),floor(ih*{rw}/{rh}),iw)':'if(gt(iw/ih,{rw}/{rh}),ih,floor(iw*{rh}/{rw}))'"),
+                "-frames:v".into(),
+                "1".into(),
+            ]);
+            extension = match param(p, "format")? {
+                "png" => {
+                    args.extend(["-c:v".into(), "png".into()]);
+                    "png".into()
+                }
+                "jpg" | "jpeg" => {
+                    args.extend(["-c:v".into(), "mjpeg".into(), "-q:v".into(), "2".into()]);
+                    "jpg".into()
+                }
+                _ => return Err("Invalid image output format.".into()),
+            };
         }
         "resize" => {
             let size = check_range(parse_number(p, "size")?, 2.0, 7680.0, "Size")? as u64;
@@ -3334,6 +3368,7 @@ mod tests {
         assert_eq!(category("interpolation"), "motion");
         assert_eq!(category("noise"), "effects");
         assert_eq!(category("extract_audio"), "audio");
+        assert_eq!(category("image_ratio"), "image");
         assert_eq!(category("image_potatoify"), "image");
         assert_eq!(category("discord_compressor"), "quality");
         assert_eq!(category("smart_quality"), "quality");
@@ -3604,6 +3639,42 @@ mod tests {
             .unwrap()
             .success());
         assert!(output.is_file());
+
+        let image = root.join("source.png");
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=120x80",
+                "-frames:v",
+                "1",
+            ])
+            .arg(&image)
+            .status()
+            .unwrap()
+            .success());
+        let image_info = probe_media(image.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        for (ratio, format) in [("4:5", "png"), ("191:100", "jpg")] {
+            let request = OperationRequest {
+                input: image.to_string_lossy().to_string(),
+                operation: "image_ratio".into(),
+                params: values(&[("ratio", ratio), ("format", format)]),
+            };
+            let (args, output) = build_command(&request, &image_info).await.unwrap();
+            assert!(std::process::Command::new("ffmpeg")
+                .args(&args)
+                .status()
+                .unwrap()
+                .success());
+            assert!(output.is_file());
+        }
 
         std::fs::remove_dir_all(&root).unwrap();
     }

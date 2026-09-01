@@ -81,7 +81,7 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.2.2");
+  let appVersion = $state("0.3.0");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let updateChecking = $state(false);
@@ -704,7 +704,6 @@
 <main class="shell" class:drag-active={dragActive}>
   <header class="topbar">
     <span class="brand"><img class="brand-logo" src={theme==="dark"?"/logo-dark.png":"/logo-light.png"} alt="CONTAINER logo">CONTAINER</span>
-    <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
     {#if media}
       <span class="slash">/</span><span class="filename mono">{media.name}</span>
       <div class="chips mono">
@@ -714,10 +713,11 @@
         <span><b>codec</b>{media.codec}</span><em>·</em><span><b>size</b>{formatBytes(media.size)}</span>
       </div>
       <div class="language-switch"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
+      <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
     {:else}
-      <span class="tagline">{t("tagline")}</span><span class="author">— dean —</span>
       <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
+      <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
     {/if}
   </header>
 
@@ -766,11 +766,7 @@
           <aside><button class="ghost" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "FFMPEG İNDİR" : "DOWNLOAD FFMPEG"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></aside>
         </section>
       {/if}
-      <div class="landing-copy">
-        <h2>{t("landingTitle")}</h2>
-        <p>{t("landingCopy")}</p>
-      </div>
-      <footer><span class="status-dot" class:missing={ffmpegStatus !== null && !ffmpegStatus.ready}></span> ffmpeg {ffmpegStatus?.ready ? t("ready") : (dependencyChecking ? "checking" : "required")} <b>·</b> {t("local")} <b>·</b> {t("untouched")}</footer>
+      <footer><span class="status-dot" class:missing={ffmpegStatus !== null && !ffmpegStatus.ready}></span> ffmpeg {ffmpegStatus?.ready ? t("ready") : (dependencyChecking ? "checking" : "required")}</footer>
     </section>
   {:else}
     <nav class="mode-tabs">
@@ -899,6 +895,8 @@
           <div class="field-list">
           {#if selected.id === "discord_compressor"}
             {@const budget = discordBudget()}
+            <details class="discord-help">
+              <summary><b>?</b><span>{language === "tr" ? "SIKIŞTIRMA REHBERİ" : "COMPRESSION GUIDE"}</span></summary>
             <div class="discord-guide">
               <h4>{language === "tr" ? "KALİTE NASIL KORUNUYOR?" : "HOW QUALITY IS PRESERVED"}</h4>
               <ol>
@@ -915,6 +913,7 @@
               {/if}
               <small>{language === "tr" ? "Önerilen Discord başlangıçları: 20 MB → en fazla 480p, 50 MB → 720p, 100 MB → 1080p, 500 MB → kaynak. Uzun videolarda Akıllı mod bunlardan daha aşağı inebilir." : "Suggested Discord starting points: 20 MB → up to 480p, 50 MB → 720p, 100 MB → 1080p, 500 MB → source. Smart mode may go lower for long videos."}</small>
             </div>
+            </details>
           {/if}
           {#if selected.id === "encode"}
             <div class="quality-guide">
