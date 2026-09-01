@@ -92,7 +92,7 @@ pnpm install --frozen-lockfile
 pnpm tauri build
 ```
 
-To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag such as `v0.1.0`. The release workflow builds the installer and portable ZIP and creates a draft release.
+To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag such as `v0.1.0`. The release workflow builds and publishes a prerelease containing the installer and portable ZIP.
 
 ## Project layout
 
@@ -122,4 +122,4 @@ This repository is being prepared for open-source publication, but an OSI licens
 
 ## Author
 
-Built by **dean**.
+Built by **dewn** — vibe-coded with Codex.

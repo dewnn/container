@@ -64,7 +64,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The Windows workflow creates a **draft** release containing the installer, portable ZIP and SHA-256 checksums. Review its generated notes and FFmpeg attribution before publishing it.
+The Windows workflow publishes a **prerelease** containing the installer, portable ZIP and SHA-256 checksums. Review its generated notes and FFmpeg attribution after publishing.
 
 ## Recommended repository settings
 

@@ -98,10 +98,11 @@ jobs:
           name: CONTAINER-Windows-${{ steps.assets.outputs.version }}
           path: release-assets/*
 
-      - name: Create draft GitHub release
+      - name: Publish GitHub prerelease
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          draft: true
+          draft: false
+          prerelease: true
           generate_release_notes: true
           files: release-assets/*

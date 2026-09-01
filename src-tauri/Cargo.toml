@@ -2,7 +2,7 @@
 name = "container-studio"
 version = "0.1.0"
 description = "CONTAINER FFmpeg media toolbox"
-authors = ["dean"]
+authors = ["dewn"]
 edition = "2021"
 publish = false
 homepage = "https://github.com/dewnn/container"
