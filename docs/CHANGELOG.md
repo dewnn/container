@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-02
+
+### Fixed
+
+- Restored the short “one file. every tool.” start-screen motto while keeping the longer promotional and status copy removed.
+
 ## [0.3.0] - 2026-09-02
 
 ### Added
