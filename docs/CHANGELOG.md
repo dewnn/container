@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-02
+
+### Changed
+
+- Windows executables, installer and installed shortcuts now use the black CONTAINER mark on its light background.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added
