@@ -57,7 +57,38 @@ Windows builds are published on the repository's **Releases** page:
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
 - `CONTAINER-Portable-<version>-x64.exe` — standalone app executable
 
-FFmpeg is intentionally not bundled. On every launch, CONTAINER checks for both `ffmpeg` and `ffprobe` on `PATH`. If either one is missing, a setup notice appears before media tools are used, with a direct link to the official FFmpeg download page and a **Check again** action. Install a current **full build**, add its `bin` folder to `PATH`, and restart CONTAINER. FFmpeg 9.0.1 is used by CI and is the tested reference version.
+## Install FFmpeg
+
+CONTAINER requires both `ffmpeg` and `ffprobe` on `PATH`. Install a current **full build** using one of the following PowerShell commands:
+
+### Winget — recommended
+
+```powershell
+winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements
+```
+
+### Chocolatey
+
+Run PowerShell as Administrator:
+
+```powershell
+choco install ffmpeg-full -y
+```
+
+### Scoop
+
+```powershell
+scoop install ffmpeg
+```
+
+You can also use the [official FFmpeg Windows download page](https://ffmpeg.org/download.html#build-windows) for a manual installation. After installation, open a new PowerShell window and confirm that both commands work:
+
+```powershell
+ffmpeg -version
+ffprobe -version
+```
+
+Restart CONTAINER after installation. The app checks both tools on every launch; if either one is missing, it displays a setup notice with a download link and a **Check again** action. FFmpeg 9.0.1 is the tested reference version.
 
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
@@ -85,7 +116,7 @@ pnpm build
 pnpm tauri dev
 ```
 
-FFmpeg remains a system dependency during development and is never copied into the application bundle.
+The development environment also requires `ffmpeg` and `ffprobe` on `PATH`.
 
 ## Build a Windows release
 
