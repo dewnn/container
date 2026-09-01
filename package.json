@@ -1,7 +1,7 @@
 {
   "name": "container-studio",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Local-first FFmpeg media toolbox with SmartCut, batch processing and visual previews.",
   "homepage": "https://github.com/dewnn/container#readme",
   "bugs": {
