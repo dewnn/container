@@ -81,7 +81,7 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.3.1");
+  let appVersion = $state("0.4.0");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let updateChecking = $state(false);
@@ -90,8 +90,8 @@
   let updateDownloaded = $state(0);
   let updateTotal = $state(0);
   const messages:Record<"tr"|"en",Record<string,string>>={
-    tr:{tagline:"FFMPEG MEDYA ARAÇ KUTUSU",close:"kapat",drop:"medyayı buraya bırak",browse:"veya dosya seçmek için tıkla",landingTitle:"tek dosya. bütün araçlar.",landingCopy:"CONTAINER’ın bütün FFmpeg işlemleri, ayrıntılı ayarlar ve canlı ilerleme bilgisiyle tek çalışma alanında.",local:"yalnızca yerel işlem",untouched:"orijinal dosyalar değişmez",tools:"ARAÇLAR",available:"mevcut",video:"video",audio:"ses",image:"görsel",search:"araçlarda ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen",showOutput:"çıktıyı göster",cancelJob:"işlemi iptal et",parameters:"PARAMETRELER",defaults:"varsayılanlar",what:"NE YAPAR?",forVideo:"BU VİDEO İÇİN",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktı yeni klasöre yazılır. Kaynak dosya değiştirilmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
-    en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one file. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to a new folder. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
+    tr:{tagline:"FFMPEG MEDYA ARAÇ KUTUSU",close:"kapat",drop:"medyayı buraya bırak",browse:"veya dosya seçmek için tıkla",landingTitle:"tek dosya. bütün araçlar.",landingCopy:"CONTAINER’ın bütün FFmpeg işlemleri, ayrıntılı ayarlar ve canlı ilerleme bilgisiyle tek çalışma alanında.",local:"yalnızca yerel işlem",untouched:"orijinal dosyalar değişmez",tools:"ARAÇLAR",available:"mevcut",video:"video",audio:"ses",image:"görsel",search:"araçlarda ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen",showOutput:"çıktıyı göster",cancelJob:"işlemi iptal et",parameters:"PARAMETRELER",defaults:"varsayılanlar",what:"NE YAPAR?",forVideo:"BU VİDEO İÇİN",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktı Downloads/CONTAINER Output klasörüne yazılır. Kaynak dosya değiştirilmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
+    en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one file. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to Downloads/CONTAINER Output. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
   };
   const t=(key:string)=>messages[language][key]??key;
   const kindTools=(kind:MediaKind)=>localizedForSection(kind,media?.kind??kind,language);
@@ -177,6 +177,7 @@
     if(key==="audio_track") return String(toolField("audio_mode")?.value)==="selected";
     if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
+    if(selected?.id==="potatoify"&&["fps","video_badness","audio_badness","shrink"].includes(key)) return String(toolField("profile")?.value)==="custom";
     return true;
   }
   function toolNumber(key:string){return Number(toolField(key)?.value??0)}
@@ -644,6 +645,7 @@
     document.documentElement.dataset.theme=theme;
     void updateWindowIcon(theme);
     void getVersion().then((version) => appVersion = version).catch(() => {});
+    void invoke<string | null>("startup_media_path").then((path) => { if (path) void loadMedia(path); }).catch(() => {});
     // Run both checks on every launch. The UI stays quiet unless the user
     // needs FFmpeg or a newer signed release is available.
     void (async () => {

@@ -21,7 +21,7 @@
 
 ## What is CONTAINER?
 
-CONTAINER brings practical FFmpeg workflows into one desktop app. The source file is never overwritten: every operation creates a new result under `CONTAINER Output/<category>` beside the selected media.
+CONTAINER brings practical FFmpeg workflows into one desktop app. The source file is never overwritten: every operation creates a new result under `Downloads/CONTAINER Output/<category>`.
 
 Processing happens locally. CONTAINER does not upload your video, audio or images to a server.
 
@@ -57,6 +57,8 @@ Windows builds are published on the repository's **Releases** page:
 
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
 - `CONTAINER-Portable-<version>-x64.exe` — standalone app executable
+
+The Setup build also adds **Send to → CONTAINER** to Windows Explorer. Right-click a video, audio file or image and send it directly to CONTAINER. The shortcut is removed when the app is uninstalled; the Portable build does not modify this menu.
 
 ## Install FFmpeg
 

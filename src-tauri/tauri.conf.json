@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CONTAINER",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "identifier": "dev.dean.container",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [{
-      "title": "CONTAINER — FFmpeg Media Toolbox",
+      "title": "CONTAINER",
       "width": 1440,
       "height": 900,
       "minWidth": 980,
@@ -39,7 +39,12 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    }
   },
   "plugins": {
     "updater": {

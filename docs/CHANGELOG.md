@@ -6,6 +6,22 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-02
+
+### Added
+
+- QualityMuncher-style Decent, Bad, Terrible, Unbearable, Custom and Random Potatoify profiles.
+- A Setup-managed “Send to → CONTAINER” Windows shortcut for opening media directly in the app.
+
+### Changed
+
+- Outputs now use `Downloads/CONTAINER Output/<category>` instead of creating a folder beside each source file.
+- The Windows title bar now shows only `CONTAINER`.
+
+### Fixed
+
+- Improved update-dialog title contrast in dark mode.
+
 ## [0.3.1] - 2026-09-02
 
 ### Fixed

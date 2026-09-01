@@ -264,3 +264,5 @@ h3, h4 { margin: 0; font-size: 11px; letter-spacing: .12em; color: #aaaab4; }
 :root[data-theme="light"] .cut-list input{color:#22272e}
 :root[data-theme="light"] .cut-empty{color:#7b8490}
 :root[data-theme="light"] .drop-overlay{background:rgba(243,245,248,.9);color:#171a1f}
+.update-dialog,.update-dialog h2{color:#e8e8eb}
+:root[data-theme="light"] .update-dialog,:root[data-theme="light"] .update-dialog h2{color:#1b1e23}

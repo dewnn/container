@@ -635,10 +635,16 @@ fn scaled_height(info: &MediaInfo, requested_height: u64) -> (u64, u64) {
 }
 
 fn unique_output(input: &Path, operation: &str, extension: &str) -> Result<PathBuf, String> {
-    let parent = input
+    let input_parent = input
         .parent()
         .ok_or("Input folder could not be resolved.")?;
-    let folder = parent.join("CONTAINER Output").join(category(operation));
+    #[cfg(test)]
+    let output_root = input_parent.to_path_buf();
+    #[cfg(not(test))]
+    let output_root = dirs::download_dir().unwrap_or_else(|| input_parent.to_path_buf());
+    let folder = output_root
+        .join("CONTAINER Output")
+        .join(category(operation));
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     let base = format!("{}_{}", safe_stem(input), operation);
     let mut output = folder.join(format!("{base}.{extension}"));
@@ -1626,20 +1632,42 @@ async fn build_command(
             extension = "mp4".into();
         }
         "potatoify" => {
-            let fps = check_range(parse_number(p, "fps")?, 1.0, 120.0, "FPS")?;
-            let vb = check_range(
-                parse_number(p, "video_badness")?,
-                1.0,
-                20.0,
-                "Video badness",
-            )?;
-            let ab = check_range(
-                parse_number(p, "audio_badness")?,
-                1.0,
-                20.0,
-                "Audio badness",
-            )?;
-            let shrink = check_range(parse_number(p, "shrink")?, 1.0, 20.0, "Scale")?;
+            let profile = p.get("profile").map(String::as_str).unwrap_or("custom");
+            let (fps, vb, ab, shrink) = match profile {
+                "decent" => (24.0, 3.0, 2.0, 2.0),
+                "bad" => (18.0, 6.0, 5.0, 3.0),
+                "terrible" => (12.0, 11.0, 10.0, 5.0),
+                "unbearable" => (6.0, 18.0, 18.0, 10.0),
+                "random" => {
+                    let seed = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos() as u64;
+                    (
+                        (5 + seed % 26) as f64,
+                        (3 + (seed / 29) % 18) as f64,
+                        (3 + (seed / 53) % 18) as f64,
+                        (2 + (seed / 97) % 11) as f64,
+                    )
+                }
+                "custom" => (
+                    check_range(parse_number(p, "fps")?, 1.0, 120.0, "FPS")?,
+                    check_range(
+                        parse_number(p, "video_badness")?,
+                        1.0,
+                        20.0,
+                        "Video badness",
+                    )?,
+                    check_range(
+                        parse_number(p, "audio_badness")?,
+                        1.0,
+                        20.0,
+                        "Audio badness",
+                    )?,
+                    check_range(parse_number(p, "shrink")?, 1.0, 20.0, "Scale")?,
+                ),
+                _ => return Err("Invalid Potatoify quality profile.".into()),
+            };
             let w = ((info.width.unwrap_or(1280) as f64 / shrink) as u64 / 2 * 2).max(2);
             let h = ((info.height.unwrap_or(720) as f64 / shrink) as u64 / 2 * 2).max(2);
             let bitrate = ((w * h) as f64 * fps / vb).max(1000.0) as u64;
@@ -3113,6 +3141,15 @@ async fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn startup_media_path() -> Option<String> {
+    std::env::args_os()
+        .skip(1)
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -3132,11 +3169,12 @@ pub fn run() {
             export_autocut,
             analyze_quality,
             run_operation,
-            cancel_job
+            cancel_job,
+            startup_media_path
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title("CONTAINER — FFmpeg Media Toolbox");
+                let _ = window.set_title("CONTAINER");
             }
             Ok(())
         })
@@ -3520,12 +3558,14 @@ mod tests {
             (
                 "potatoify",
                 values(&[
+                    ("profile", "custom"),
                     ("fps", "12"),
                     ("video_badness", "5"),
                     ("audio_badness", "5"),
                     ("shrink", "2"),
                 ]),
             ),
+            ("potatoify", values(&[("profile", "decent")])),
             (
                 "text",
                 values(&[
