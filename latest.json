@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n### Fixed\n\n- The Original/Rendered image comparison handle now uses the full preview bounds, no longer jumps to an edge when pressed, and stays isolated from image panning.\n",
+  "notes": "# Changes\n\n\n### Added\n\n- Social Ratio / Crop for images, with common post, portrait, story, landscape and Pinterest ratios.\n- Lossless PNG and high-quality JPEG output choices for social crops.\n\n### Changed\n\n- Discord Compressor's detailed quality explanation is now tucked into an optional help panel so its controls stay in focus.\n- The update action now sits with language and theme controls.\n- The start screen is cleaner: only the FFmpeg readiness indicator remains below the drop area.\n",
+  "pub_date": "2026-09-01T22:39:49.8718580Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.2.2/CONTAINER-Setup-0.2.2-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVpocTFUNU0xV0lRc3E5NDRzNEdtUHFYR2ZsUDNtTzFKdnphanUvNTlrQXlTOWJBK0ZQckdMZVM0VFNqeUZXTVVWSEdpUFBCMnFKRW0wM1ZkL0QrUVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MjkyMTQxCWZpbGU6Q09OVEFJTkVSXzAuMi4yX3g2NC1zZXR1cC5leGUKR0Z3SjJuaVhseDlSS0lpTGRLcmV0cmp4MEV2UFgvNXdESmFaRUNuYkF2czVMVGhXSThNUit1ZW1yNDJzVzRQVElYNXpQR2QyTXYza1IzTG4vYWUxQ1E9PQo="
+      "url": "https://github.com/dewnn/container/releases/download/v0.3.0/CONTAINER-Setup-0.3.0-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVkzenMycVVHc0dIK0lDS3hIMlNRUTlJWWFoend3Si9kRGNQYUNwL0pndnAxeG1ObXVnaEg5aERsV29ZS2VDb1V2VW1vT1hnZzdqMUZ3V1lJRkVZVUFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzAyMzg5CWZpbGU6Q09OVEFJTkVSXzAuMy4wX3g2NC1zZXR1cC5leGUKYVcwOHF1eGxyWXRrUVRNNE1YdzRHbTIvdW9pbUpKRmd3OTF0ZHJMQWxZT0x1WkFWbDdzbExOYUhaVzNBNFN0V1NJMTZlVDhDclFITHB0V0JsQVhTQWc9PQo="
     }
   },
-  "version": "0.2.2",
-  "pub_date": "2026-09-01T19:49:02.2164609Z"
+  "version": "0.3.0"
 }
