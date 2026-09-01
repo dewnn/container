@@ -28,6 +28,7 @@ This document records the checks performed before CONTAINER's first public sourc
 - Release FFmpeg is pinned to the tested 9.0.1 full build.
 - Lockfiles are committed for pnpm and Cargo.
 - The production npm dependency audit reported no known vulnerabilities on the review date.
+- Dependabot's `glib` 0.18 advisory was reviewed and dismissed as not used: `cargo tree --target x86_64-pc-windows-msvc` confirms the affected Linux GTK dependency is absent from CONTAINER's Windows build graph.
 
 ## Repository checks
 
