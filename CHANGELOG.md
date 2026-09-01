@@ -6,13 +6,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- Public repository documentation and clean product screenshots.
-- GitHub Actions checks and Windows release packaging.
-- Contribution, security, issue and pull-request templates.
-
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-01
 
 ### Added
 
@@ -21,3 +15,6 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Batch processing workspace.
 - English/Turkish interface and light/dark themes.
 - Windows installer and portable build support.
+- Public repository documentation and a clean product screenshot.
+- GitHub Actions checks and Windows release packaging.
+- Contribution, security, issue and pull-request templates.
