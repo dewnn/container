@@ -178,6 +178,7 @@
     if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
     if(selected?.id==="potatoify"&&["fps","video_badness","audio_badness","shrink"].includes(key)) return String(toolField("profile")?.value)==="custom";
+    if(selected?.id==="image_potatoify"&&["quality","times","scale"].includes(key)) return String(toolField("profile")?.value)==="custom";
     return true;
   }
   function toolNumber(key:string){return Number(toolField(key)?.value??0)}
@@ -757,7 +758,11 @@
   {#if !media}
     <section class="landing">
       <button class="dropzone" class:active={dragActive} onclick={selectMedia} disabled={ffmpegStatus !== null && !ffmpegStatus.ready}>
-        <span class="drop-icon">↳</span>
+        <span class="drop-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M12 15V4M12 4 7.8 8.2M12 4l4.2 4.2M5 14.5v3.25A2.25 2.25 0 0 0 7.25 20h9.5A2.25 2.25 0 0 0 19 17.75V14.5" />
+          </svg>
+        </span>
         <h1>{t("drop")}</h1>
         <p>{t("browse")}</p>
         <div class="format-row"><span>{t("video")}</span><span>{t("audio")}</span><span>{t("image")}</span></div>

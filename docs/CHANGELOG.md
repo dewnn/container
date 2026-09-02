@@ -6,6 +6,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- MIT license and matching package metadata for the public source repository.
+- Decent, Bad, Terrible, Unbearable, Custom and Random profiles for Image Potatoify.
+
+### Changed
+
+- File previews now use runtime asset access granted only to selected, dropped, Send To and rendered files.
+- External URL access is restricted to the official FFmpeg download page, and output reveal access is restricted to `Downloads/CONTAINER Output`.
+- Removed obsolete publication notes, old screenshot sources and unused mobile, macOS and Microsoft Store icon variants from the Windows-only repository.
+- Replaced the landing drop-zone glyph with a clearer themed upload icon.
+
 ## [0.4.2] - 2026-09-02
 
 ### Fixed

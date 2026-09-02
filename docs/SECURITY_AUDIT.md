@@ -1,8 +1,8 @@
 # Security audit
 
-Review date: 2026-09-01
+Review date: 2026-09-02
 
-This document records the checks performed before CONTAINER's first public source publication. It is not a guarantee that software can never contain a vulnerability.
+This document records security checks performed for CONTAINER. It is not a guarantee that software can never contain a vulnerability.
 
 ## Runtime behavior
 
@@ -10,14 +10,15 @@ This document records the checks performed before CONTAINER's first public sourc
 - Media processing is local through the system-installed `ffmpeg.exe` and `ffprobe.exe` programs.
 - External programs are launched directly with argument arrays; CONTAINER does not construct commands through `cmd.exe`, PowerShell or a shell interpreter.
 - Windows worker processes use `CREATE_NO_WINDOW`, preventing FFmpeg/FFprobe console flashes without hiding their captured error/progress output.
-- Opener permissions reveal completed output files and open the official FFmpeg download page.
+- Opener permissions reveal completed output files and permit only the exact official FFmpeg download URL used by the interface.
 - Tauri permissions are limited to core defaults, file selection, window icon changes, the signed updater and the two opener actions above.
 - The Content Security Policy blocks arbitrary remote scripts and connections.
 
 ## Filesystem behavior
 
 - The user chooses input files through the system picker or drag and drop.
-- Processing creates a unique output under `CONTAINER Output/<category>` beside the input.
+- Asset-protocol access starts empty and is granted at runtime only to user-selected, drag-and-dropped, Send To, and newly rendered files.
+- Processing creates a unique output under `Downloads/CONTAINER Output/<category>`.
 - Source media is not overwritten.
 - Repository rules exclude build output, environment files, logs, FFmpeg executables and temporary files.
 

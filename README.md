@@ -136,9 +136,9 @@ To create a GitHub release, update the version in `package.json`, `src-tauri/Car
 src/                  Svelte 5 interface
 src/lib/              Toolbox, SmartCut and Batch workspaces
 src-tauri/src/        Rust commands and FFmpeg orchestration
-src-tauri/icons/      Application icons
+src-tauri/icons/      Windows application icons
 .github/workflows/    CI and Windows release automation
-docs/                 Screenshots and Turkish documentation
+docs/                 Screenshots and project notices
 ```
 
 ## Privacy and safety
@@ -148,13 +148,13 @@ docs/                 Screenshots and Turkish documentation
 - Hardware acceleration is used only when supported and falls back to CPU encoding.
 - FFmpeg command failures are returned to the interface instead of silently replacing files.
 
-The pre-publication review is documented in [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
+Security design and verification notes are documented in [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
 
-## Attribution and licensing status
+## License and attribution
 
-The SmartCut workflow and interface were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for dependencies and attribution.
+CONTAINER is released under the [MIT License](LICENSE).
 
-This repository is being prepared for open-source publication, but an OSI license is intentionally not attached yet. The referenced Autocut repository currently contains no license file, so rights for any derivative SmartCut portions must first be clarified or those portions must be independently reimplemented. See the [open-source review](docs/OPEN_SOURCE_REVIEW.md).
+SmartCut was inspired by the workflow of [cobanov/autocut](https://github.com/cobanov/autocut) and is implemented inside CONTAINER's own architecture. See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for dependency licenses and attribution.
 
 ## Author
 

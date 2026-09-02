@@ -210,7 +210,7 @@ export const tools: Tool[] = [
     ],
   },
   {
-    id:"image_potatoify", title:"Image Potatoify", category:"Image", kind:["image"], accent:"purple", description:"Resmi tekrar tekrar JPEG sıkıştırarak bozar.", detail:"Times to compress arttıkça JPEG blokları ve renk kaybı büyür.", fields:[number("quality","Badness",5,1,10,1),number("times","Times to compress",5,1,100,1),number("scale","Scale divisor",2,1,10,1)],
+    id:"image_potatoify", title:"Image Potatoify", category:"Image", kind:["image"], accent:"purple", description:"Resmi tekrar tekrar JPEG sıkıştırarak bozar.", detail:"Hazır profiller JPEG bloklarını, renk kaybını ve çözünürlük düşüşünü birlikte ayarlar.", fields:[select("profile","Quality profile","decent",[["decent","Decent"],["bad","Bad"],["terrible","Terrible"],["unbearable","Unbearable"],["custom","Custom"],["random","Random"]]),number("quality","Badness",5,1,10,1),number("times","Times to compress",5,1,100,1),number("scale","Scale divisor",2,1,10,1)],
   },
 ];
 
@@ -251,7 +251,7 @@ const enText: Record<string, [string, string]> = {
   distortion:["Boosts audio frequencies to create clipping/distortion.","1 is a safe start, 3 is obvious, and 10 is very heavy."],
   audio_convert:["Converts an audio file to another format.","AAC, MP3, WAV, FLAC, and OPUS are supported."],
   image_ratio:["Crops an image to common social-media aspect ratios.","The image is never stretched or enlarged. PNG preserves pixel data losslessly; JPEG is high quality but inherently lossy."],
-  image_potatoify:["Damages an image through repeated JPEG compression.","More compression passes create stronger JPEG blocks and color loss."],
+  image_potatoify:["Damages an image through repeated JPEG compression.","Profiles adjust JPEG blocks, color loss, and resolution damage together."],
 };
 
 const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",dedupe:"Tekrar Eden Kareleri Kaldır",speed:"Video Hızı",compression:"Kalite / Sıkıştırma",smart_quality:"Akıllı Kalite Analizi",bitrate:"Bitrate Kontrolü",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",color:"Renk Ayarı",noise:"Görsel Gürültü",negate:"Negatif",corruption:"Video Bozma",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",cfr:"CFR'ye Dönüştür",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_potatoify:"Görsel Potatoify"};

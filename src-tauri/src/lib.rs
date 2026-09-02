@@ -36,6 +36,15 @@ fn hidden_command(program: &str) -> Command {
     command
 }
 
+fn allow_asset_file(app: &AppHandle, path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err("Preview file was not found.".into());
+    }
+    app.asset_protocol_scope()
+        .allow_file(path)
+        .map_err(|error| format!("Preview access could not be granted: {error}"))
+}
+
 #[derive(Default)]
 struct JobState {
     cancelled: AtomicBool,
@@ -1110,6 +1119,7 @@ async fn export_autocut(
         }
         let xml=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE fcpxml>\n<fcpxml version=\"1.11\"><resources>{resources}</resources><library><event name=\"CONTAINER SmartCut\"><project name=\"{}\"><sequence format=\"r1\" duration=\"{cursor:.6}s\" tcFormat=\"{tc_format}\"><spine>{clips}</spine></sequence></project></event></library></fcpxml>",xml_escape(&safe_stem(&input)));
         std::fs::write(&output, xml).map_err(|e| e.to_string())?;
+        allow_asset_file(&app, &output)?;
         return Ok(JobResult {
             output: output.to_string_lossy().into(),
             elapsed: 0.0,
@@ -1217,6 +1227,7 @@ async fn export_autocut(
             .collect::<Vec<_>>()
             .join("\n"));
     }
+    allow_asset_file(&app, &output)?;
     Ok(JobResult {
         output: output.to_string_lossy().into(),
         elapsed: started.elapsed().as_secs_f64(),
@@ -2347,14 +2358,39 @@ async fn run_image_potatoify(
     request: &OperationRequest,
     info: &MediaInfo,
 ) -> Result<JobResult, String> {
-    let quality = check_range(
-        parse_number(&request.params, "quality")?,
-        1.0,
-        10.0,
-        "Badness",
-    )?;
-    let times = check_range(parse_number(&request.params, "times")?, 1.0, 100.0, "Times")? as usize;
-    let scale = check_range(parse_number(&request.params, "scale")?, 1.0, 10.0, "Scale")?;
+    let profile = request
+        .params
+        .get("profile")
+        .map(String::as_str)
+        .unwrap_or("custom");
+    let (quality, times, scale) = match profile {
+        "decent" => (3.0, 2_usize, 1.0),
+        "bad" => (5.0, 5, 2.0),
+        "terrible" => (8.0, 12, 4.0),
+        "unbearable" => (10.0, 30, 8.0),
+        "random" => {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as u64;
+            (
+                (2 + seed % 9) as f64,
+                (2 + (seed / 29) % 29) as usize,
+                (1 + (seed / 53) % 9) as f64,
+            )
+        }
+        "custom" => (
+            check_range(
+                parse_number(&request.params, "quality")?,
+                1.0,
+                10.0,
+                "Badness",
+            )?,
+            check_range(parse_number(&request.params, "times")?, 1.0, 100.0, "Times")? as usize,
+            check_range(parse_number(&request.params, "scale")?, 1.0, 10.0, "Scale")?,
+        ),
+        _ => return Err("Invalid Image Potatoify profile.".into()),
+    };
     let width = ((info.width.unwrap_or(1920) as f64 / scale) as u64 / 2 * 2).max(2);
     let height = ((info.height.unwrap_or(1080) as f64 / scale) as u64 / 2 * 2).max(2);
     let qscale = (2.0 + (quality - 1.0) * 29.0 / 9.0).round() as u64;
@@ -2405,6 +2441,7 @@ async fn run_image_potatoify(
     }
     std::fs::copy(&current, &output).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&temp);
+    allow_asset_file(app, &output)?;
     Ok(JobResult {
         output: output.to_string_lossy().to_string(),
         elapsed: started.elapsed().as_secs_f64(),
@@ -2832,6 +2869,7 @@ async fn run_discord_compressor(
 
         let actual = std::fs::metadata(&output).map_err(|e| e.to_string())?.len();
         if actual <= target_bytes {
+            allow_asset_file(app, &output)?;
             return Ok(JobResult {
                 output: output.to_string_lossy().into(),
                 elapsed: started.elapsed().as_secs_f64(),
@@ -3119,6 +3157,7 @@ async fn run_operation(
             detail
         });
     }
+    allow_asset_file(&app, &output)?;
     Ok(JobResult {
         output: output.to_string_lossy().to_string(),
         elapsed: started.elapsed().as_secs_f64(),
@@ -3173,6 +3212,13 @@ pub fn run() {
             startup_media_path
         ])
         .setup(|app| {
+            if let Some(path) = std::env::args_os()
+                .skip(1)
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+            {
+                app.asset_protocol_scope().allow_file(path)?;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("CONTAINER");
             }

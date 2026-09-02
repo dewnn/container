@@ -5,6 +5,7 @@ description = "CONTAINER FFmpeg media toolbox"
 authors = ["dewn"]
 edition = "2021"
 publish = false
+license = "MIT"
 homepage = "https://github.com/dewnn/container"
 repository = "https://github.com/dewnn/container"
 

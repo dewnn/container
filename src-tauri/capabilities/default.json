@@ -7,7 +7,17 @@
     "core:default",
     "core:window:allow-set-icon",
     "dialog:allow-open",
-    "opener:allow-reveal-item-in-dir",
-    "opener:allow-open-url"
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        { "path": "$DOWNLOAD/CONTAINER Output/**" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://ffmpeg.org/download.html#build-windows" }
+      ]
+    }
   ]
 }

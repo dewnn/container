@@ -32,4 +32,4 @@ The SmartCut workflow and interface were inspired by Mert Cobanov's Autocut proj
 
 - Repository: https://github.com/cobanov/autocut
 
-At the time of this review, that repository did not publish a `LICENSE` file or package-level license declaration. This notice is attribution only; it does not claim or imply a license grant from the upstream author. See `OPEN_SOURCE_REVIEW.md` before public release.
+CONTAINER credits the project for inspiration. SmartCut is implemented within CONTAINER's own Rust and Svelte architecture; this attribution does not relicense third-party code or assets.
