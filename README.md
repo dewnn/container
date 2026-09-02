@@ -17,7 +17,7 @@
   <a href="#features">Features</a>
 </p>
 
-![CONTAINER Toolbox](docs/container-toolbox.png)
+![CONTAINER Toolbox](docs/container-toolbox-v2.png)
 
 ## What is CONTAINER?
 
