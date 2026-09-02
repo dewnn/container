@@ -1384,8 +1384,8 @@ async fn build_command(
 
     match op {
         "transform" => {
-            if info.kind != "video" {
-                return Err("Transform requires a video file.".into());
+            if info.kind != "video" && info.kind != "image" {
+                return Err("Transform requires a video or image file.".into());
             }
             let crop_mode = param(p, "crop_mode")?;
             let mut filters = Vec::new();
@@ -1434,8 +1434,27 @@ async fn build_command(
             if !filters.is_empty() {
                 args.extend(["-vf".into(), filters.join(",")]);
             }
-            args.extend(["-c:v".into(), "libx264".into(), "-qp".into(), "0".into(), "-preset".into(), "veryfast".into(), "-c:a".into(), "copy".into()]);
-            extension = "mp4".into();
+            if info.kind == "image" {
+                args.extend(["-frames:v".into(), "1".into()]);
+                extension = match param(p, "format")? {
+                    "png" => {
+                        args.extend(["-c:v".into(), "png".into()]);
+                        "png".into()
+                    }
+                    "jpg" | "jpeg" => {
+                        args.extend(["-c:v".into(), "mjpeg".into(), "-q:v".into(), "2".into()]);
+                        "jpg".into()
+                    }
+                    "webp" => {
+                        args.extend(["-c:v".into(), "libwebp".into(), "-lossless".into(), "1".into()]);
+                        "webp".into()
+                    }
+                    _ => return Err("Invalid image output format.".into()),
+                };
+            } else {
+                args.extend(["-c:v".into(), "libx264".into(), "-qp".into(), "0".into(), "-preset".into(), "veryfast".into(), "-c:a".into(), "copy".into()]);
+                extension = "mp4".into();
+            }
         }
         "ratio" => {
             let ratio = param(p, "ratio")?;
@@ -3815,6 +3834,26 @@ mod tests {
                 input: image.to_string_lossy().to_string(),
                 operation: "image_ratio".into(),
                 params: values(&[("ratio", ratio), ("format", format)]),
+            };
+            let (args, output) = build_command(&request, &image_info).await.unwrap();
+            assert!(std::process::Command::new("ffmpeg")
+                .args(&args)
+                .status()
+                .unwrap()
+                .success());
+            assert!(output.is_file());
+        }
+        for format in ["png", "webp"] {
+            let request = OperationRequest {
+                input: image.to_string_lossy().to_string(),
+                operation: "transform".into(),
+                params: values(&[
+                    ("crop_mode", "free"), ("crop_x", "10"), ("crop_y", "10"),
+                    ("crop_w", "80"), ("crop_h", "80"), ("rotate", "90"),
+                    ("flip_h", "true"), ("flip_v", "false"), ("size_mode", "exact"),
+                    ("size", "100"), ("output_width", "80"), ("output_height", "100"),
+                    ("format", format),
+                ]),
             };
             let (args, output) = build_command(&request, &image_info).await.unwrap();
             assert!(std::process::Command::new("ffmpeg")

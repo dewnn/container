@@ -36,7 +36,7 @@ const number = (key: string, label: string, value: number, min: number, max: num
 
 export const tools: Tool[] = [
   {
-    id: "transform", title: "Transform", category: "Transform", kind: ["video"], accent: "blue",
+    id: "transform", title: "Transform", category: "Transform", kind: ["video","image"], accent: "blue",
     description: "Crop, rotate, flip and resize in one workspace.",
     detail: "Choose a social preset or adjust the crop directly in the preview, then rotate, flip and set the output size.",
     fields: [
@@ -48,6 +48,7 @@ export const tools: Tool[] = [
       select("flip_v", "Vertical flip", "false", [["false","Off"],["true","On"]]),
       select("size_mode", "Output size", "source", [["source","Keep cropped resolution"],["height","Target height"],["width","Target width"],["exact","Exact dimensions"]]),
       number("size", "Pixels", 1080, 2, 7680, 2, "px"), number("output_width", "Width", 1920, 2, 7680, 2, "px"), number("output_height", "Height", 1080, 2, 7680, 2, "px"),
+      select("format", "Output format", "png", [["png","PNG · lossless"],["jpg","JPEG · high quality / smaller"],["webp","WebP · lossless"]]),
     ],
   },
   {
@@ -203,15 +204,6 @@ export const tools: Tool[] = [
   },
   {
     id:"audio_convert", title:"Convert Audio", category:"Audio", kind:["audio"], accent:"blue", description:"Ses dosyasını başka formata dönüştürür.", detail:"AAC, MP3, WAV, FLAC ve OPUS desteklenir.", fields:[select("format","Output format","mp3",[["aac","AAC / M4A"],["mp3","MP3"],["wav","WAV"],["flac","FLAC"],["opus","OPUS"]])],
-  },
-  {
-    id:"image_ratio", title:"Social Ratio / Crop", category:"Image", kind:["image"], accent:"blue",
-    description:"Görseli sosyal medya oranlarına merkezden kırpar.",
-    detail:"Görsel esnetilmez veya büyütülmez. PNG piksel verisini kayıpsız korur; JPEG yüksek kaliteli fakat doğası gereği kayıplıdır.",
-    fields:[
-      select("ratio","Target ratio","1:1",[["1:1","1:1 square · posts"],["4:5","4:5 portrait · Instagram"],["9:16","9:16 · Stories / Reels / TikTok"],["16:9","16:9 landscape · YouTube"],["191:100","1.91:1 landscape · Facebook / X"],["2:3","2:3 portrait · Pinterest"],["3:2","3:2 photo"],["4:3","4:3 classic"]]),
-      select("format","Output format","png",[["png","PNG · lossless"],["jpg","JPEG · high quality / smaller"]]),
-    ],
   },
   {
     id:"image_potatoify", title:"Image Potatoify", category:"Image", kind:["image"], accent:"purple", description:"Resmi tekrar tekrar JPEG sıkıştırarak bozar.", detail:"Hazır profiller JPEG bloklarını, renk kaybını ve çözünürlük düşüşünü birlikte ayarlar.", fields:[select("profile","Quality profile","decent",[["decent","Decent"],["bad","Bad"],["terrible","Terrible"],["unbearable","Unbearable"],["custom","Custom"],["random","Random"]]),number("quality","Badness",5,1,10,1),number("times","Times to compress",5,1,100,1),number("scale","Scale divisor",2,1,10,1)],

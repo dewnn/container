@@ -58,6 +58,7 @@
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
   let toolboxVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
+  let toolboxCanvas: HTMLElement | null = $state(null);
   let transformSourceBox: HTMLElement | null = $state(null);
   let toolboxCurrent = $state(0);
   let toolboxPlaying = $state(false);
@@ -83,7 +84,7 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.5.1");
+  let appVersion = $state("0.5.2");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let updateChecking = $state(false);
@@ -191,8 +192,8 @@
   const transformPresets = ["off","free","16:9","9:16","1:1","4:5","4:3","2:3","3:2","191:100"];
   const transformHandles = ["nw","n","ne","e","se","s","sw","w"] as const;
   function transformBoxStyle(){
-    if(!toolboxStage||!media?.width||!media?.height)return "inset:0";
-    const stageWidth=toolboxStage.clientWidth,stageHeight=toolboxStage.clientHeight,rotation=Number(toolValue("rotate"));
+    if(!toolboxCanvas||!media?.width||!media?.height)return "inset:0";
+    const stageWidth=toolboxCanvas.clientWidth,stageHeight=toolboxCanvas.clientHeight,rotation=Number(toolValue("rotate"));
     const ratio=rotation===90||rotation===270?media.height/media.width:media.width/media.height;
     let width=stageWidth,height=width/ratio;
     if(height>stageHeight){height=stageHeight;width=height*ratio}
@@ -201,7 +202,7 @@
   function transformPreviewStyle(){
     if(selected?.id!=="transform")return "";
     const rotation=Number(toolValue("rotate")),swapped=rotation===90||rotation===270;
-    const width=swapped&&toolboxStage?`${toolboxStage.clientHeight}px`:"100%",height=swapped&&toolboxStage?`${toolboxStage.clientWidth}px`:"100%";
+    const width=swapped&&toolboxCanvas?`${toolboxCanvas.clientHeight}px`:"100%",height=swapped&&toolboxCanvas?`${toolboxCanvas.clientWidth}px`:"100%";
     const flipX=toolValue("flip_h")==="true"?-1:1,flipY=toolValue("flip_v")==="true"?-1:1;
     return `width:${width};height:${height};transform:rotate(${rotation}deg) scale(${flipX},${flipY})`;
   }
@@ -884,6 +885,7 @@
           <div class="preview-head"><span>{t("preview")}</span><span class="mono">{t(media.kind).toUpperCase()} · {media.codec.toUpperCase()}</span></div>
           <div class="media-stage" class:ac-player={media.kind === "video"} class:toolbox-player={media.kind === "video"} bind:this={toolboxStage}>
             {#if media.kind === "video"}
+              <div class="video-canvas" bind:this={toolboxCanvas}>
               <!-- svelte-ignore a11y_media_has_caption -->
               <video bind:this={toolboxVideo} style={transformPreviewStyle()} src={mediaUrl} preload="metadata" ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
               {#if selected?.id === "transform" && toolValue("crop_mode") !== "off"}
@@ -898,6 +900,7 @@
                   </div>
                 </div>
               {/if}
+              </div>
               <div class="ac-controls">
                 <input class="player-seek" style={`--seek-pct:${media.duration ? Math.min(100, toolboxCurrent / media.duration * 100) : 0}%`} aria-label="Video position" type="range" min="0" max={media.duration ?? 0} step="0.01" value={toolboxCurrent} oninput={(event) => seekToolbox(Number(event.currentTarget.value))}>
                 <button onclick={() => seekToolbox(toolboxCurrent - 15)} title="15 seconds back">−15</button>
@@ -909,6 +912,22 @@
               </div>
             {:else if media.kind === "audio"}
               <div class="audio-visual"><div class="disc">◉</div><h2>{media.name}</h2><p>{media.codec.toUpperCase()} · {formatDuration(media.duration)}</p><audio src={mediaUrl} controls></audio></div>
+            {:else if selected?.id === "transform"}
+              <div class="transform-image-canvas" bind:this={toolboxCanvas}>
+                <img style={transformPreviewStyle()} src={mediaUrl} alt={media.name} draggable="false" />
+                {#if toolValue("crop_mode") !== "off"}
+                  <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
+                    <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
+                    <div class="crop-shade left" style:left="0" style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_x")}%`} style:height={`${toolNumber("crop_h")}%`}></div>
+                    <div class="crop-shade right" style:left={`${toolNumber("crop_x")+toolNumber("crop_w")}%`} style:top={`${toolNumber("crop_y")}%`} style:right="0" style:height={`${toolNumber("crop_h")}%`}></div>
+                    <div class="crop-shade bottom" style:top={`${toolNumber("crop_y")+toolNumber("crop_h")}%`}></div>
+                    <div class="transform-crop" style:left={`${toolNumber("crop_x")}%`} style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_w")}%`} style:height={`${toolNumber("crop_h")}%`} onpointerdown={(event)=>startTransformCrop(event,"move")} role="presentation">
+                      <i class="crop-grid v one"></i><i class="crop-grid v two"></i><i class="crop-grid h one"></i><i class="crop-grid h two"></i>
+                      {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize crop ${handle}`} onpointerdown={(event)=>startTransformCrop(event,handle)}></button>{/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
             {:else}
               <div class="image-viewport" class:dragging={imageDragging} bind:this={imageViewport} onwheel={zoomImage} onpointerdown={startImagePan} ondblclick={resetImageView} role="presentation">
                 {#if renderedImageUrl}
@@ -1042,6 +1061,12 @@
                   <p>{language==="tr"?"Tam boyut, seçtiğin kadrajı bu ölçülere ölçekler; oranlar farklıysa görüntü esneyebilir.":"Exact size scales the crop to these dimensions; mismatched ratios may stretch the image."}</p>
                 {/if}
               </section>
+              {#if media.kind === "image"}
+                <section>
+                  <header><b>{language==="tr"?"ÇIKTI FORMATI":"OUTPUT FORMAT"}</b></header>
+                  <div class="transform-options three"><button class:active={toolValue("format")==="png"} onclick={()=>setToolValue("format","png")}>PNG · LOSSLESS</button><button class:active={toolValue("format")==="webp"} onclick={()=>setToolValue("format","webp")}>WEBP · LOSSLESS</button><button class:active={toolValue("format")==="jpg"} onclick={()=>setToolValue("format","jpg")}>JPEG</button></div>
+                </section>
+              {/if}
             </div>
           {/if}
             {#each selected.fields as field}

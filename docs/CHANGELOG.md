@@ -6,6 +6,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-02
+
+### Changed
+
+- The video preview now uses a dedicated canvas with a separate fixed control bar, keeping rotated media centered and removing the oversized overlay-style letterboxing.
+- Image Transform now shares the video crop, social presets, live rotation, flips and output sizing controls, with lossless PNG/WebP and optional JPEG output.
+- The separate Social Ratio / Crop image tool has been replaced by the unified Transform workflow.
+
 ## [0.5.1] - 2026-09-02
 
 ### Added
