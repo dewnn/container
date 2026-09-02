@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n### Changed\n\n- The video preview now uses a dedicated canvas with a separate fixed control bar, keeping rotated media centered and removing the oversized overlay-style letterboxing.\n- Image Transform now shares the video crop, social presets, live rotation, flips and output sizing controls, with lossless PNG/WebP and optional JPEG output.\n- The separate Social Ratio / Crop image tool has been replaced by the unified Transform workflow.\n",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRJS29TYTB0R1pxR1c1WnQzOFk5b2toVVI1VHhCTkdnSFVVdzkvNmJKeWNSQ2ttV0FYSmd1SmNDUU03dHpkOFVmYzZCWnJaSlhBNHRQeUxEZ3ZSeEFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzU0ODAyCWZpbGU6Q09OVEFJTkVSXzAuNS4yX3g2NC1zZXR1cC5leGUKRzJzTmg3QmpjQk16NGtFZEsrRW5yK3I0SDZSN2NvcU45NVJwUzRHQWJLZzc1alY2enZ1RVJ2Qll4eGZHVkZacCtqTjcydThubDY4eXVpaTBhNmw2RGc9PQo=",
-      "url": "https://github.com/dewnn/container/releases/download/v0.5.2/CONTAINER-Setup-0.5.2-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.6.0/CONTAINER-Setup-0.6.0-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVdNMTFramJ6L2RsVHExbDlDdTRMbUo1S0JPdTNTR1Q5Z2RxYXRZbkg4ZGZGZGRSaVVCenVIZXVYWXpML2VkKzVCYjEraE9hWEpCTWRvOGh6OVBNL0FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzY0NTI3CWZpbGU6Q09OVEFJTkVSXzAuNi4wX3g2NC1zZXR1cC5leGUKeDZFa2gxZnRlZ2R0cFVyZDZJT05yWlhCVVJVS3pXZ3JGSEZIUjFQeS9paUN5OXZQYjJXdTJxbDJ3VitjNGhpa05DU3JyNWlxVHFXNkpFbi9hcVBhQnc9PQo="
     }
   },
-  "pub_date": "2026-09-02T13:13:23.4535864Z",
-  "version": "0.5.2"
+  "notes": "# Changes\n\n\n### Added\n\n- Added a dedicated Upscale category that detects the source orientation and offers only larger standard 720p, 1080p, 2K, 4K and 8K targets with aspect-ratio preservation, unchanged frame rate and high-quality Lanczos scaling.\n\n### Fixed\n\n- 90° and 270° live previews now size the original media box correctly instead of shrinking or misaligning rotated videos and images.\n- The redesigned video control bar now spans the full player width.\n- The video canvas now stretches to the complete preview area instead of collapsing around its initial media size.\n- SmartCut video and its controls now fill the complete player area instead of collapsing into a small centered box.\n- Transform previews refit immediately when their canvas is resized, and Horizontal/Vertical flips now follow the visible axes after rotation.\n- Transform controls now use proper light-theme surfaces, text and active-state colors for both video and image tools.\n- File Hash is listed last in the Image tool menu.\n",
+  "version": "0.6.0",
+  "pub_date": "2026-09-02T15:55:27.7967922Z"
 }
