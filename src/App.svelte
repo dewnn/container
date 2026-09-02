@@ -59,6 +59,8 @@
   let toolboxVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
   let toolboxCanvas: HTMLElement | null = $state(null);
+  let transformCanvasWidth = $state(0);
+  let transformCanvasHeight = $state(0);
   let transformSourceBox: HTMLElement | null = $state(null);
   let toolboxCurrent = $state(0);
   let toolboxPlaying = $state(false);
@@ -106,7 +108,9 @@
     const list = kindTools(activeKind).filter((tool) => `${tool.title} ${tool.description}`.toLocaleLowerCase(language).includes(search.toLocaleLowerCase(language)));
     const map = new Map<string, Tool[]>();
     for (const tool of list) map.set(tool.category, [...(map.get(tool.category) ?? []), tool]);
-    return [...map.entries()];
+    const entries=[...map.entries()];
+    if(activeKind==="image")entries.sort(([left],[right])=>left==="Export"?1:right==="Export"?-1:0);
+    return entries;
   });
 
   const formatBytes = (value: number) => {
@@ -127,10 +131,39 @@
     return `${hours ? `${String(hours).padStart(2,"0")}:` : ""}${String(minutes).padStart(2,"0")}:${String(seconds).padStart(2,"0")}.${String(millis).padStart(3,"0")}`;
   };
   const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  const upscaleStandards = [720,1080,1440,2160,4320];
+
+  function upscaleDimensions(targetEdge:number){
+    if(!media?.width||!media?.height)return null;
+    const landscape=media.width>=media.height,ratio=media.width/media.height;
+    const even=(value:number)=>Math.max(2,Math.round(value/2)*2);
+    const width=landscape?even(targetEdge*ratio):even(targetEdge);
+    const height=landscape?even(targetEdge):even(targetEdge/ratio);
+    return {width,height,targetEdge};
+  }
+  function upscaleTargets(){
+    if(!media?.width||!media?.height)return [];
+    const sourceEdge=Math.min(media.width,media.height);
+    const names:Record<number,string>={720:"720p HD",1080:"1080p Full HD",1440:"1440p / 2K QHD",2160:"2160p / 4K UHD",4320:"4320p / 8K UHD"};
+    return upscaleStandards.flatMap(targetEdge=>{
+      const dimensions=upscaleDimensions(targetEdge);
+      return targetEdge>sourceEdge&&dimensions&&Math.max(dimensions.width,dimensions.height)<=7680
+        ? [{value:String(targetEdge),label:`${names[targetEdge]} · ${dimensions.width}×${dimensions.height}`}]
+        : [];
+    });
+  }
+  function configureUpscale(tool:Tool){
+    if(tool.id!=="upscale")return;
+    const field=tool.fields.find(item=>item.key==="target_edge");if(!field)return;
+    const options=upscaleTargets();
+    field.options=options.length?options:[{value:String(Math.min(media?.width??4320,media?.height??4320)),label:language==="tr"?"Daha yüksek standart hedef yok":"No higher standard target"}];
+    field.value=field.options[0].value;
+  }
 
   function chooseTool(tool: Tool) {
     const changed = selected?.id !== tool.id;
     selected = localizedTool(tool,language);
+    configureUpscale(selected);
     if (selected.id === "encode" && availableEncoders) {
       const encoderField = selected.fields.find((item) => item.key === "encoder");
       if (encoderField) {
@@ -191,20 +224,33 @@
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
   const transformPresets = ["off","free","16:9","9:16","1:1","4:5","4:3","2:3","3:2","191:100"];
   const transformHandles = ["nw","n","ne","e","se","s","sw","w"] as const;
-  function transformBoxStyle(){
-    if(!toolboxCanvas||!media?.width||!media?.height)return "inset:0";
-    const stageWidth=toolboxCanvas.clientWidth,stageHeight=toolboxCanvas.clientHeight,rotation=Number(toolValue("rotate"));
-    const ratio=rotation===90||rotation===270?media.height/media.width:media.width/media.height;
+  $effect(()=>{
+    const canvas=toolboxCanvas;
+    if(!canvas){transformCanvasWidth=0;transformCanvasHeight=0;return}
+    const update=()=>{transformCanvasWidth=canvas.clientWidth;transformCanvasHeight=canvas.clientHeight};
+    update();
+    const observer=new ResizeObserver(update);observer.observe(canvas);
+    return()=>observer.disconnect();
+  });
+  function transformDisplayBox(){
+    if(!toolboxCanvas||!media?.width||!media?.height)return null;
+    const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,rotation=Number(toolValue("rotate")),swapped=rotation===90||rotation===270;
+    const ratio=swapped?media.height/media.width:media.width/media.height;
     let width=stageWidth,height=width/ratio;
     if(height>stageHeight){height=stageHeight;width=height*ratio}
-    return `left:${(stageWidth-width)/2}px;top:${(stageHeight-height)/2}px;width:${width}px;height:${height}px`;
+    return {stageWidth,stageHeight,width,height,swapped};
+  }
+  function transformBoxStyle(){
+    const box=transformDisplayBox();if(!box)return "inset:0";
+    return `left:${(box.stageWidth-box.width)/2}px;top:${(box.stageHeight-box.height)/2}px;width:${box.width}px;height:${box.height}px`;
   }
   function transformPreviewStyle(){
     if(selected?.id!=="transform")return "";
-    const rotation=Number(toolValue("rotate")),swapped=rotation===90||rotation===270;
-    const width=swapped&&toolboxCanvas?`${toolboxCanvas.clientHeight}px`:"100%",height=swapped&&toolboxCanvas?`${toolboxCanvas.clientWidth}px`:"100%";
+    const box=transformDisplayBox();if(!box)return "";
+    const rotation=Number(toolValue("rotate"));
+    const width=box.swapped?box.height:box.width,height=box.swapped?box.width:box.height;
     const flipX=toolValue("flip_h")==="true"?-1:1,flipY=toolValue("flip_v")==="true"?-1:1;
-    return `width:${width};height:${height};transform:rotate(${rotation}deg) scale(${flipX},${flipY})`;
+    return `position:absolute;left:50%;top:50%;width:${width}px;height:${height}px;transform:translate(-50%,-50%) scale(${flipX},${flipY}) rotate(${rotation}deg)`;
   }
   function setCropPreset(mode:string){
     setToolValue("crop_mode",mode);
@@ -542,6 +588,7 @@
       if (fps <= media.fps || fps > 2400 || fps % 60 !== 0) return `Interpolation FPS ${media.fps.toFixed(2)} değerinden yüksek, 60'ın katı ve en fazla 2400 olmalı.`;
     }
     if (tool.id === "frame_blend" && media?.fps && Number(params.fps) >= media.fps) return `Frame Blending hedefi ${media.fps.toFixed(2)} FPS değerinden düşük olmalı.`;
+    if (tool.id === "upscale" && media?.width && media?.height && Number(params.target_edge) <= Math.min(media.width,media.height)) return language==="tr"?"Bu kaynak için daha yüksek bir standart çözünürlük hedefi yok.":"There is no higher standard resolution target for this source.";
     if (["cut", "gif"].includes(tool.id) && Number(params.start) >= Number(params.end ?? Number(params.start) + Number(params.duration))) {
       if (tool.id === "cut") return "Bitiş zamanı başlangıçtan büyük olmalı.";
     }
@@ -1029,6 +1076,17 @@
                 <li><b>VP9 / AV1</b><span>{language === "tr" ? "Daha verimli fakat CPU ile oldukça yavaştır. MKV çıktısı kullanılır." : "More efficient but much slower on CPU. Output uses MKV."}</span></li>
               </ul>
               <small>{language === "tr" ? "Listede yalnızca bu bilgisayarda gerçek bir test karesi kodlayabilen encoder’lar gösterilir. Auto, 10-bit HEVC/VP9/AV1 kaynağını mümkün olduğunda 10-bit korur; H.264 için uyumlu 8-bit 4:2:0 kullanır." : "Only encoders that successfully encode a real test frame on this PC are shown. Auto preserves 10-bit for HEVC/VP9/AV1 when possible and uses compatible 8-bit 4:2:0 for H.264."}</small>
+            </div>
+          {/if}
+          {#if selected.id === "upscale" && media.width && media.height}
+            {@const upscaleOutput=upscaleDimensions(toolNumber("target_edge"))}
+            <div class="upscale-summary">
+              <header><b>VIDEO</b><small>{language==="tr"?"Kaynak algılandı":"Source detected"}</small></header>
+              <div><span>{language==="tr"?"Kaynak":"Source"}</span><strong>{media.width}×{media.height}{media.fps?` · ${media.fps.toFixed(2)} FPS`:""}</strong></div>
+              <div><span>{language==="tr"?"Çıktı":"Output"}</span><strong>{upscaleOutput?`${upscaleOutput.width}×${upscaleOutput.height}`:"—"}{media.fps?` · ${media.fps.toFixed(2)} FPS`:""}</strong></div>
+              <div><span>{language==="tr"?"Ölçekleme":"Scaling"}</span><strong>Lanczos · {language==="tr"?"yüksek kalite":"high quality"}</strong></div>
+              <div><span>{language==="tr"?"Ses":"Audio"}</span><strong>{language==="tr"?"uyumluysa kopyala":"copy when compatible"}</strong></div>
+              <div><span>{language==="tr"?"Kodlayıcı":"Encoder"}</span><strong>H.264 · CRF 14</strong></div>
             </div>
           {/if}
           {#if ["encode","cut","remux","extract_audio"].includes(selected.id) && media.audio_tracks.length}

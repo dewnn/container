@@ -4,7 +4,21 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-02
+
+### Added
+
+- Added a dedicated Upscale category that detects the source orientation and offers only larger standard 720p, 1080p, 2K, 4K and 8K targets with aspect-ratio preservation, unchanged frame rate and high-quality Lanczos scaling.
+
+### Fixed
+
+- 90° and 270° live previews now size the original media box correctly instead of shrinking or misaligning rotated videos and images.
+- The redesigned video control bar now spans the full player width.
+- The video canvas now stretches to the complete preview area instead of collapsing around its initial media size.
+- SmartCut video and its controls now fill the complete player area instead of collapsing into a small centered box.
+- Transform previews refit immediately when their canvas is resized, and Horizontal/Vertical flips now follow the visible axes after rotation.
+- Transform controls now use proper light-theme surfaces, text and active-state colors for both video and image tools.
+- File Hash is listed last in the Image tool menu.
 
 ## [0.5.2] - 2026-09-02
 

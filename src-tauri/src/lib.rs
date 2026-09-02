@@ -616,6 +616,7 @@ fn safe_stem(input: &Path) -> String {
 fn category(operation: &str) -> &str {
     match operation {
         "transform" | "ratio" | "resize" => "transform",
+        "upscale" => "upscale",
         "fps" | "interpolation" | "frame_blend" | "dedupe" | "speed" | "cfr" => "motion",
         "compression" | "smart_quality" | "bitrate" | "discord_compressor" | "potatoify" => {
             "quality"
@@ -1026,10 +1027,9 @@ fn enabled_cuts(cuts: &[KeepInterval], duration: f64) -> Result<Vec<KeepInterval
     Ok(values)
 }
 
-#[tauri::command]
-async fn export_autocut(
-    app: AppHandle,
-    state: State<'_, JobState>,
+async fn export_autocut_inner(
+    app: Option<&AppHandle>,
+    state: &JobState,
     request: AutoCutExportRequest,
 ) -> Result<JobResult, String> {
     state.cancelled.store(false, Ordering::Relaxed);
@@ -1119,7 +1119,9 @@ async fn export_autocut(
         }
         let xml=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE fcpxml>\n<fcpxml version=\"1.11\"><resources>{resources}</resources><library><event name=\"CONTAINER SmartCut\"><project name=\"{}\"><sequence format=\"r1\" duration=\"{cursor:.6}s\" tcFormat=\"{tc_format}\"><spine>{clips}</spine></sequence></project></event></library></fcpxml>",xml_escape(&safe_stem(&input)));
         std::fs::write(&output, xml).map_err(|e| e.to_string())?;
-        allow_asset_file(&app, &output)?;
+        if let Some(app) = app {
+            allow_asset_file(app, &output)?;
+        }
         return Ok(JobResult {
             output: output.to_string_lossy().into(),
             elapsed: 0.0,
@@ -1195,16 +1197,18 @@ async fn export_autocut(
         }
         if let Some(value) = line.strip_prefix("out_time_us=") {
             let seconds = value.parse::<f64>().unwrap_or(0.0) / 1_000_000.0;
-            let _ = app.emit(
-                "container-progress",
-                ProgressEvent {
-                    percent: (seconds / kept_total * 100.0).clamp(0.0, 99.9),
-                    time: started.elapsed().as_secs_f64(),
-                    speed: "—".into(),
-                    frame: "—".into(),
-                    status: "exporting smartcut".into(),
-                },
-            );
+            if let Some(app) = app {
+                let _ = app.emit(
+                    "container-progress",
+                    ProgressEvent {
+                        percent: (seconds / kept_total * 100.0).clamp(0.0, 99.9),
+                        time: started.elapsed().as_secs_f64(),
+                        speed: "—".into(),
+                        frame: "—".into(),
+                        status: "exporting smartcut".into(),
+                    },
+                );
+            }
         }
     }
     let status = child.wait().await.map_err(|e| e.to_string())?;
@@ -1227,11 +1231,22 @@ async fn export_autocut(
             .collect::<Vec<_>>()
             .join("\n"));
     }
-    allow_asset_file(&app, &output)?;
+    if let Some(app) = app {
+        allow_asset_file(app, &output)?;
+    }
     Ok(JobResult {
         output: output.to_string_lossy().into(),
         elapsed: started.elapsed().as_secs_f64(),
     })
+}
+
+#[tauri::command]
+async fn export_autocut(
+    app: AppHandle,
+    state: State<'_, JobState>,
+    request: AutoCutExportRequest,
+) -> Result<JobResult, String> {
+    export_autocut_inner(Some(&app), &state, request).await
 }
 
 fn atempo(speed: f64) -> String {
@@ -1389,18 +1404,20 @@ async fn build_command(
             }
             let crop_mode = param(p, "crop_mode")?;
             let mut filters = Vec::new();
-            if param(p, "flip_h")? == "true" {
-                filters.push("hflip".into());
-            }
-            if param(p, "flip_v")? == "true" {
-                filters.push("vflip".into());
-            }
             match param(p, "rotate")? {
                 "0" => {}
                 "90" => filters.push("transpose=clock".into()),
                 "180" => filters.push("hflip,vflip".into()),
                 "270" => filters.push("transpose=cclock".into()),
                 _ => return Err("Invalid rotation.".into()),
+            }
+            // Flip after rotation so Horizontal and Vertical always describe
+            // the axes visible to the user in the preview.
+            if param(p, "flip_h")? == "true" {
+                filters.push("hflip".into());
+            }
+            if param(p, "flip_v")? == "true" {
+                filters.push("vflip".into());
             }
             if crop_mode != "off" {
                 let x = check_range(parse_number(p, "crop_x")?, 0.0, 99.0, "Crop X")?;
@@ -1425,9 +1442,14 @@ async fn build_command(
                     filters.push(format!("scale=trunc({size}/2)*2:-2:flags=lanczos"));
                 }
                 "exact" => {
-                    let width = check_range(parse_number(p, "output_width")?, 2.0, 7680.0, "Width")? as u64;
-                    let height = check_range(parse_number(p, "output_height")?, 2.0, 7680.0, "Height")? as u64;
-                    filters.push(format!("scale=trunc({width}/2)*2:trunc({height}/2)*2:flags=lanczos"));
+                    let width =
+                        check_range(parse_number(p, "output_width")?, 2.0, 7680.0, "Width")? as u64;
+                    let height =
+                        check_range(parse_number(p, "output_height")?, 2.0, 7680.0, "Height")?
+                            as u64;
+                    filters.push(format!(
+                        "scale=trunc({width}/2)*2:trunc({height}/2)*2:flags=lanczos"
+                    ));
                 }
                 _ => return Err("Invalid output size mode.".into()),
             }
@@ -1446,13 +1468,27 @@ async fn build_command(
                         "jpg".into()
                     }
                     "webp" => {
-                        args.extend(["-c:v".into(), "libwebp".into(), "-lossless".into(), "1".into()]);
+                        args.extend([
+                            "-c:v".into(),
+                            "libwebp".into(),
+                            "-lossless".into(),
+                            "1".into(),
+                        ]);
                         "webp".into()
                     }
                     _ => return Err("Invalid image output format.".into()),
                 };
             } else {
-                args.extend(["-c:v".into(), "libx264".into(), "-qp".into(), "0".into(), "-preset".into(), "veryfast".into(), "-c:a".into(), "copy".into()]);
+                args.extend([
+                    "-c:v".into(),
+                    "libx264".into(),
+                    "-qp".into(),
+                    "0".into(),
+                    "-preset".into(),
+                    "veryfast".into(),
+                    "-c:a".into(),
+                    "copy".into(),
+                ]);
                 extension = "mp4".into();
             }
         }
@@ -1502,6 +1538,57 @@ async fn build_command(
                 }
                 _ => return Err("Invalid image output format.".into()),
             };
+        }
+        "upscale" => {
+            if info.kind != "video" {
+                return Err("Upscale requires a video file.".into());
+            }
+            let width = info.width.ok_or("Source video width is unavailable.")?;
+            let height = info.height.ok_or("Source video height is unavailable.")?;
+            let target_edge =
+                check_range(parse_number(p, "target_edge")?, 720.0, 4320.0, "Resolution")? as u64;
+            if target_edge <= width.min(height) {
+                return Err("Upscale target must be larger than the source resolution.".into());
+            }
+            let target_long =
+                (width.max(height) as f64 / width.min(height) as f64 * target_edge as f64).ceil();
+            if target_long > 7680.0 {
+                return Err("Upscale output would exceed the supported 7680-pixel limit.".into());
+            }
+            let filter = if width >= height {
+                format!("scale=-2:trunc({target_edge}/2)*2:flags=lanczos,setsar=1")
+            } else {
+                format!("scale=trunc({target_edge}/2)*2:-2:flags=lanczos,setsar=1")
+            };
+            args.extend([
+                "-map".into(),
+                "0:v:0".into(),
+                "-map".into(),
+                "0:a?".into(),
+                "-vf".into(),
+                filter,
+                "-c:v".into(),
+                "libx264".into(),
+                "-crf".into(),
+                "14".into(),
+                "-preset".into(),
+                "slow".into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+            ]);
+            let audio_copy_safe = info
+                .audio_tracks
+                .iter()
+                .all(|track| ["aac", "mp3", "ac3", "eac3", "alac"].contains(&track.codec.as_str()));
+            if info.audio_codec.is_some() {
+                if audio_copy_safe {
+                    args.extend(["-c:a".into(), "copy".into()]);
+                } else {
+                    args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
+                }
+            }
+            args.extend(["-movflags".into(), "+faststart".into()]);
+            extension = "mp4".into();
         }
         "resize" => {
             let size = check_range(parse_number(p, "size")?, 2.0, 7680.0, "Size")? as u64;
@@ -2426,7 +2513,7 @@ async fn build_command(
 }
 
 async fn run_image_potatoify(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     state: &JobState,
     request: &OperationRequest,
     info: &MediaInfo,
@@ -2501,20 +2588,24 @@ async fn run_image_potatoify(
             return Err(format!("Image compression failed on pass {index}."));
         }
         current = next;
-        let _ = app.emit(
-            "container-progress",
-            ProgressEvent {
-                percent: index as f64 / times as f64 * 100.0,
-                time: started.elapsed().as_secs_f64(),
-                speed: "—".into(),
-                frame: format!("{index}/{times}"),
-                status: "compressing image".into(),
-            },
-        );
+        if let Some(app) = app {
+            let _ = app.emit(
+                "container-progress",
+                ProgressEvent {
+                    percent: index as f64 / times as f64 * 100.0,
+                    time: started.elapsed().as_secs_f64(),
+                    speed: "—".into(),
+                    frame: format!("{index}/{times}"),
+                    status: "compressing image".into(),
+                },
+            );
+        }
     }
     std::fs::copy(&current, &output).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&temp);
-    allow_asset_file(app, &output)?;
+    if let Some(app) = app {
+        allow_asset_file(app, &output)?;
+    }
     Ok(JobResult {
         output: output.to_string_lossy().to_string(),
         elapsed: started.elapsed().as_secs_f64(),
@@ -2660,7 +2751,7 @@ fn discord_video_filter(
 }
 
 async fn run_ffmpeg_stage(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     state: &JobState,
     mut args: Vec<String>,
     duration: f64,
@@ -2722,16 +2813,18 @@ async fn run_ffmpeg_stage(
             } else {
                 0.0
             };
-            let _ = app.emit(
-                "container-progress",
-                ProgressEvent {
-                    percent: (base_percent + local * percent_span).clamp(0.0, 99.0),
-                    time: started.elapsed().as_secs_f64(),
-                    speed: speed.clone(),
-                    frame: frame.clone(),
-                    status: label.into(),
-                },
-            );
+            if let Some(app) = app {
+                let _ = app.emit(
+                    "container-progress",
+                    ProgressEvent {
+                        percent: (base_percent + local * percent_span).clamp(0.0, 99.0),
+                        time: started.elapsed().as_secs_f64(),
+                        speed: speed.clone(),
+                        frame: frame.clone(),
+                        status: label.into(),
+                    },
+                );
+            }
         }
     }
     let status = child.wait().await.map_err(|e| e.to_string())?;
@@ -2773,7 +2866,7 @@ fn cleanup_passlog(prefix: &Path) {
 }
 
 async fn run_discord_compressor(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     state: &JobState,
     request: &OperationRequest,
     info: &MediaInfo,
@@ -2942,7 +3035,9 @@ async fn run_discord_compressor(
 
         let actual = std::fs::metadata(&output).map_err(|e| e.to_string())?.len();
         if actual <= target_bytes {
-            allow_asset_file(app, &output)?;
+            if let Some(app) = app {
+                allow_asset_file(app, &output)?;
+            }
             return Ok(JobResult {
                 output: output.to_string_lossy().into(),
                 elapsed: started.elapsed().as_secs_f64(),
@@ -2958,16 +3053,18 @@ async fn run_discord_compressor(
         let retry_ceiling = video_bps.saturating_sub(1_000).max(50_000);
         video_bps = adjusted.max(50_000).min(retry_ceiling);
         let _ = std::fs::remove_file(&output);
-        let _ = app.emit(
-            "container-progress",
-            ProgressEvent {
-                percent: 0.0,
-                time: started.elapsed().as_secs_f64(),
-                speed: "—".into(),
-                frame: "—".into(),
-                status: "size retry".into(),
-            },
-        );
+        if let Some(app) = app {
+            let _ = app.emit(
+                "container-progress",
+                ProgressEvent {
+                    percent: 0.0,
+                    time: started.elapsed().as_secs_f64(),
+                    speed: "—".into(),
+                    frame: "—".into(),
+                    status: "size retry".into(),
+                },
+            );
+        }
     }
     unreachable!()
 }
@@ -3009,10 +3106,9 @@ async fn run_quality_capture(
     Ok(output)
 }
 
-#[tauri::command]
-async fn analyze_quality(
-    app: AppHandle,
-    state: State<'_, JobState>,
+async fn analyze_quality_inner(
+    app: Option<&AppHandle>,
+    state: &JobState,
     request: QualityAnalysisRequest,
 ) -> Result<QualityAnalysis, String> {
     state.cancelled.store(false, Ordering::Relaxed);
@@ -3053,14 +3149,16 @@ async fn analyze_quality(
                 "-vf".into(), format!("scale={width}:{height}:flags=lanczos,setsar=1,format=yuv420p"),
                 "-c:v".into(), "ffv1".into(), reference.to_string_lossy().into(),
             ];
-            run_quality_capture(&state, &args).await?;
+            run_quality_capture(state, &args).await?;
             references.push(reference);
             completed += 1.0;
-            let _ = app.emit("container-progress", ProgressEvent {
-                percent: completed / total_steps * 99.0,
-                time: started.elapsed().as_secs_f64(), speed: "—".into(),
-                frame: format!("{}/{}", index + 1, positions.len()), status: "preparing samples".into(),
-            });
+            if let Some(app) = app {
+                let _ = app.emit("container-progress", ProgressEvent {
+                    percent: completed / total_steps * 99.0,
+                    time: started.elapsed().as_secs_f64(), speed: "—".into(),
+                    frame: format!("{}/{}", index + 1, positions.len()), status: "preparing samples".into(),
+                });
+            }
         }
 
         let mut candidates = Vec::new();
@@ -3076,14 +3174,16 @@ async fn analyze_quality(
                     "-crf".into(), crf.to_string(), "-pix_fmt".into(), "yuv420p".into(),
                     encoded.to_string_lossy().into(),
                 ];
-                run_quality_capture(&state, &encode_args).await?;
+                run_quality_capture(state, &encode_args).await?;
                 sample_bytes += std::fs::metadata(&encoded).map_err(|e| e.to_string())?.len();
                 completed += 1.0;
-                let _ = app.emit("container-progress", ProgressEvent {
-                    percent: completed / total_steps * 99.0,
-                    time: started.elapsed().as_secs_f64(), speed: "—".into(),
-                    frame: format!("CRF {crf}"), status: "encoding test samples".into(),
-                });
+                if let Some(app) = app {
+                    let _ = app.emit("container-progress", ProgressEvent {
+                        percent: completed / total_steps * 99.0,
+                        time: started.elapsed().as_secs_f64(), speed: "—".into(),
+                        frame: format!("CRF {crf}"), status: "encoding test samples".into(),
+                    });
+                }
 
                 let null_output = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
                 let compare_args = vec![
@@ -3092,18 +3192,20 @@ async fn analyze_quality(
                     "-lavfi".into(), "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf=n_threads=4".into(),
                     "-f".into(), "null".into(), null_output.into(),
                 ];
-                let output = run_quality_capture(&state, &compare_args).await?;
+                let output = run_quality_capture(state, &compare_args).await?;
                 let text = String::from_utf8_lossy(&output.stderr);
                 let score = text.lines().find_map(|line| line.split("VMAF score:").nth(1))
                     .and_then(|value| value.trim().parse::<f64>().ok())
                     .ok_or("FFmpeg did not return a VMAF score.")?;
                 scores.push(score);
                 completed += 1.0;
-                let _ = app.emit("container-progress", ProgressEvent {
-                    percent: completed / total_steps * 99.0,
-                    time: started.elapsed().as_secs_f64(), speed: "—".into(),
-                    frame: format!("CRF {crf}"), status: "measuring visual quality".into(),
-                });
+                if let Some(app) = app {
+                    let _ = app.emit("container-progress", ProgressEvent {
+                        percent: completed / total_steps * 99.0,
+                        time: started.elapsed().as_secs_f64(), speed: "—".into(),
+                        frame: format!("CRF {crf}"), status: "measuring visual quality".into(),
+                    });
+                }
             }
             let vmaf = scores.iter().sum::<f64>() / scores.len() as f64;
             let sampled_seconds = sample_duration * positions.len() as f64;
@@ -3125,6 +3227,15 @@ async fn analyze_quality(
 }
 
 #[tauri::command]
+async fn analyze_quality(
+    app: AppHandle,
+    state: State<'_, JobState>,
+    request: QualityAnalysisRequest,
+) -> Result<QualityAnalysis, String> {
+    analyze_quality_inner(Some(&app), &state, request).await
+}
+
+#[tauri::command]
 async fn run_operation(
     app: AppHandle,
     state: State<'_, JobState>,
@@ -3133,10 +3244,10 @@ async fn run_operation(
     state.cancelled.store(false, Ordering::Relaxed);
     let info = probe_media(request.input.clone()).await?;
     if request.operation == "image_potatoify" {
-        return run_image_potatoify(&app, &state, &request, &info).await;
+        return run_image_potatoify(Some(&app), &state, &request, &info).await;
     }
     if request.operation == "discord_compressor" {
-        return run_discord_compressor(&app, &state, &request, &info).await;
+        return run_discord_compressor(Some(&app), &state, &request, &info).await;
     }
     let (mut args, output) = build_command(&request, &info).await?;
     let output_index = args.len() - 1;
@@ -3531,6 +3642,61 @@ mod tests {
         assert_eq!(category("smart_quality"), "quality");
         assert_eq!(category("dedupe"), "motion");
         assert_eq!(category("proxy"), "proxy");
+        assert_eq!(category("upscale"), "upscale");
+    }
+
+    #[test]
+    fn every_user_tool_has_an_automated_test_path() {
+        let source = include_str!("../../src/lib/tools.ts");
+        let mut tool_ids = source
+            .lines()
+            .filter_map(|line| {
+                let rest = line.get(line.find("id:")? + 3..)?.trim_start();
+                let quoted = rest.strip_prefix('"')?;
+                Some(quoted.split('"').next()?.to_string())
+            })
+            .collect::<Vec<_>>();
+        tool_ids.sort();
+        tool_ids.dedup();
+        let tested = [
+            "audio_convert",
+            "bitrate",
+            "cfr",
+            "color",
+            "compression",
+            "corruption",
+            "cut",
+            "dedupe",
+            "deep_fry",
+            "discord_compressor",
+            "distortion",
+            "encode",
+            "extract_audio",
+            "file_hash",
+            "fix_timestamps",
+            "fps",
+            "frame_blend",
+            "gif",
+            "image_potatoify",
+            "interpolation",
+            "negate",
+            "noise",
+            "potatoify",
+            "proxy",
+            "remove_audio",
+            "remux",
+            "replace_audio",
+            "screenshot",
+            "smart_quality",
+            "speed",
+            "text",
+            "transform",
+            "upscale",
+        ];
+        assert_eq!(
+            tool_ids, tested,
+            "Update the real-media smoke coverage when adding a user tool."
+        );
     }
 
     #[test]
@@ -3578,6 +3744,260 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).into(), (*value).into()))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn special_tools_render_real_media() {
+        let root = std::env::temp_dir().join("container_special_tools_smoke_test");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let video = root.join("source.mp4");
+        let image = root.join("source.png");
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=25:d=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=1",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&video)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=120x80",
+                "-frames:v",
+                "1",
+            ])
+            .arg(&image)
+            .status()
+            .unwrap()
+            .success());
+
+        let digest = hash_file(image.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()));
+
+        let state = JobState::default();
+        let image_info = probe_media(image.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let potato = run_image_potatoify(
+            None,
+            &state,
+            &OperationRequest {
+                input: image.to_string_lossy().into_owned(),
+                operation: "image_potatoify".into(),
+                params: values(&[
+                    ("profile", "custom"),
+                    ("quality", "5"),
+                    ("times", "2"),
+                    ("scale", "2"),
+                ]),
+            },
+            &image_info,
+        )
+        .await
+        .unwrap();
+        let potato_info = probe_media(potato.output.clone()).await.unwrap();
+        assert_eq!(
+            (potato_info.width, potato_info.height),
+            (Some(60), Some(40))
+        );
+
+        let video_info = probe_media(video.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let discord = run_discord_compressor(
+            None,
+            &state,
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "discord_compressor".into(),
+                params: values(&[
+                    ("target_mb", "2"),
+                    ("codec", "h264"),
+                    ("resolution", "source"),
+                    ("fps_limit", "source"),
+                    ("audio_kbps", "64"),
+                    ("preset", "veryfast"),
+                ]),
+            },
+            &video_info,
+        )
+        .await
+        .unwrap();
+        let discord_path = PathBuf::from(&discord.output);
+        assert!(discord_path.is_file());
+        assert!(std::fs::metadata(&discord_path).unwrap().len() <= 2 * 1024 * 1024);
+
+        let quality = analyze_quality_inner(
+            None,
+            &state,
+            QualityAnalysisRequest {
+                input: video.to_string_lossy().into_owned(),
+                goal: "balanced".into(),
+                sample_duration: 1.0,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(quality.candidates.len(), 4);
+        assert!(quality
+            .candidates
+            .iter()
+            .all(|candidate| candidate.vmaf.is_finite()));
+
+        let smartcut = export_autocut_inner(
+            None,
+            &state,
+            AutoCutExportRequest {
+                input: video.to_string_lossy().into_owned(),
+                cuts: vec![
+                    KeepInterval {
+                        start: 0.0,
+                        end: 0.35,
+                        enabled: true,
+                    },
+                    KeepInterval {
+                        start: 0.55,
+                        end: 0.9,
+                        enabled: true,
+                    },
+                ],
+                format: "mp4".into(),
+                quality: "medium".into(),
+                resolution: "source".into(),
+                linked_tracks: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let smartcut_info = probe_media(smartcut.output.clone()).await.unwrap();
+        assert_eq!(smartcut_info.kind, "video");
+        assert!(smartcut_info
+            .duration
+            .is_some_and(|duration| duration > 0.5 && duration < 0.9));
+
+        let fcpxml = export_autocut_inner(
+            None,
+            &state,
+            AutoCutExportRequest {
+                input: video.to_string_lossy().into_owned(),
+                cuts: vec![KeepInterval {
+                    start: 0.1,
+                    end: 0.8,
+                    enabled: true,
+                }],
+                format: "fcpxml".into(),
+                quality: "medium".into(),
+                resolution: "source".into(),
+                linked_tracks: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let xml = std::fs::read_to_string(fcpxml.output).unwrap();
+        assert!(xml.contains("CONTAINER SmartCut"));
+        assert!(xml.contains("duration=\"0.700000s\""));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn transform_rotation_and_flip_filters_follow_visible_axes() {
+        let root = std::env::temp_dir().join("container_transform_matrix_test");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let input = root.join("matrix.png");
+        let info = MediaInfo {
+            path: input.to_string_lossy().into_owned(),
+            name: "matrix.png".into(),
+            kind: "image".into(),
+            duration: None,
+            width: Some(320),
+            height: Some(180),
+            fps: None,
+            codec: "png".into(),
+            audio_codec: None,
+            audio_tracks: Vec::new(),
+            pixel_format: Some("rgba".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        for (rotation, flip_h, flip_v, expected) in [
+            ("0", "false", "false", None),
+            ("0", "true", "true", Some("hflip,vflip")),
+            ("90", "true", "false", Some("transpose=clock,hflip")),
+            ("180", "false", "false", Some("hflip,vflip")),
+            ("270", "false", "true", Some("transpose=cclock,vflip")),
+        ] {
+            let request = OperationRequest {
+                input: input.to_string_lossy().into_owned(),
+                operation: "transform".into(),
+                params: values(&[
+                    ("crop_mode", "off"),
+                    ("crop_x", "0"),
+                    ("crop_y", "0"),
+                    ("crop_w", "100"),
+                    ("crop_h", "100"),
+                    ("rotate", rotation),
+                    ("flip_h", flip_h),
+                    ("flip_v", flip_v),
+                    ("size_mode", "source"),
+                    ("size", "180"),
+                    ("output_width", "320"),
+                    ("output_height", "180"),
+                    ("format", "png"),
+                ]),
+            };
+            let (args, _) = build_command(&request, &info).await.unwrap();
+            let filter = args
+                .iter()
+                .position(|arg| arg == "-vf")
+                .map(|index| args[index + 1].as_str());
+            assert_eq!(
+                filter, expected,
+                "rotation={rotation}, h={flip_h}, v={flip_v}"
+            );
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[tokio::test]
@@ -3654,12 +4074,21 @@ mod tests {
             (
                 "transform",
                 values(&[
-                    ("crop_mode", "free"), ("crop_x", "10"), ("crop_y", "10"),
-                    ("crop_w", "80"), ("crop_h", "80"), ("rotate", "90"),
-                    ("flip_h", "true"), ("flip_v", "false"), ("size_mode", "height"),
-                    ("size", "180"), ("output_width", "320"), ("output_height", "180"),
+                    ("crop_mode", "free"),
+                    ("crop_x", "10"),
+                    ("crop_y", "10"),
+                    ("crop_w", "80"),
+                    ("crop_h", "80"),
+                    ("rotate", "90"),
+                    ("flip_h", "true"),
+                    ("flip_v", "false"),
+                    ("size_mode", "height"),
+                    ("size", "180"),
+                    ("output_width", "320"),
+                    ("output_height", "180"),
                 ]),
             ),
+            ("upscale", values(&[("target_edge", "720")])),
             ("ratio", values(&[("ratio", "1:1")])),
             (
                 "resize",
@@ -3790,6 +4219,13 @@ mod tests {
                 .unwrap();
             assert!(status.success(), "operation failed: {operation}");
             assert!(output.is_file(), "output missing: {operation}");
+            assert!(
+                std::fs::metadata(&output).unwrap().len() > 0,
+                "empty output: {operation}"
+            );
+            probe_media(output.to_string_lossy().into_owned())
+                .await
+                .unwrap_or_else(|error| panic!("unreadable output for {operation}: {error}"));
         }
 
         let audio_info = probe_media(audio.to_string_lossy().to_string())
@@ -3807,6 +4243,13 @@ mod tests {
             .unwrap()
             .success());
         assert!(output.is_file());
+        assert_eq!(
+            probe_media(output.to_string_lossy().into_owned())
+                .await
+                .unwrap()
+                .kind,
+            "audio"
+        );
 
         let image = root.join("source.png");
         assert!(std::process::Command::new("ffmpeg")
@@ -3842,16 +4285,31 @@ mod tests {
                 .unwrap()
                 .success());
             assert!(output.is_file());
+            assert_eq!(
+                probe_media(output.to_string_lossy().into_owned())
+                    .await
+                    .unwrap()
+                    .kind,
+                "image"
+            );
         }
         for format in ["png", "webp"] {
             let request = OperationRequest {
                 input: image.to_string_lossy().to_string(),
                 operation: "transform".into(),
                 params: values(&[
-                    ("crop_mode", "free"), ("crop_x", "10"), ("crop_y", "10"),
-                    ("crop_w", "80"), ("crop_h", "80"), ("rotate", "90"),
-                    ("flip_h", "true"), ("flip_v", "false"), ("size_mode", "exact"),
-                    ("size", "100"), ("output_width", "80"), ("output_height", "100"),
+                    ("crop_mode", "free"),
+                    ("crop_x", "10"),
+                    ("crop_y", "10"),
+                    ("crop_w", "80"),
+                    ("crop_h", "80"),
+                    ("rotate", "90"),
+                    ("flip_h", "true"),
+                    ("flip_v", "false"),
+                    ("size_mode", "exact"),
+                    ("size", "100"),
+                    ("output_width", "80"),
+                    ("output_height", "100"),
                     ("format", format),
                 ]),
             };
@@ -3862,6 +4320,13 @@ mod tests {
                 .unwrap()
                 .success());
             assert!(output.is_file());
+            assert_eq!(
+                probe_media(output.to_string_lossy().into_owned())
+                    .await
+                    .unwrap()
+                    .kind,
+                "image"
+            );
         }
 
         std::fs::remove_dir_all(&root).unwrap();
