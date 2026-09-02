@@ -8,7 +8,6 @@
 <p align="center">
   <a href="https://github.com/dewnn/container/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/dewnn/container?label=release&color=blue"></a>
   <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="Build" src="https://github.com/dewnn/container/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="Tests" src="https://img.shields.io/badge/tests-15%20passing-brightgreen"></a>
   <a href="https://github.com/dewnn/container/releases/latest"><img alt="Windows" src="https://img.shields.io/badge/Windows-shipping-0078D4?logo=windows11&logoColor=white"></a>
 </p>
 
@@ -97,49 +96,7 @@ The app is currently not Authenticode-signed. Windows SmartScreen may therefore 
 
 ## Updates
 
-Installed builds automatically check for a new version in the background every time CONTAINER starts, without sending media or analytics. When an update exists, the update screen opens with its release notes and an install action; the **Update** button can also run a manual check. Update packages are verified with CONTAINER's dedicated Tauri updater key before installation.
-
-`v0.2.1` moves the update channel out of Release assets, so it must be installed manually once when coming from `v0.2.0`. Installed releases after `v0.2.1` can update from inside the app. Portable builds should be replaced manually.
-
-## Development
-
-Requirements:
-
-- Windows 10 or 11
-- Node.js 22+
-- pnpm 10+
-- Rust stable with the MSVC toolchain
-- Visual Studio Build Tools with Desktop development with C++
-- FFmpeg and FFprobe available on `PATH`
-
-```powershell
-pnpm install --frozen-lockfile
-pnpm check
-pnpm build
-pnpm tauri dev
-```
-
-The development environment also requires `ffmpeg` and `ffprobe` on `PATH`.
-
-## Build a Windows release
-
-```powershell
-pnpm install --frozen-lockfile
-pnpm tauri build --no-sign
-```
-
-To create a GitHub release, update the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then push a matching tag. The release workflow signs the updater artifact and publishes only the installer and portable executable. The machine-readable updater manifest is maintained separately on the `updater` branch so it does not clutter Release assets.
-
-## Project layout
-
-```text
-src/                  Svelte 5 interface
-src/lib/              Toolbox, SmartCut and Batch workspaces
-src-tauri/src/        Rust commands and FFmpeg orchestration
-src-tauri/icons/      Windows application icons
-.github/workflows/    CI and Windows release automation
-docs/                 Screenshots and project notices
-```
+Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Portable builds should be replaced manually.
 
 ## Privacy and safety
 
