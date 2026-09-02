@@ -41,6 +41,11 @@
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
   interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
 
+  const windowIconBuffers = {
+    dark: fetch("/logo-dark.png").then(response => response.arrayBuffer()),
+    light: fetch("/logo-light.png").then(response => response.arrayBuffer())
+  };
+
   let media: MediaInfo | null = $state(null);
   let mediaUrl = $state("");
   let selected: Tool | null = $state(null);
@@ -81,7 +86,7 @@
   let toolboxFilmstripLoading = $state(false);
   let toolboxTimeline: HTMLElement | null = $state(null);
   let language: "tr" | "en" = $state("en");
-  let theme: "dark" | "light" = $state("dark");
+  let theme: "dark" | "light" = $state(document.documentElement.dataset.theme === "light" ? "light" : "dark");
   let availableEncoders: string[] | null = $state(null);
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
@@ -236,8 +241,11 @@
     if(!toolboxCanvas||!media?.width||!media?.height)return null;
     const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,rotation=Number(toolValue("rotate")),swapped=rotation===90||rotation===270;
     const ratio=swapped?media.height/media.width:media.width/media.height;
-    let width=stageWidth,height=width/ratio;
-    if(height>stageHeight){height=stageHeight;width=height*ratio}
+    // Keep a small interaction gutter so crop borders and resize handles remain
+    // fully visible even when the source aspect ratio fills one stage axis.
+    const availableWidth=Math.max(1,stageWidth-16),availableHeight=Math.max(1,stageHeight-16);
+    let width=availableWidth,height=width/ratio;
+    if(height>availableHeight){height=availableHeight;width=height*ratio}
     return {stageWidth,stageHeight,width,height,swapped};
   }
   function transformBoxStyle(){
@@ -752,9 +760,7 @@
     const saved=localStorage.getItem("container-language");
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
     document.documentElement.lang=language;
-    const savedTheme=localStorage.getItem("container-theme");
-    theme=savedTheme==="dark"||savedTheme==="light"?savedTheme:window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
-    document.documentElement.dataset.theme=theme;
+    theme=document.documentElement.dataset.theme==="light"?"light":"dark";
     void updateWindowIcon(theme);
     void getVersion().then((version) => appVersion = version).catch(() => {});
     void invoke<string | null>("startup_media_path").then((path) => { if (path) void loadMedia(path); }).catch(() => {});
@@ -779,7 +785,9 @@
       else if (event.key === "ArrowLeft") seekToolbox(toolboxCurrent - 5);
       else if (event.key === "ArrowRight") seekToolbox(toolboxCurrent + 5);
     };
+    const blockBrowserMenu = (event: MouseEvent) => event.preventDefault();
     window.addEventListener("keydown", playerKeys);
+    window.addEventListener("contextmenu", blockBrowserMenu);
     listen<ProgressEvent>("container-progress", (event) => {
       progress = Math.max(0, Math.min(100, event.payload.percent));
       speed = event.payload.speed || "—";
@@ -798,7 +806,7 @@
       }
     }).then((fn) => unlistenDrop = fn);
 
-    return () => { unlistenProgress?.(); unlistenDrop?.(); window.removeEventListener("keydown", playerKeys); };
+    return () => { unlistenProgress?.(); unlistenDrop?.(); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -808,16 +816,23 @@
     if(selectedId){const translated=kindTools(activeKind).find(tool=>tool.id===selectedId);if(translated)chooseTool(translated)}
   }
   function setTheme(next:"dark"|"light"){
-    theme=next;localStorage.setItem("container-theme",next);document.documentElement.dataset.theme=next;void updateWindowIcon(next);
+    if(next===theme)return;
+    const root=document.documentElement;
+    root.classList.add("theme-changing");
+    root.dataset.theme=next;
+    root.style.colorScheme=next;
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content",next==="light"?"#f3f5f8":"#09090b");
+    theme=next;localStorage.setItem("container-theme",next);void updateWindowIcon(next);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>root.classList.remove("theme-changing")));
   }
   async function updateWindowIcon(next:"dark"|"light"){
-    try{const response=await fetch(next==="dark"?"/logo-dark.png":"/logo-light.png");await getCurrentWindow().setIcon(await response.arrayBuffer())}catch{/* Browser preview has no Tauri window. */}
+    try{await getCurrentWindow().setIcon((await windowIconBuffers[next]).slice(0))}catch{/* Browser preview has no Tauri window. */}
   }
 </script>
 
 <main class="shell" class:drag-active={dragActive}>
   <header class="topbar">
-    <span class="brand"><img class="brand-logo" src={theme==="dark"?"/logo-dark.png":"/logo-light.png"} alt="CONTAINER logo">CONTAINER</span>
+    <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/logo-dark.png" alt="" decoding="sync"><img class="brand-logo brand-logo-light" src="/logo-light.png" alt="" decoding="sync"></span>CONTAINER</span>
     {#if media}
       <span class="slash">/</span><span class="filename mono">{media.name}</span>
       <div class="chips mono">

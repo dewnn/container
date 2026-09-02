@@ -736,9 +736,9 @@ fn recommend_from_levels(levels: &[f64], block_seconds: f64) -> AutoCutRecommend
     }
     let typical_gap = median(&mut silence_runs, 0.35);
     let typical_speech = median(&mut speech_runs, 0.4);
-    let min_silence = (typical_gap * 0.45).clamp(0.10, 0.60);
+    let min_silence = (typical_gap * 0.70).clamp(0.18, 0.80);
     let min_speech = (typical_speech * 0.25).clamp(0.10, 0.30);
-    let padding = (min_silence * 0.45).clamp(0.08, 0.24);
+    let padding = (min_silence * 0.50).clamp(0.12, 0.30);
     AutoCutRecommendation {
         threshold: (0.65 - spread * 0.005).clamp(0.35, 0.65),
         min_silence: (min_silence * 100.0).round() / 100.0,
@@ -812,37 +812,77 @@ fn keeps_from_vad_scores(
     duration: f64,
 ) -> Vec<KeepInterval> {
     const CHUNK_SECONDS: f64 = 512.0 / 16000.0;
-    let release = (threshold - 0.15).max(0.05) as f32;
-    let mut flags = Vec::with_capacity(scores.len());
-    let mut speaking = false;
-    for &score in scores {
-        if !speaking && score >= threshold as f32 {
-            speaking = true;
-        } else if speaking && score < release {
-            speaking = false;
-        }
-        flags.push(speaking);
+    if scores.is_empty() || duration <= 0.0 {
+        return Vec::new();
     }
-    let mut regions: Vec<(usize, usize)> = Vec::new();
-    let mut start = None;
-    for (index, &active) in flags.iter().enumerate() {
-        match (start, active) {
-            (None, true) => start = Some(index),
-            (Some(s), false) => {
-                regions.push((s, index));
-                start = None
+    // Silero emits one probability every 32 ms. A short triangular filter
+    // removes single-frame spikes/dips without blurring real word boundaries.
+    let smoothed: Vec<f32> = (0..scores.len())
+        .map(|index| {
+            let mut weighted = 0.0_f32;
+            let mut weight_sum = 0.0_f32;
+            for offset in -2_i32..=2 {
+                let sample = index as i32 + offset;
+                if sample >= 0 && sample < scores.len() as i32 {
+                    let weight = (3 - offset.abs()) as f32;
+                    weighted += scores[sample as usize] * weight;
+                    weight_sum += weight;
+                }
             }
-            _ => {}
+            weighted / weight_sum.max(1.0)
+        })
+        .collect();
+    let release = (threshold - 0.15).max(0.05) as f32;
+    let attack_chunks =
+        ((min_speech * 0.35).clamp(CHUNK_SECONDS, 0.096) / CHUNK_SECONDS).ceil() as usize;
+    let release_chunks = (min_silence / CHUNK_SECONDS).ceil().max(1.0) as usize;
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    let mut speaking = false;
+    let mut start = 0_usize;
+    let mut attack_count = 0_usize;
+    let mut release_count = 0_usize;
+    for (index, &score) in smoothed.iter().enumerate() {
+        if speaking {
+            if score < release {
+                release_count += 1;
+                if release_count >= release_chunks {
+                    let end = index + 1 - release_count;
+                    if end > start {
+                        regions.push((start, end));
+                    }
+                    speaking = false;
+                    attack_count = 0;
+                    release_count = 0;
+                }
+            } else {
+                release_count = 0;
+            }
+        } else if score >= threshold as f32 {
+            attack_count += 1;
+            if attack_count >= attack_chunks {
+                start = index + 1 - attack_count;
+                speaking = true;
+                release_count = 0;
+            }
+        } else {
+            attack_count = 0;
         }
     }
-    if let Some(s) = start {
-        regions.push((s, flags.len()));
+    if speaking {
+        let end = if release_count > 0 {
+            scores.len().saturating_sub(release_count)
+        } else {
+            scores.len()
+        };
+        if end > start {
+            regions.push((start, end));
+        }
     }
     let min_gap = (min_silence / CHUNK_SECONDS).ceil() as usize;
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (start, end) in regions {
         if let Some(last) = merged.last_mut() {
-            if start.saturating_sub(last.1) < min_gap {
+            if start.saturating_sub(last.1) <= min_gap {
                 last.1 = last.1.max(end);
                 continue;
             }
@@ -2211,7 +2251,7 @@ async fn build_command(
             if end <= start {
                 return Err("End must be greater than start.".into());
             }
-            let cut_mode = p.get("cut_mode").map(String::as_str).unwrap_or("exact");
+            let cut_mode = p.get("cut_mode").map(String::as_str).unwrap_or("lossless");
             args = vec![
                 "-hide_banner".into(),
                 "-loglevel".into(),
@@ -2242,14 +2282,21 @@ async fn build_command(
                         crf.to_string(),
                     ]);
                     append_audio_routing(&mut args, info, p, true, "main")?;
+                    extension = "mp4".into();
                 }
                 "lossless" => {
                     args.extend(["-c:v".into(), "copy".into()]);
                     append_audio_routing(&mut args, info, p, false, "main")?;
+                    args.extend(["-avoid_negative_ts".into(), "make_zero".into()]);
+                    extension = input
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("mkv")
+                        .to_ascii_lowercase();
                 }
                 _ => return Err("Invalid cut mode.".into()),
             }
-            extension = "mp4".into();
         }
         "remux" => {
             let format = param(p, "format")?;
@@ -3454,7 +3501,7 @@ mod tests {
         levels.extend(vec![-16.0; 100]);
         let recommendation = recommend_from_levels(&levels, 0.02);
         assert!((0.35..=0.65).contains(&recommendation.threshold));
-        assert!((0.10..=0.60).contains(&recommendation.min_silence));
+        assert!((0.18..=0.80).contains(&recommendation.min_silence));
         assert!((0.10..=0.30).contains(&recommendation.min_speech));
         assert!(recommendation.speech_level_db > recommendation.noise_floor_db);
     }
@@ -3508,6 +3555,28 @@ mod tests {
         assert_eq!(keeps.len(), 1);
         assert!(keeps[0].start > 0.2 && keeps[0].start < 0.4);
         assert!(keeps[0].end > 1.2 && keeps[0].end < 1.4);
+    }
+
+    #[test]
+    fn vad_ignores_isolated_noise_spikes() {
+        let mut scores = vec![0.02; 80];
+        scores[25] = 0.99;
+        scores[55] = 0.90;
+        let keeps = keeps_from_vad_scores(&scores, 0.5, 0.25, 0.12, 0.1, 3.0);
+        assert!(keeps.is_empty());
+    }
+
+    #[test]
+    fn vad_keeps_words_together_across_brief_dips() {
+        let mut scores = vec![0.02; 10];
+        scores.extend(vec![0.88; 20]);
+        scores.extend(vec![0.01; 5]);
+        scores.extend(vec![0.82; 20]);
+        scores.extend(vec![0.01; 12]);
+        let keeps = keeps_from_vad_scores(&scores, 0.5, 0.25, 0.12, 0.08, 3.0);
+        assert_eq!(keeps.len(), 1);
+        assert!(keeps[0].start < 0.35);
+        assert!(keeps[0].end > 1.70);
     }
 
     #[test]
@@ -4164,6 +4233,10 @@ mod tests {
             ("cut", values(&[("start", "0.1"), ("end", "0.4")])),
             (
                 "cut",
+                values(&[("start", "0.1"), ("end", "0.4"), ("cut_mode", "exact")]),
+            ),
+            (
+                "cut",
                 values(&[
                     ("start", "0.1"),
                     ("end", "0.4"),
@@ -4205,6 +4278,12 @@ mod tests {
         ];
 
         for (operation, params) in operations {
+            let lossless_cut = operation == "cut"
+                && params
+                    .get("cut_mode")
+                    .map(String::as_str)
+                    .unwrap_or("lossless")
+                    == "lossless";
             let request = OperationRequest {
                 input: video.to_string_lossy().to_string(),
                 operation: operation.into(),
@@ -4213,6 +4292,16 @@ mod tests {
             let (args, output) = build_command(&request, &video_info)
                 .await
                 .unwrap_or_else(|error| panic!("{operation}: {error}"));
+            if lossless_cut {
+                assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
+                assert!(!args.iter().any(|arg| arg == "libx264"));
+                let seek = args.iter().position(|arg| arg == "-ss").unwrap();
+                let input = args.iter().position(|arg| arg == "-i").unwrap();
+                assert!(
+                    seek < input,
+                    "fast input seeking must happen before opening the media"
+                );
+            }
             let status = std::process::Command::new("ffmpeg")
                 .args(&args)
                 .status()

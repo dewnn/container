@@ -4,6 +4,22 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-09-03
+
+### Changed
+
+- Cut Video now defaults to fast lossless stream copying, preserves the source container and keeps frame-accurate re-encoding as an optional mode.
+- SmartCut automatic detection now smooths brief probability spikes, keeps words together across short dips and uses more stable automatic silence and padding values.
+- Transform controls use larger, clearer labels and a cyan selection color.
+
+### Fixed
+
+- Removed the browser-style right-click menu that exposed Back, Refresh, Save As and Print commands.
+- Light and dark themes now apply before the interface is painted, eliminating mixed-theme frames during startup and switching.
+- Theme logos are preloaded and the in-app logo switches without waiting for another image load.
+- Transform crop borders and resize handles remain fully visible inside the preview, including when the media fills one axis.
+- Reduced the crop border thickness for a cleaner preview.
+
 ## [0.6.0] - 2026-09-02
 
 ### Added
