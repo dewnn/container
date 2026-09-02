@@ -1,11 +1,11 @@
 {
-  "pub_date": "2026-09-02T00:07:42.4727641Z",
-  "notes": "# Changes\n\n\n### Fixed\n\n- The Setup executable now explicitly uses the existing black-background `logo-dark` CONTAINER icon instead of Windows' generic NSIS disc icon.\n",
-  "version": "0.4.2",
+  "pub_date": "2026-09-02T11:47:31.2060076Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.4.2/CONTAINER-Setup-0.4.2-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVNJSHVPY29IQjM5VmNQYTJuWlM0aDdXUkxKL2VOVDRoMVVkMnFCOWEycllmMW52RmVDV21SczB1R3FubUxrTUlHWkIwTGxUckxCUkowYzQwOWhxK0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzA3NjYxCWZpbGU6Q09OVEFJTkVSXzAuNC4yX3g2NC1zZXR1cC5leGUKYzdmblQwZ2VqQ0FyU3REcmRJMitzdEJYZjE2K3FUbGRuVlBMWlF1dVpQQjZsajZoWXVVSUZybWZ2UktrNkZDUUlDM1N3MWNtOWZMSFIzdkRJV1FpQ3c9PQo="
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVVPL01BQTZYWnpnd3RXODRKREtiUXdIRm1jdk5UNDBOK2ZUL2tpaGp5WWVIRXpYdk1IaDZKdlpTR2hQWXVDUHZoeUkrNW9Ic21IQmVJK2FQcHZySlFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzQ5NjUwCWZpbGU6Q09OVEFJTkVSXzAuNS4wX3g2NC1zZXR1cC5leGUKeDlmUUlYMFRUK1JmS1ZMZWNJaW1mY05MRFlHN0dPMDZSQmcwNENtTHJQWTU5MDkrRkhNOGRDVGdWNzl0cmJ1Q3VidldDOVR6ajVTU2ZMK2NxV3ZCRHc9PQo=",
+      "url": "https://github.com/dewnn/container/releases/download/v0.5.0/CONTAINER-Setup-0.5.0-x64.exe"
     }
-  }
+  },
+  "version": "0.5.0",
+  "notes": "# Changes\n\n\n### Added\n\n- MIT license and matching package metadata for the public source repository.\n- Decent, Bad, Terrible, Unbearable, Custom and Random profiles for Image Potatoify.\n\n### Changed\n\n- File previews now use runtime asset access granted only to selected, dropped, Send To and rendered files.\n- External URL access is restricted to the official FFmpeg download page, and output reveal access is restricted to `Downloads/CONTAINER Output`.\n- Removed obsolete publication notes, old screenshot sources and unused mobile, macOS and Microsoft Store icon variants from the Windows-only repository.\n- Replaced the landing drop-zone glyph with a clearer themed upload icon.\n"
 }
