@@ -1,11 +1,11 @@
 {
+  "pub_date": "2026-09-02T00:07:42.4727641Z",
+  "notes": "# Changes\n\n\n### Fixed\n\n- The Setup executable now explicitly uses the existing black-background `logo-dark` CONTAINER icon instead of Windows' generic NSIS disc icon.\n",
+  "version": "0.4.2",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.4.1/CONTAINER-Setup-0.4.1-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVkrV05tS3hoNm5tVk0xb0lqc0ZTQWF4WWlCSkpqS3pHanF5dzkvMWwrbDVGSmtUNFRDL3BKWks5NWg2eTRucG5YMjAvbkxQRCtKTGFZMU5FS1pZN0FrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzA2MTE1CWZpbGU6Q09OVEFJTkVSXzAuNC4xX3g2NC1zZXR1cC5leGUKOXVlQXJSQWREUW42QjRmVysrSDZIQnJOVmNQV3pEa0J1UW5QcE9qTXdjLy9SZUN3eXZpTnZLOWFySzMzOTlHU2NMcUZFN3MzNUF4MFQvSHhET1QxRHc9PQo="
+      "url": "https://github.com/dewnn/container/releases/download/v0.4.2/CONTAINER-Setup-0.4.2-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVNJSHVPY29IQjM5VmNQYTJuWlM0aDdXUkxKL2VOVDRoMVVkMnFCOWEycllmMW52RmVDV21SczB1R3FubUxrTUlHWkIwTGxUckxCUkowYzQwOWhxK0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzA3NjYxCWZpbGU6Q09OVEFJTkVSXzAuNC4yX3g2NC1zZXR1cC5leGUKYzdmblQwZ2VqQ0FyU3REcmRJMitzdEJYZjE2K3FUbGRuVlBMWlF1dVpQQjZsajZoWXVVSUZybWZ2UktrNkZDUUlDM1N3MWNtOWZMSFIzdkRJV1FpQ3c9PQo="
     }
-  },
-  "version": "0.4.1",
-  "notes": "# Changes\n\n\n### Changed\n\n- Windows executables, installer and installed shortcuts now use the black CONTAINER mark on its light background.\n",
-  "pub_date": "2026-09-01T23:41:56.1164762Z"
+  }
 }
