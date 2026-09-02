@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n### Added\n\n- A short two-note completion chime after successful Toolbox renders, SmartCut exports and completed Batch queues.\n- A unified video Transform workspace with social crop presets, a draggable freeform crop frame, rotation, horizontal/vertical flip and output sizing.\n\n### Fixed\n\n- Long SHA-256 values now wrap inside the result card instead of widening the interface and creating a horizontal scrollbar.\n- Free crop now starts at the complete video frame instead of an inset rectangle.\n- Transform rotation and horizontal/vertical flips are now reflected live in the video preview and crop coordinates.\n\n### Changed\n\n- The TR/EN language selector now appears only on the landing screen; media workspaces keep only the theme controls in the top bar.\n- Video playback controls now remain visible instead of hiding when the pointer leaves the preview.\n- Ratio / Crop and Resize are now combined into one Transform tool so framing and output resolution are configured together.\n- Transform no longer asks for a quality setting; it uses lossless H.264 video encoding and copies audio without re-encoding.\n- Transform controls now begin directly below the tool title, and the parameter panel scrollbar is visually hidden while wheel scrolling remains available.\n",
-  "version": "0.5.1",
+  "notes": "# Changes\n\n\n### Changed\n\n- The video preview now uses a dedicated canvas with a separate fixed control bar, keeping rotated media centered and removing the oversized overlay-style letterboxing.\n- Image Transform now shares the video crop, social presets, live rotation, flips and output sizing controls, with lossless PNG/WebP and optional JPEG output.\n- The separate Social Ratio / Crop image tool has been replaced by the unified Transform workflow.\n",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.5.1/CONTAINER-Setup-0.5.1-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRBVHh6bmd5Y2ZBYlUvcVlwWFJJaUlDNlVzUzRxN0VQbElTbFVvRHJFQ3NQT2JVaG1McHlMTlExaXhBdjdJNlgvcjhaOUxzWnE0em4xU25xa2pSVmdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzUzMTYxCWZpbGU6Q09OVEFJTkVSXzAuNS4xX3g2NC1zZXR1cC5leGUKdDJuOFdSS1ViZVVnUmZzUzJBcTJhRnpwSE1FMmNWZTFrczZ3TVdZbmMrYkpqVzFjbW03OExJMzhPM3dNSkptN2tOMHNBejRHeCt4SlZuOHRiVmxxRHc9PQo="
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRJS29TYTB0R1pxR1c1WnQzOFk5b2toVVI1VHhCTkdnSFVVdzkvNmJKeWNSQ2ttV0FYSmd1SmNDUU03dHpkOFVmYzZCWnJaSlhBNHRQeUxEZ3ZSeEFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzU0ODAyCWZpbGU6Q09OVEFJTkVSXzAuNS4yX3g2NC1zZXR1cC5leGUKRzJzTmg3QmpjQk16NGtFZEsrRW5yK3I0SDZSN2NvcU45NVJwUzRHQWJLZzc1alY2enZ1RVJ2Qll4eGZHVkZacCtqTjcydThubDY4eXVpaTBhNmw2RGc9PQo=",
+      "url": "https://github.com/dewnn/container/releases/download/v0.5.2/CONTAINER-Setup-0.5.2-x64.exe"
     }
   },
-  "pub_date": "2026-09-02T12:46:01.8076663Z"
+  "pub_date": "2026-09-02T13:13:23.4535864Z",
+  "version": "0.5.2"
 }
