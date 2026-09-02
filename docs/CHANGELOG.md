@@ -6,6 +6,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-02
+
 ### Added
 
 - MIT license and matching package metadata for the public source repository.
