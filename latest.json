@@ -1,11 +1,11 @@
 {
-  "pub_date": "2026-09-02T11:47:31.2060076Z",
+  "notes": "# Changes\n\n\n### Added\n\n- A short two-note completion chime after successful Toolbox renders, SmartCut exports and completed Batch queues.\n- A unified video Transform workspace with social crop presets, a draggable freeform crop frame, rotation, horizontal/vertical flip and output sizing.\n\n### Fixed\n\n- Long SHA-256 values now wrap inside the result card instead of widening the interface and creating a horizontal scrollbar.\n- Free crop now starts at the complete video frame instead of an inset rectangle.\n- Transform rotation and horizontal/vertical flips are now reflected live in the video preview and crop coordinates.\n\n### Changed\n\n- The TR/EN language selector now appears only on the landing screen; media workspaces keep only the theme controls in the top bar.\n- Video playback controls now remain visible instead of hiding when the pointer leaves the preview.\n- Ratio / Crop and Resize are now combined into one Transform tool so framing and output resolution are configured together.\n- Transform no longer asks for a quality setting; it uses lossless H.264 video encoding and copies audio without re-encoding.\n- Transform controls now begin directly below the tool title, and the parameter panel scrollbar is visually hidden while wheel scrolling remains available.\n",
+  "version": "0.5.1",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVVPL01BQTZYWnpnd3RXODRKREtiUXdIRm1jdk5UNDBOK2ZUL2tpaGp5WWVIRXpYdk1IaDZKdlpTR2hQWXVDUHZoeUkrNW9Ic21IQmVJK2FQcHZySlFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzQ5NjUwCWZpbGU6Q09OVEFJTkVSXzAuNS4wX3g2NC1zZXR1cC5leGUKeDlmUUlYMFRUK1JmS1ZMZWNJaW1mY05MRFlHN0dPMDZSQmcwNENtTHJQWTU5MDkrRkhNOGRDVGdWNzl0cmJ1Q3VidldDOVR6ajVTU2ZMK2NxV3ZCRHc9PQo=",
-      "url": "https://github.com/dewnn/container/releases/download/v0.5.0/CONTAINER-Setup-0.5.0-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.5.1/CONTAINER-Setup-0.5.1-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRBVHh6bmd5Y2ZBYlUvcVlwWFJJaUlDNlVzUzRxN0VQbElTbFVvRHJFQ3NQT2JVaG1McHlMTlExaXhBdjdJNlgvcjhaOUxzWnE0em4xU25xa2pSVmdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzUzMTYxCWZpbGU6Q09OVEFJTkVSXzAuNS4xX3g2NC1zZXR1cC5leGUKdDJuOFdSS1ViZVVnUmZzUzJBcTJhRnpwSE1FMmNWZTFrczZ3TVdZbmMrYkpqVzFjbW03OExJMzhPM3dNSkptN2tOMHNBejRHeCt4SlZuOHRiVmxxRHc9PQo="
     }
   },
-  "version": "0.5.0",
-  "notes": "# Changes\n\n\n### Added\n\n- MIT license and matching package metadata for the public source repository.\n- Decent, Bad, Terrible, Unbearable, Custom and Random profiles for Image Potatoify.\n\n### Changed\n\n- File previews now use runtime asset access granted only to selected, dropped, Send To and rendered files.\n- External URL access is restricted to the official FFmpeg download page, and output reveal access is restricted to `Downloads/CONTAINER Output`.\n- Removed obsolete publication notes, old screenshot sources and unused mobile, macOS and Microsoft Store icon variants from the Windows-only repository.\n- Replaced the landing drop-zone glyph with a clearer themed upload icon.\n"
+  "pub_date": "2026-09-02T12:46:01.8076663Z"
 }
