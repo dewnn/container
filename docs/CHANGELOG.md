@@ -6,6 +6,27 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-02
+
+### Added
+
+- A short two-note completion chime after successful Toolbox renders, SmartCut exports and completed Batch queues.
+- A unified video Transform workspace with social crop presets, a draggable freeform crop frame, rotation, horizontal/vertical flip and output sizing.
+
+### Fixed
+
+- Long SHA-256 values now wrap inside the result card instead of widening the interface and creating a horizontal scrollbar.
+- Free crop now starts at the complete video frame instead of an inset rectangle.
+- Transform rotation and horizontal/vertical flips are now reflected live in the video preview and crop coordinates.
+
+### Changed
+
+- The TR/EN language selector now appears only on the landing screen; media workspaces keep only the theme controls in the top bar.
+- Video playback controls now remain visible instead of hiding when the pointer leaves the preview.
+- Ratio / Crop and Resize are now combined into one Transform tool so framing and output resolution are configured together.
+- Transform no longer asks for a quality setting; it uses lossless H.264 video encoding and copies audio without re-encoding.
+- Transform controls now begin directly below the tool title, and the parameter panel scrollbar is visually hidden while wheel scrolling remains available.
+
 ## [0.5.0] - 2026-09-02
 
 ### Added

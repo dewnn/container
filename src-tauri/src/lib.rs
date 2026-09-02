@@ -615,7 +615,7 @@ fn safe_stem(input: &Path) -> String {
 
 fn category(operation: &str) -> &str {
     match operation {
-        "ratio" | "resize" => "transform",
+        "transform" | "ratio" | "resize" => "transform",
         "fps" | "interpolation" | "frame_blend" | "dedupe" | "speed" | "cfr" => "motion",
         "compression" | "smart_quality" | "bitrate" | "discord_compressor" | "potatoify" => {
             "quality"
@@ -1383,6 +1383,60 @@ async fn build_command(
     let extension: String;
 
     match op {
+        "transform" => {
+            if info.kind != "video" {
+                return Err("Transform requires a video file.".into());
+            }
+            let crop_mode = param(p, "crop_mode")?;
+            let mut filters = Vec::new();
+            if param(p, "flip_h")? == "true" {
+                filters.push("hflip".into());
+            }
+            if param(p, "flip_v")? == "true" {
+                filters.push("vflip".into());
+            }
+            match param(p, "rotate")? {
+                "0" => {}
+                "90" => filters.push("transpose=clock".into()),
+                "180" => filters.push("hflip,vflip".into()),
+                "270" => filters.push("transpose=cclock".into()),
+                _ => return Err("Invalid rotation.".into()),
+            }
+            if crop_mode != "off" {
+                let x = check_range(parse_number(p, "crop_x")?, 0.0, 99.0, "Crop X")?;
+                let y = check_range(parse_number(p, "crop_y")?, 0.0, 99.0, "Crop Y")?;
+                let w = check_range(parse_number(p, "crop_w")?, 1.0, 100.0, "Crop width")?;
+                let h = check_range(parse_number(p, "crop_h")?, 1.0, 100.0, "Crop height")?;
+                if x + w > 100.001 || y + h > 100.001 {
+                    return Err("Crop rectangle must stay inside the video.".into());
+                }
+                filters.push(format!(
+                    "crop=trunc(iw*{w}/100/2)*2:trunc(ih*{h}/100/2)*2:trunc(iw*{x}/100/2)*2:trunc(ih*{y}/100/2)*2"
+                ));
+            }
+            match param(p, "size_mode")? {
+                "source" => {}
+                "height" => {
+                    let size = check_range(parse_number(p, "size")?, 2.0, 7680.0, "Size")? as u64;
+                    filters.push(format!("scale=-2:trunc({size}/2)*2:flags=lanczos"));
+                }
+                "width" => {
+                    let size = check_range(parse_number(p, "size")?, 2.0, 7680.0, "Size")? as u64;
+                    filters.push(format!("scale=trunc({size}/2)*2:-2:flags=lanczos"));
+                }
+                "exact" => {
+                    let width = check_range(parse_number(p, "output_width")?, 2.0, 7680.0, "Width")? as u64;
+                    let height = check_range(parse_number(p, "output_height")?, 2.0, 7680.0, "Height")? as u64;
+                    filters.push(format!("scale=trunc({width}/2)*2:trunc({height}/2)*2:flags=lanczos"));
+                }
+                _ => return Err("Invalid output size mode.".into()),
+            }
+            if !filters.is_empty() {
+                args.extend(["-vf".into(), filters.join(",")]);
+            }
+            args.extend(["-c:v".into(), "libx264".into(), "-qp".into(), "0".into(), "-preset".into(), "veryfast".into(), "-c:a".into(), "copy".into()]);
+            extension = "mp4".into();
+        }
         "ratio" => {
             let ratio = param(p, "ratio")?;
             let (rw, rh) = match ratio {
@@ -3578,6 +3632,15 @@ mod tests {
         let audio_text = audio.to_string_lossy().to_string();
 
         let operations: Vec<(&str, HashMap<String, String>)> = vec![
+            (
+                "transform",
+                values(&[
+                    ("crop_mode", "free"), ("crop_x", "10"), ("crop_y", "10"),
+                    ("crop_w", "80"), ("crop_h", "80"), ("rotate", "90"),
+                    ("flip_h", "true"), ("flip_v", "false"), ("size_mode", "height"),
+                    ("size", "180"), ("output_width", "320"), ("output_height", "180"),
+                ]),
+            ),
             ("ratio", values(&[("ratio", "1:1")])),
             (
                 "resize",

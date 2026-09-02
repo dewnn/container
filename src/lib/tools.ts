@@ -36,15 +36,19 @@ const number = (key: string, label: string, value: number, min: number, max: num
 
 export const tools: Tool[] = [
   {
-    id: "ratio", title: "Ratio / Crop", category: "Transform", kind: ["video"], accent: "blue",
-    description: "Videoyu seçilen en-boy oranına ortadan kırpar.",
-    detail: "Görüntü esnetilmez. Kenarlardaki fazla alan merkezden kesilir.",
-    fields: [select("ratio", "Target ratio", "9:16", [["1:1","1:1 square"],["4:5","4:5 portrait"],["9:16","9:16 reels"],["16:9","16:9 landscape"],["4:3","4:3 classic"]])],
-  },
-  {
-    id: "resize", title: "Resize", category: "Transform", kind: ["video"], accent: "green",
-    description: "Çözünürlüğü oranı koruyarak değiştirir.", detail: "Tek bir kenar seçilir; diğer kenar otomatik ve çift sayı hesaplanır.",
-    fields: [select("axis", "Dimension", "height", [["height","Target height"],["width","Target width"]]), number("size", "Pixels", 1080, 2, 7680, 2, "px"), number("crf", "Quality / CRF", 16, 0, 30, 1, "", "Düşük değer daha kaliteli ve daha büyüktür.")],
+    id: "transform", title: "Transform", category: "Transform", kind: ["video"], accent: "blue",
+    description: "Crop, rotate, flip and resize in one workspace.",
+    detail: "Choose a social preset or adjust the crop directly in the preview, then rotate, flip and set the output size.",
+    fields: [
+      select("crop_mode", "Crop", "off", [["off","Off"],["free","Free"],["16:9","16:9"],["9:16","9:16"],["1:1","1:1"],["4:5","4:5"],["4:3","4:3"],["2:3","2:3"],["3:2","3:2"],["191:100","1.91:1"]]),
+      number("crop_x", "Crop X", 0, 0, 100, 0.01, "%"), number("crop_y", "Crop Y", 0, 0, 100, 0.01, "%"),
+      number("crop_w", "Crop width", 100, 1, 100, 0.01, "%"), number("crop_h", "Crop height", 100, 1, 100, 0.01, "%"),
+      select("rotate", "Rotate", "0", [["0","0°"],["90","90° right"],["180","180°"],["270","90° left"]]),
+      select("flip_h", "Horizontal flip", "false", [["false","Off"],["true","On"]]),
+      select("flip_v", "Vertical flip", "false", [["false","Off"],["true","On"]]),
+      select("size_mode", "Output size", "source", [["source","Keep cropped resolution"],["height","Target height"],["width","Target width"],["exact","Exact dimensions"]]),
+      number("size", "Pixels", 1080, 2, 7680, 2, "px"), number("output_width", "Width", 1920, 2, 7680, 2, "px"), number("output_height", "Height", 1080, 2, 7680, 2, "px"),
+    ],
   },
   {
     id: "fps", title: "Change FPS", category: "Motion", kind: ["video"], accent: "blue",
@@ -218,8 +222,7 @@ export const forKind = (kind: MediaKind) => tools.filter((tool) => tool.kind.inc
 export const cloneTool = (tool: Tool): Tool => ({ ...tool, fields: tool.fields.map((field) => ({ ...field, options: field.options?.map((option) => ({...option})) })) });
 
 const enText: Record<string, [string, string]> = {
-  ratio:["Crops the video to the selected aspect ratio from the center.","The image is not stretched. Excess edges are removed evenly from the center."],
-  resize:["Changes resolution while preserving aspect ratio.","Choose one edge; the other is calculated automatically as an even number."],
+  transform:["Crop, rotate, flip and resize in one workspace.","Choose a social preset or adjust the crop directly in the preview. The transformed video is encoded losslessly and audio is copied unchanged."],
   fps:["Changes the frame rate directly.","It does not create new motion; frames are dropped or repeated."],
   interpolation:["Raises FPS by generating blended intermediate frames.","The target must be above the source FPS, a multiple of 60, and no more than 2400."],
   frame_blend:["Lowers FPS while blending frames.","Motion may gain trails similar to a long-exposure look."],
@@ -256,6 +259,7 @@ const enText: Record<string, [string, string]> = {
 
 const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",dedupe:"Tekrar Eden Kareleri Kaldır",speed:"Video Hızı",compression:"Kalite / Sıkıştırma",smart_quality:"Akıllı Kalite Analizi",bitrate:"Bitrate Kontrolü",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",color:"Renk Ayarı",noise:"Görsel Gürültü",negate:"Negatif",corruption:"Video Bozma",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",cfr:"CFR'ye Dönüştür",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_potatoify:"Görsel Potatoify"};
 const trCategories: Record<string,string> = {Transform:"Dönüştürme",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Audio:"Ses",Image:"Görsel"};
+trTitles.transform = "Dönüştür";
 const trFields: Record<string,string> = {"Target ratio":"Hedef oran",Dimension:"Boyut yönü",Pixels:"Piksel","Quality / CRF":"Kalite / CRF","Quality goal":"Kalite hedefi","Sample duration":"Örnek süresi","Target FPS":"Hedef FPS",Multiplier:"Hız çarpanı","Speed mode":"Hız yöntemi",CRF:"CRF","CPU preset":"CPU ön ayarı","Target bitrate":"Hedef bitrate","Discord size limit":"Discord boyut sınırı","Video codec":"Video codec'i","Maximum resolution":"En yüksek çözünürlük","Frame rate limit":"Kare hızı sınırı","Audio bitrate":"Ses bitrate'i","Compression speed":"Sıkıştırma hızı","Video badness":"Video bozulması","Audio badness":"Ses bozulması","Scale divisor":"Ölçek böleni",Text:"Yazı",Position:"Konum",Color:"Renk","Font size":"Yazı boyutu",Opacity:"Opaklık",Contrast:"Kontrast",Saturation:"Doygunluk",Brightness:"Parlaklık","Noise amount":"Gürültü miktarı","Fry level":"Fry seviyesi",Severity:"Şiddet",Encoder:"Kodlayıcı",Quality:"Kalite","Pixel format":"Piksel formatı","Audio tracks":"Ses parçaları","Selected audio track":"Seçili ses parçası",Start:"Başlangıç",End:"Bitiş","Cut mode":"Kesim yöntemi",Container:"Kapsayıcı",Timestamp:"Zaman",Format:"Format",Duration:"Süre",Height:"Yükseklik","Maximum colors":"En fazla renk","Palette mode":"Palet yöntemi",Dithering:"Renk geçişi",Transparency:"Şeffaflık",Loop:"Tekrar","Audio format":"Ses formatı","Replacement audio":"Yeni ses dosyası","Output format":"Çıktı formatı",Badness:"Bozulma","Times to compress":"Sıkıştırma sayısı","Detection profile":"Algılama profili","Proxy resolution":"Proxy çözünürlüğü","Proxy quality":"Proxy kalitesi","Repair method":"Onarım yöntemi"};
 
 export function localizedTool(tool: Tool, language: "tr"|"en"): Tool {

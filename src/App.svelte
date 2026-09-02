@@ -9,6 +9,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open } from "@tauri-apps/plugin-dialog";
   import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { armCompletionSound, playCompletionSound } from "./lib/completionSound";
   import { check, Update } from "@tauri-apps/plugin-updater";
   import { localizedForSection, localizedTool, type Field, type MediaKind, type Tool } from "./lib/tools";
   import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
@@ -57,6 +58,7 @@
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
   let toolboxVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
+  let transformSourceBox: HTMLElement | null = $state(null);
   let toolboxCurrent = $state(0);
   let toolboxPlaying = $state(false);
   let toolboxVolume = $state(1);
@@ -81,7 +83,7 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.5.0");
+  let appVersion = $state("0.5.1");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let updateChecking = $state(false);
@@ -174,6 +176,7 @@
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
   function fieldLivesOnTimeline(key:string){return selected?.id==="cut"?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":selected?.id==="gif"?["start","duration"].includes(key):false}
   function fieldVisible(key:string){
+    if(selected?.id==="transform" && key!=="crf") return false;
     if(key==="audio_track") return String(toolField("audio_mode")?.value)==="selected";
     if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
@@ -183,6 +186,64 @@
   }
   function toolNumber(key:string){return Number(toolField(key)?.value??0)}
   function setToolNumber(key:string,value:number){const field=toolField(key);if(field)field.value=Math.round(value*1000)/1000}
+  function toolValue(key:string){return String(toolField(key)?.value??"")}
+  function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
+  const transformPresets = ["off","free","16:9","9:16","1:1","4:5","4:3","2:3","3:2","191:100"];
+  const transformHandles = ["nw","n","ne","e","se","s","sw","w"] as const;
+  function transformBoxStyle(){
+    if(!toolboxStage||!media?.width||!media?.height)return "inset:0";
+    const stageWidth=toolboxStage.clientWidth,stageHeight=toolboxStage.clientHeight,rotation=Number(toolValue("rotate"));
+    const ratio=rotation===90||rotation===270?media.height/media.width:media.width/media.height;
+    let width=stageWidth,height=width/ratio;
+    if(height>stageHeight){height=stageHeight;width=height*ratio}
+    return `left:${(stageWidth-width)/2}px;top:${(stageHeight-height)/2}px;width:${width}px;height:${height}px`;
+  }
+  function transformPreviewStyle(){
+    if(selected?.id!=="transform")return "";
+    const rotation=Number(toolValue("rotate")),swapped=rotation===90||rotation===270;
+    const width=swapped&&toolboxStage?`${toolboxStage.clientHeight}px`:"100%",height=swapped&&toolboxStage?`${toolboxStage.clientWidth}px`:"100%";
+    const flipX=toolValue("flip_h")==="true"?-1:1,flipY=toolValue("flip_v")==="true"?-1:1;
+    return `width:${width};height:${height};transform:rotate(${rotation}deg) scale(${flipX},${flipY})`;
+  }
+  function setCropPreset(mode:string){
+    setToolValue("crop_mode",mode);
+    if(mode==="off"){setToolNumber("crop_x",0);setToolNumber("crop_y",0);setToolNumber("crop_w",100);setToolNumber("crop_h",100);return}
+    if(mode==="free"){
+      setToolNumber("crop_x",0);setToolNumber("crop_y",0);setToolNumber("crop_w",100);setToolNumber("crop_h",100);
+      return;
+    }
+    const [rw,rh]=mode.split(":").map(Number),rotation=Number(toolValue("rotate"));
+    const sourceRatio=rotation===90||rotation===270?(media?.height??9)/(media?.width??16):(media?.width??16)/(media?.height??9),target=rw/rh;
+    let width=100,height=100;
+    if(sourceRatio>target)width=target/sourceRatio*100;else height=sourceRatio/target*100;
+    setToolNumber("crop_x",(100-width)/2);setToolNumber("crop_y",(100-height)/2);setToolNumber("crop_w",width);setToolNumber("crop_h",height);
+  }
+  function setTransformRotation(value:number){
+    const mode=toolValue("crop_mode");setToolValue("rotate",String((value+360)%360));
+    if(!["off","free"].includes(mode))setCropPreset(mode);
+  }
+  function rotateTransform(delta:number){setTransformRotation(Number(toolValue("rotate"))+delta)}
+  function startTransformCrop(event:PointerEvent,mode:"move"|"n"|"s"|"e"|"w"|"nw"|"ne"|"sw"|"se"){
+    if(!transformSourceBox||toolValue("crop_mode")==="off")return;
+    event.preventDefault();event.stopPropagation();
+    const bounds=transformSourceBox.getBoundingClientRect(),startX=event.clientX,startY=event.clientY;
+    const initial={x:toolNumber("crop_x"),y:toolNumber("crop_y"),w:toolNumber("crop_w"),h:toolNumber("crop_h")};
+    if(mode!=="move")setToolValue("crop_mode","free");
+    const move=(moveEvent:PointerEvent)=>{
+      const dx=(moveEvent.clientX-startX)/bounds.width*100,dy=(moveEvent.clientY-startY)/bounds.height*100,min=5;
+      let {x,y,w,h}=initial;
+      if(mode==="move"){x=Math.max(0,Math.min(100-w,x+dx));y=Math.max(0,Math.min(100-h,y+dy))}
+      else{
+        if(mode.includes("e"))w=Math.max(min,Math.min(100-x,initial.w+dx));
+        if(mode.includes("s"))h=Math.max(min,Math.min(100-y,initial.h+dy));
+        if(mode.includes("w")){x=Math.max(0,Math.min(initial.x+initial.w-min,initial.x+dx));w=initial.w+(initial.x-x)}
+        if(mode.includes("n")){y=Math.max(0,Math.min(initial.y+initial.h-min,initial.y+dy));h=initial.h+(initial.y-y)}
+      }
+      setToolNumber("crop_x",x);setToolNumber("crop_y",y);setToolNumber("crop_w",w);setToolNumber("crop_h",h);
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
   function timelineBounds(){
     if(!selected)return {start:0,end:0};
     if(selected.id==="screenshot"){const at=toolNumber("timestamp");return {start:at,end:at}}
@@ -499,6 +560,7 @@
     if (!media || !selected || busy) return;
     const validation = validate(selected);
     if (validation) { error = validation; return; }
+    armCompletionSound();
     busy = true;
     error = "";
     output = "";
@@ -540,6 +602,7 @@
       elapsed = result.elapsed;
       progress = 100;
       jobStatus = "complete";
+      await playCompletionSound();
     } catch (reason) {
       error = String(reason);
       elapsed = (performance.now() - started) / 1000;
@@ -715,7 +778,7 @@
         {#if media.fps}<span><b>fps</b>{media.fps.toFixed(3)}</span><em>·</em>{/if}
         <span><b>codec</b>{media.codec}</span><em>·</em><span><b>size</b>{formatBytes(media.size)}</span>
       </div>
-      <div class="language-switch"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
+      <div class="language-switch theme-only"><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
       <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
     {:else}
@@ -822,7 +885,19 @@
           <div class="media-stage" class:ac-player={media.kind === "video"} class:toolbox-player={media.kind === "video"} bind:this={toolboxStage}>
             {#if media.kind === "video"}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={toolboxVideo} src={mediaUrl} preload="metadata" ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
+              <video bind:this={toolboxVideo} style={transformPreviewStyle()} src={mediaUrl} preload="metadata" ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
+              {#if selected?.id === "transform" && toolValue("crop_mode") !== "off"}
+                <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
+                  <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
+                  <div class="crop-shade left" style:left="0" style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_x")}%`} style:height={`${toolNumber("crop_h")}%`}></div>
+                  <div class="crop-shade right" style:left={`${toolNumber("crop_x")+toolNumber("crop_w")}%`} style:top={`${toolNumber("crop_y")}%`} style:right="0" style:height={`${toolNumber("crop_h")}%`}></div>
+                  <div class="crop-shade bottom" style:top={`${toolNumber("crop_y")+toolNumber("crop_h")}%`}></div>
+                  <div class="transform-crop" style:left={`${toolNumber("crop_x")}%`} style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_w")}%`} style:height={`${toolNumber("crop_h")}%`} onpointerdown={(event)=>startTransformCrop(event,"move")} role="presentation">
+                    <i class="crop-grid v one"></i><i class="crop-grid v two"></i><i class="crop-grid h one"></i><i class="crop-grid h two"></i>
+                    {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize crop ${handle}`} onpointerdown={(event)=>startTransformCrop(event,handle)}></button>{/each}
+                  </div>
+                </div>
+              {/if}
               <div class="ac-controls">
                 <input class="player-seek" style={`--seek-pct:${media.duration ? Math.min(100, toolboxCurrent / media.duration * 100) : 0}%`} aria-label="Video position" type="range" min="0" max={media.duration ?? 0} step="0.01" value={toolboxCurrent} oninput={(event) => seekToolbox(Number(event.currentTarget.value))}>
                 <button onclick={() => seekToolbox(toolboxCurrent - 15)} title="15 seconds back">−15</button>
@@ -900,7 +975,7 @@
         {#if selected}
           <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={() => { if (selected) chooseTool(kindTools(activeKind).find((item) => item.id === selected?.id) ?? selected); }}>{t("defaults")}</button></div>
           <div class="selected-title"><span class="index mono">{String(kindTools(activeKind).findIndex((tool) => tool.id === selected?.id) + 1).padStart(2,"0")}</span><div><h2>{selected.title}</h2><p>{selected.description}</p></div></div>
-          <div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>
+          {#if selected.id !== "transform"}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
           {#if recommendation()}<div class="recommend"><b>{t("forVideo")}</b><span>{recommendation()}</span></div>{/if}
           <div class="field-list">
           {#if selected.id === "discord_compressor"}
@@ -939,6 +1014,35 @@
           {/if}
           {#if ["encode","cut","remux","extract_audio"].includes(selected.id) && media.audio_tracks.length}
             <div class="codec-note"><b>{language === "tr" ? "SES PARÇALARI" : "AUDIO TRACKS"}</b><span>{language === "tr" ? `${media.audio_tracks.length} parça bulundu. Ana varsayılandır; Tümü parçaları ayrı tutar; Birleştir hepsini tek dengeli ses parçasında toplar.` : `${media.audio_tracks.length} track(s) found. Main is the default; All keeps tracks separate; Merge combines them into one normalized track.`}</span></div>
+          {/if}
+          {#if selected.id === "transform"}
+            <div class="transform-controls">
+              <section>
+                <header><b>CROP</b><small>{toolValue("crop_mode")==="off" ? (language==="tr"?"kapalı":"off") : `${toolNumber("crop_w").toFixed(1)}% × ${toolNumber("crop_h").toFixed(1)}%`}</small></header>
+                <div class="transform-options crop-options">
+                  {#each transformPresets as preset}<button class:active={toolValue("crop_mode")===preset} onclick={()=>setCropPreset(preset)}>{preset==="191:100"?"1.91:1":preset.toUpperCase()}</button>{/each}
+                </div>
+                {#if toolValue("crop_mode")!=="off"}<p>{language==="tr"?"Kadrajı önizlemede sürükle; kenar ve köşelerden serbestçe boyutlandır.":"Drag the frame in the preview; resize freely from its edges and corners."}</p>{/if}
+              </section>
+              <section>
+                <header><b>ROTATE</b><small>{toolValue("rotate")}°</small></header>
+                <div class="transform-options four"><button class:active={toolValue("rotate")==="0"} onclick={()=>setTransformRotation(0)}>0°</button><button onclick={()=>rotateTransform(-90)}>↶ 90°</button><button onclick={()=>rotateTransform(90)}>↷ 90°</button><button onclick={()=>rotateTransform(180)}>180°</button></div>
+              </section>
+              <section>
+                <header><b>FLIP</b></header>
+                <div class="transform-options two"><button class:active={toolValue("flip_h")==="true"} onclick={()=>setToolValue("flip_h",toolValue("flip_h")==="true"?"false":"true")}>↔ {language==="tr"?"Yatay":"Horizontal"}</button><button class:active={toolValue("flip_v")==="true"} onclick={()=>setToolValue("flip_v",toolValue("flip_v")==="true"?"false":"true")}>↕ {language==="tr"?"Dikey":"Vertical"}</button></div>
+              </section>
+              <section>
+                <header><b>{language==="tr"?"ÇIKTI BOYUTU":"OUTPUT SIZE"}</b></header>
+                <div class="transform-options two"><button class:active={toolValue("size_mode")==="source"} onclick={()=>setToolValue("size_mode","source")}>{language==="tr"?"Kırpılan boyutu koru":"Keep crop size"}</button><button class:active={toolValue("size_mode")==="height"} onclick={()=>setToolValue("size_mode","height")}>{language==="tr"?"Yükseklik":"Height"}</button><button class:active={toolValue("size_mode")==="width"} onclick={()=>setToolValue("size_mode","width")}>{language==="tr"?"Genişlik":"Width"}</button><button class:active={toolValue("size_mode")==="exact"} onclick={()=>setToolValue("size_mode","exact")}>{language==="tr"?"Tam boyut":"Exact"}</button></div>
+                {#if ["height","width"].includes(toolValue("size_mode"))}
+                  <label><span>{toolValue("size_mode")==="height"?(language==="tr"?"Hedef yükseklik":"Target height"):(language==="tr"?"Hedef genişlik":"Target width")}</span><div class="size-entry"><select value={String(toolNumber("size"))} onchange={(event)=>setToolNumber("size",Number(event.currentTarget.value))}>{#each [480,720,1080,1440,2160,4320] as size}<option value={size}>{size}px</option>{/each}</select><input aria-label="Custom output size" type="number" min="2" max="7680" step="2" value={toolNumber("size")} oninput={(event)=>setToolNumber("size",Number(event.currentTarget.value))}></div></label>
+                {:else if toolValue("size_mode")==="exact"}
+                  <div class="exact-size"><label><span>{language==="tr"?"Genişlik":"Width"}</span><input type="number" min="2" max="7680" step="2" value={toolNumber("output_width")} oninput={(event)=>setToolNumber("output_width",Number(event.currentTarget.value))}></label><b>×</b><label><span>{language==="tr"?"Yükseklik":"Height"}</span><input type="number" min="2" max="7680" step="2" value={toolNumber("output_height")} oninput={(event)=>setToolNumber("output_height",Number(event.currentTarget.value))}></label></div>
+                  <p>{language==="tr"?"Tam boyut, seçtiğin kadrajı bu ölçülere ölçekler; oranlar farklıysa görüntü esneyebilir.":"Exact size scales the crop to these dimensions; mismatched ratios may stretch the image."}</p>
+                {/if}
+              </section>
+            </div>
           {/if}
             {#each selected.fields as field}
               {#if !fieldLivesOnTimeline(field.key) && fieldVisible(field.key)}

@@ -4,6 +4,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
   import { localizedTool, tools, type Field, type Tool } from "./tools";
+  import { armCompletionSound, playCompletionSound } from "./completionSound";
 
   let { initialPath, language, availableEncoders }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null}=$props();
   const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","dedupe","gif"];
@@ -30,16 +31,16 @@
   function chooseTool(event:Event){const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??batchTools()[0]}
   function visible(field:Field){return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&String(selected.fields.find(item=>item.key==="cut_mode")?.value)==="lossless")}
   async function start(){
-    if(running||!items.length)return;running=true;cancelAll=false;aggregate=0;
+    if(running||!items.length)return;armCompletionSound();running=true;cancelAll=false;aggregate=0;let completed=0;
     let unlisten:UnlistenFn|null=null;
     unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=(currentIndex+event.payload.percent/100)/items.length*100;items=[...items]}});
     for(let index=0;index<items.length;index++){
       if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,error:undefined};items=[...items];
-      try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation:selected.id,params:params()}});items[index]={...items[index],status:"complete",progress:100,output:result.output}}
+      try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation:selected.id,params:params()}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
       catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)}}
       aggregate=(index+1)/items.length*100;items=[...items];
     }
-    unlisten?.();running=false;currentIndex=-1;
+    unlisten?.();running=false;currentIndex=-1;if(!cancelAll&&completed>0)await playCompletionSound();
   }
   async function cancel(){cancelAll=true;await invoke("cancel_job")}
   async function removeOrCancel(index:number){if(running&&index===currentIndex){await invoke("cancel_job");return}if(!running||items[index].status==="waiting")items=items.filter((_,position)=>position!==index)}

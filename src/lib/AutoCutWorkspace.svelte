@@ -4,6 +4,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { armCompletionSound, playCompletionSound } from "./completionSound";
 
   interface MediaInfo { path:string; name:string; duration:number|null; fps:number|null; audio_codec:string|null; start_timecode:string|null; kind?:string }
   interface Cut { start:number; end:number; enabled:boolean }
@@ -116,8 +117,9 @@
     }catch(reason){error=String(reason)}finally{autoTuning=false}
   }
   async function exportCuts(){
+    armCompletionSound();
     exporting=true;progress=0;error="";output="";
-    try{const result=await invoke<Result>("export_autocut",{request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;}
+    try{const result=await invoke<Result>("export_autocut",{request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;await playCompletionSound();}
     catch(reason){error=String(reason)}finally{exporting=false}
   }
   async function cancel(){await invoke("cancel_job")}
