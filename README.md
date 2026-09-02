@@ -17,7 +17,7 @@
   <a href="#features">Features</a>
 </p>
 
-![CONTAINER Toolbox — light and dark mode](docs/container-toolbox.gif)
+![CONTAINER Toolbox — light and dark mode](docs/container-toolbox-themes.gif)
 
 ## What is CONTAINER?
 
