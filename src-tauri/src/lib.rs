@@ -134,6 +134,107 @@ struct OperationRequest {
     params: HashMap<String, String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TextLayer {
+    text: String,
+    x: f64,
+    y: f64,
+    size: f64,
+    color: String,
+    opacity: f64,
+    #[serde(default)]
+    font_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FontOption {
+    name: String,
+    path: String,
+}
+
+#[tauri::command]
+async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
+    let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    let system_fonts = PathBuf::from(&windows).join("Fonts");
+    let user_fonts =
+        dirs::data_local_dir().map(|path| path.join("Microsoft").join("Windows").join("Fonts"));
+    let mut fonts = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    for key in [
+        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
+        r"HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
+    ] {
+        if let Ok(output) = hidden_command("reg").args(["query", key]).output().await {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let Some((raw_name, raw_path)) = line
+                    .split_once("REG_EXPAND_SZ")
+                    .or_else(|| line.split_once("REG_SZ"))
+                else {
+                    continue;
+                };
+                let raw_path = raw_path.trim().replace("%WINDIR%", &windows);
+                let supplied = PathBuf::from(&raw_path);
+                let path = if supplied.is_absolute() {
+                    supplied
+                } else {
+                    let user_candidate = user_fonts.as_ref().map(|dir| dir.join(&supplied));
+                    if user_candidate.as_ref().is_some_and(|path| path.is_file()) {
+                        user_candidate.unwrap()
+                    } else {
+                        system_fonts.join(supplied)
+                    }
+                };
+                if path.is_file() {
+                    let name = raw_name
+                        .trim()
+                        .replace(" (TrueType)", "")
+                        .replace(" (OpenType)", "");
+                    fonts.push(FontOption {
+                        name,
+                        path: path.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if fonts.is_empty() {
+        for directory in std::iter::once(system_fonts).chain(user_fonts) {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let extension = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
+                if !matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "ttf" | "otf" | "ttc"
+                ) {
+                    continue;
+                }
+                fonts.push(FontOption {
+                    name: path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+    }
+    fonts.sort_by_key(|font| font.name.to_ascii_lowercase());
+    fonts.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+    for font in &fonts {
+        allow_asset_file(&app, Path::new(&font.path))?;
+    }
+    Ok(fonts)
+}
+
 #[derive(Debug, Serialize)]
 struct JobResult {
     output: String,
@@ -245,6 +346,10 @@ fn param<'a>(params: &'a HashMap<String, String>, key: &str) -> Result<&'a str, 
         .get(key)
         .map(String::as_str)
         .ok_or_else(|| format!("Missing parameter: {key}"))
+}
+
+fn enabled(params: &HashMap<String, String>, key: &str) -> bool {
+    params.get(key).is_some_and(|value| value == "true")
 }
 
 fn check_range(value: f64, min: f64, max: f64, name: &str) -> Result<f64, String> {
@@ -1314,20 +1419,6 @@ fn drawtext_escape(value: &str) -> String {
         .replace(']', "\\]")
 }
 
-fn position_expr(position: &str) -> (&'static str, &'static str) {
-    match position {
-        "top-left" => ("24", "24"),
-        "top" => ("(w-text_w)/2", "24"),
-        "top-right" => ("w-text_w-24", "24"),
-        "left" => ("24", "(h-text_h)/2"),
-        "right" => ("w-text_w-24", "(h-text_h)/2"),
-        "bottom-left" => ("24", "h-text_h-24"),
-        "bottom" => ("(w-text_w)/2", "h-text_h-24"),
-        "bottom-right" => ("w-text_w-24", "h-text_h-24"),
-        _ => ("(w-text_w)/2", "(h-text_h)/2"),
-    }
-}
-
 fn audio_format(format: &str) -> Result<(&'static str, Vec<String>), String> {
     match format {
         "aac" => Ok((
@@ -1903,23 +1994,35 @@ async fn build_command(
             extension = "mp4".into();
         }
         "text" => {
-            let text = param(p, "text")?;
-            if text.is_empty() {
-                return Err("Text cannot be empty.".into());
+            let layers: Vec<TextLayer> = serde_json::from_str(param(p, "layers")?)
+                .map_err(|error| format!("Invalid text layers: {error}"))?;
+            if layers.is_empty() {
+                return Err("Add at least one text layer.".into());
             }
-            let size = check_range(parse_number(p, "size")?, 8.0, 600.0, "Font size")?;
-            let opacity = check_range(parse_number(p, "opacity")?, 0.0, 100.0, "Opacity")? / 100.0;
-            let color = param(p, "color")?;
-            let (pos_x, pos_y) = position_expr(param(p, "position")?);
-            let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-            let font = PathBuf::from(windows).join("Fonts").join("impact.ttf");
-            if !font.is_file() {
-                return Err("Impact font was not found.".into());
+            let mut text_filters = Vec::with_capacity(layers.len());
+            for layer in layers {
+                if layer.text.trim().is_empty() {
+                    return Err("Text layers cannot be empty.".into());
+                }
+                let size = check_range(layer.size, 8.0, 600.0, "Font size")?;
+                let opacity = check_range(layer.opacity, 0.0, 100.0, "Opacity")? / 100.0;
+                let x = check_range(layer.x, 0.0, 100.0, "Text X")? / 100.0;
+                let y = check_range(layer.y, 0.0, 100.0, "Text Y")? / 100.0;
+                let font = if layer.font_path.is_empty() {
+                    PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+                        .join("Fonts")
+                        .join("impact.ttf")
+                } else {
+                    PathBuf::from(&layer.font_path)
+                };
+                if !font.is_file() {
+                    return Err("The selected font is no longer available.".into());
+                }
+                text_filters.push(format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:x=w*{x:.6}-text_w/2:y=h*{y:.6}-text_h/2:borderw=2:bordercolor=black@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),opacity*0.45));
             }
-            let filter=format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:x={pos_x}:y={pos_y}:borderw=2:bordercolor=black@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(text),drawtext_escape(color),opacity*0.45);
             args.extend([
                 "-vf".into(),
-                filter,
+                text_filters.join(","),
                 "-c:v".into(),
                 "libx264".into(),
                 "-crf".into(),
@@ -1934,12 +2037,98 @@ async fn build_command(
             extension = "mp4".into();
         }
         "color" => {
-            let c = check_range(parse_number(p, "contrast")?, -2.0, 3.0, "Contrast")?;
-            let s = check_range(parse_number(p, "saturation")?, 0.0, 3.0, "Saturation")?;
-            let b = check_range(parse_number(p, "brightness")?, -1.0, 1.0, "Brightness")?;
+            let mut filters = Vec::new();
+            let mut eq = Vec::new();
+            if enabled(p, "brightness_enabled") {
+                eq.push(format!(
+                    "brightness={}",
+                    check_range(parse_number(p, "brightness")?, -100.0, 100.0, "Brightness")?
+                        / 100.0
+                ));
+            }
+            if enabled(p, "contrast_enabled") {
+                eq.push(format!(
+                    "contrast={}",
+                    check_range(parse_number(p, "contrast")?, 0.0, 200.0, "Contrast")? / 100.0
+                ));
+            }
+            if enabled(p, "saturation_enabled") {
+                eq.push(format!(
+                    "saturation={}",
+                    check_range(parse_number(p, "saturation")?, 0.0, 200.0, "Saturation")? / 100.0
+                ));
+            }
+            if enabled(p, "gamma_enabled") {
+                eq.push(format!(
+                    "gamma={}",
+                    check_range(parse_number(p, "gamma")?, 10.0, 300.0, "Gamma")? / 100.0
+                ));
+            }
+            if !eq.is_empty() {
+                filters.push(format!("eq={}", eq.join(":")));
+            }
+            if enabled(p, "hue_enabled") {
+                filters.push(format!(
+                    "hue=h={}",
+                    check_range(parse_number(p, "hue")?, -180.0, 180.0, "Hue")?
+                ));
+            }
+            if enabled(p, "temperature_enabled") {
+                filters.push(format!(
+                    "colortemperature=temperature={}",
+                    check_range(
+                        parse_number(p, "temperature")?,
+                        1000.0,
+                        40000.0,
+                        "Temperature"
+                    )?
+                ));
+            }
+            if enabled(p, "sharpen_enabled") {
+                filters.push(format!(
+                    "unsharp=5:5:{:.3}:5:5:0",
+                    check_range(parse_number(p, "sharpen")?, 0.0, 100.0, "Sharpen")? * 0.02
+                ));
+            }
+            if enabled(p, "blur_enabled") {
+                filters.push(format!(
+                    "gblur=sigma={:.3}",
+                    check_range(parse_number(p, "blur")?, 0.0, 100.0, "Blur")? / 25.0
+                ));
+            }
+            match p.get("denoise").map(String::as_str).unwrap_or("off") {
+                "off" => {}
+                "low" => filters.push("hqdn3d=1.5:1.5:6:6".into()),
+                "medium" => filters.push("hqdn3d=3:3:8:8".into()),
+                "high" => filters.push("hqdn3d=6:6:12:12".into()),
+                _ => return Err("Invalid denoise mode.".into()),
+            }
+            if enabled(p, "deband_enabled") {
+                let value = check_range(parse_number(p, "deband")?, 0.0, 100.0, "Deband")? / 1250.0;
+                filters.push(format!(
+                    "deband=1thr={value:.5}:2thr={value:.5}:3thr={value:.5}:4thr={value:.5}"
+                ));
+            }
+            if enabled(p, "vignette_enabled") {
+                let value =
+                    check_range(parse_number(p, "vignette")?, 0.0, 100.0, "Vignette")? / 100.0;
+                filters.push(format!("vignette=angle=PI/4*{value:.4}"));
+            }
+            if p.get("grayscale").is_some_and(|value| value == "on") {
+                filters.push("hue=s=0".into());
+            }
+            match p.get("deinterlace").map(String::as_str).unwrap_or("off") {
+                "off" => {}
+                "auto" => filters.push("yadif=deint=interlaced".into()),
+                "on" => filters.push("yadif=deint=all".into()),
+                _ => return Err("Invalid interlace mode.".into()),
+            }
+            if filters.is_empty() {
+                return Err("Enable at least one video filter.".into());
+            }
             args.extend([
                 "-vf".into(),
-                format!("eq=contrast={c}:saturation={s}:brightness={b}"),
+                filters.join(","),
                 "-c:v".into(),
                 "libx264".into(),
                 "-crf".into(),
@@ -3429,6 +3618,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             probe_media,
             ffmpeg_status,
+            list_system_fonts,
             available_encoders,
             hash_file,
             list_media_files,
@@ -3730,7 +3920,6 @@ mod tests {
         let tested = [
             "audio_convert",
             "bitrate",
-            "cfr",
             "color",
             "compression",
             "corruption",
@@ -3748,7 +3937,6 @@ mod tests {
             "gif",
             "image_potatoify",
             "interpolation",
-            "negate",
             "noise",
             "potatoify",
             "proxy",
@@ -3756,7 +3944,6 @@ mod tests {
             "remux",
             "replace_audio",
             "screenshot",
-            "smart_quality",
             "speed",
             "text",
             "transform",
@@ -4194,20 +4381,37 @@ mod tests {
             ("potatoify", values(&[("profile", "decent")])),
             (
                 "text",
-                values(&[
-                    ("text", "CONTAINER"),
-                    ("position", "center"),
-                    ("color", "white"),
-                    ("size", "24"),
-                    ("opacity", "50"),
-                ]),
+                values(&[(
+                    "layers",
+                    r##"[{"text":"CONTAINER","x":50,"y":50,"size":24,"color":"#ffffff","opacity":50}]"##,
+                )]),
             ),
             (
                 "color",
                 values(&[
-                    ("contrast", "1.08"),
-                    ("saturation", "1.1"),
-                    ("brightness", "0.02"),
+                    ("brightness", "2"),
+                    ("brightness_enabled", "true"),
+                    ("contrast", "108"),
+                    ("contrast_enabled", "true"),
+                    ("saturation", "110"),
+                    ("saturation_enabled", "true"),
+                    ("gamma", "100"),
+                    ("gamma_enabled", "false"),
+                    ("hue", "0"),
+                    ("hue_enabled", "false"),
+                    ("temperature", "6500"),
+                    ("temperature_enabled", "false"),
+                    ("sharpen", "25"),
+                    ("sharpen_enabled", "false"),
+                    ("blur", "20"),
+                    ("blur_enabled", "false"),
+                    ("denoise", "off"),
+                    ("deband", "25"),
+                    ("deband_enabled", "false"),
+                    ("vignette", "35"),
+                    ("vignette_enabled", "false"),
+                    ("grayscale", "off"),
+                    ("deinterlace", "off"),
                 ]),
             ),
             ("noise", values(&[("amount", "3")])),

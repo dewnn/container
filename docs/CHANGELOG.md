@@ -4,6 +4,27 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-03
+
+### Added
+
+- Color Adjustment now provides live brightness, contrast, saturation, gamma, hue, temperature, sharpening, blur, denoise, deband, vignette, grayscale and deinterlace controls.
+- Text overlays now support multiple independently selectable, draggable and resizable layers with per-layer font, color, size and opacity controls.
+- Installed Windows fonts are detected automatically and used consistently in the preview and rendered output.
+- Quality / Compression now includes optional VMAF analysis, a recommended CRF result and one-click recommendation application.
+
+### Changed
+
+- Text colors now use a compact preset palette and editable HEX value instead of the native browser color field.
+- CRF guidance now clearly distinguishes mathematically lossless CRF 0 from visually high-quality values such as 16 and 17.
+- File Hash and Fix Timestamps are grouped under Utilities, with Utilities placed last in the Image tool list.
+- Unapplied Color Adjustment and Text workspace changes reset when leaving the tool; rendered results become the active working source.
+
+### Removed
+
+- Removed the duplicate Convert to CFR tool, the Negate tool and the separate Smart Quality Analysis sidebar entry.
+- Removed the explanatory and recommendation cards from the compact Text and Color Adjustment parameter panels.
+
 ## [0.6.1] - 2026-09-03
 
 ### Changed

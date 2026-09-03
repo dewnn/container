@@ -40,6 +40,8 @@
   interface QualityCandidate { crf: number; vmaf: number; estimated_size_mb: number; rating: string }
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
   interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
+  interface FontOption { name:string; path:string }
+  interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string }
 
   const windowIconBuffers = {
     dark: fetch("/logo-dark.png").then(response => response.arrayBuffer()),
@@ -72,7 +74,14 @@
   let toolboxVolume = $state(1);
   let renderedImageUrl = $state("");
   let qualityAnalysis: QualityAnalysis | null = $state(null);
+  let qualityAnalyzing = $state(false);
   let hashResult = $state("");
+  let colorEnabled: Record<string,boolean> = $state({});
+  let textLayers: TextLayer[] = $state([]);
+  let activeTextId: number | null = $state(null);
+  let systemFonts: FontOption[] = $state([]);
+  let fontsLoading = $state(false);
+  let nextTextId = 1;
   let imageCompare = $state(50);
   let imageViewport: HTMLElement | null = $state(null);
   let imageZoom = $state(1);
@@ -114,7 +123,7 @@
     const map = new Map<string, Tool[]>();
     for (const tool of list) map.set(tool.category, [...(map.get(tool.category) ?? []), tool]);
     const entries=[...map.entries()];
-    if(activeKind==="image")entries.sort(([left],[right])=>left==="Export"?1:right==="Export"?-1:0);
+    if(activeKind==="image")entries.sort(([left],[right])=>left==="Utilities"?1:right==="Utilities"?-1:0);
     return entries;
   });
 
@@ -167,7 +176,13 @@
 
   function chooseTool(tool: Tool) {
     const changed = selected?.id !== tool.id;
+    if(changed){
+      colorEnabled={};
+      textLayers=[];
+      activeTextId=null;
+    }
     selected = localizedTool(tool,language);
+    if(selected.id==="text")void ensureSystemFonts();
     configureUpscale(selected);
     if (selected.id === "encode" && availableEncoders) {
       const encoderField = selected.fields.find((item) => item.key === "encoder");
@@ -211,11 +226,18 @@
     }
     if (["cut","screenshot","gif"].includes(selected.id)) void loadToolboxFilmstrip();
   }
+  function resetSelectedTool(){
+    if(!selected)return;
+    const source=kindTools(activeKind).find(item=>item.id===selected?.id);
+    if(source)selected=localizedTool(source,language);
+    colorEnabled={};textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
+  }
 
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
   function fieldLivesOnTimeline(key:string){return selected?.id==="cut"?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":selected?.id==="gif"?["start","duration"].includes(key):false}
   function fieldVisible(key:string){
     if(selected?.id==="transform" && key!=="crf") return false;
+    if(selected?.id==="color" || selected?.id==="text") return false;
     if(key==="audio_track") return String(toolField("audio_mode")?.value)==="selected";
     if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
@@ -227,8 +249,91 @@
   function setToolNumber(key:string,value:number){const field=toolField(key);if(field)field.value=Math.round(value*1000)/1000}
   function toolValue(key:string){return String(toolField(key)?.value??"")}
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
+  function resetColorFilters(){
+    if(selected?.id!=="color")return;
+    const source=kindTools(activeKind).find(tool=>tool.id==="color");
+    if(source)selected=localizedTool(source,language);
+    colorEnabled={};
+  }
+  function colorOn(key:string){return !!colorEnabled[key]}
+  function toggleColor(key:string){colorEnabled={...colorEnabled,[key]:!colorEnabled[key]}}
+  function resetColorKey(key:string){
+    const source=kindTools(activeKind).find(tool=>tool.id==="color")?.fields.find(field=>field.key===key);
+    if(source)setToolNumber(key,Number(source.value));
+  }
+  function colorValueLabel(key:string){const value=toolNumber(key);return key==="temperature"?`${value} K`:key==="hue"?`${value}°`:`${value}%`}
+  function colorPreviewStyle(){
+    if(selected?.id!=="color")return "";
+    const filters:string[]=[];
+    if(colorOn("brightness"))filters.push(`brightness(${Math.max(0,1+toolNumber("brightness")/100)})`);
+    if(colorOn("contrast"))filters.push(`contrast(${toolNumber("contrast")/100})`);
+    if(colorOn("saturation"))filters.push(`saturate(${toolNumber("saturation")/100})`);
+    if(colorOn("gamma"))filters.push(`brightness(${Math.pow(toolNumber("gamma")/100,.55)})`);
+    if(colorOn("hue"))filters.push(`hue-rotate(${toolNumber("hue")}deg)`);
+    if(colorOn("temperature")){
+      const warmth=Math.max(-1,Math.min(1,(6500-toolNumber("temperature"))/5500));
+      if(warmth>0)filters.push(`sepia(${warmth*.28}) saturate(${1+warmth*.18})`);
+      else if(warmth<0)filters.push(`sepia(${-warmth*.12}) hue-rotate(175deg) saturate(${1-warmth*.1})`);
+    }
+    if(colorOn("sharpen"))filters.push(`contrast(${1+toolNumber("sharpen")/500})`);
+    if(colorOn("blur"))filters.push(`blur(${toolNumber("blur")/20}px)`);
+    if(toolValue("denoise")!=="off")filters.push(`blur(${({low:.2,medium:.45,high:.8} as Record<string,number>)[toolValue("denoise")]??0}px)`);
+    if(colorOn("vignette"))filters.push(`brightness(${1-toolNumber("vignette")/700})`);
+    if(toolValue("grayscale")==="on")filters.push("grayscale(1)");
+    return filters.length?`filter:${filters.join(" ")}`:"";
+  }
+  function previewVideoStyle(){return selected?.id==="transform"?transformPreviewStyle():colorPreviewStyle()}
+
+  function activeText(){return textLayers.find(layer=>layer.id===activeTextId)??null}
+  async function ensureSystemFonts(){
+    if(systemFonts.length||fontsLoading)return systemFonts;
+    fontsLoading=true;
+    try{systemFonts=await invoke<FontOption[]>("list_system_fonts")}catch(reason){error=String(reason)}finally{fontsLoading=false}
+    return systemFonts;
+  }
+  async function addTextLayer(){
+    const fonts=await ensureSystemFonts();
+    const font=fonts.find(item=>item.name.toLowerCase()==="impact")??fonts.find(item=>item.name.toLowerCase().startsWith("arial"))??fonts[0];
+    if(!font){error=language==="tr"?"Bilgisayarda kullanılabilir font bulunamadı.":"No usable system font was found.";return}
+    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,fontName:font.name,font_path:font.path};
+    textLayers=[...textLayers,layer];activeTextId=layer.id;
+  }
+  function updateTextLayer(patch:Partial<TextLayer>){textLayers=textLayers.map(layer=>layer.id===activeTextId?{...layer,...patch}:layer)}
+  function removeTextLayer(id:number){textLayers=textLayers.filter(layer=>layer.id!==id);if(activeTextId===id)activeTextId=textLayers[0]?.id??null}
+  function textLayerStyle(layer:TextLayer){
+    const box=mediaDisplayBox();if(!box||!media?.width)return "display:none";
+    const scale=box.width/media.width;
+    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)}`;
+  }
+  function chooseTextFont(path:string){const font=systemFonts.find(item=>item.path===path);if(font)updateTextLayer({fontName:font.name,font_path:font.path})}
+  function setTextColor(value:string){if(/^#[0-9a-f]{6}$/i.test(value))updateTextLayer({color:value.toLowerCase()})}
+  const textColors=["#ffffff","#000000","#00f1ff","#38d67a","#e7c84f","#fa646d","#6ba8ff","#d85cff"];
+  function startTextDrag(event:PointerEvent,layer:TextLayer,resizeDirection:-1|0|1=0){
+    if(!toolboxCanvas||!media?.width)return;event.preventDefault();event.stopPropagation();activeTextId=layer.id;
+    const box=mediaDisplayBox();if(!box)return;const mediaWidth=media.width;const startX=event.clientX,startY=event.clientY,origin={...layer};
+    const move=(moveEvent:PointerEvent)=>{
+      if(resizeDirection){const delta=(moveEvent.clientX-startX)/box.width*mediaWidth*resizeDirection;updateTextLayer({size:Math.max(8,Math.min(600,origin.size+delta))});return}
+      updateTextLayer({x:Math.max(0,Math.min(100,origin.x+(moveEvent.clientX-startX)/box.width*100)),y:Math.max(0,Math.min(100,origin.y+(moveEvent.clientY-startY)/box.height*100))});
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
   const transformPresets = ["off","free","16:9","9:16","1:1","4:5","4:3","2:3","3:2","191:100"];
   const transformHandles = ["nw","n","ne","e","se","s","sw","w"] as const;
+  const colorGroups=[
+    {title:"Color Adjustments",keys:["brightness","contrast","saturation","gamma"]},
+    {title:"Tone",keys:["hue","temperature"]},
+    {title:"Detail",keys:["sharpen","blur"]},
+    {title:"Cleanup",keys:["deband"]},
+    {title:"Style",keys:["vignette"]},
+  ];
+  const colorLabels:Record<string,string>={brightness:"Brightness",contrast:"Contrast",saturation:"Saturation",gamma:"Gamma",hue:"Hue",temperature:"Temperature",sharpen:"Sharpen",blur:"Gaussian Blur",deband:"Deband",vignette:"Vignette"};
+  function mediaDisplayBox(){
+    if(!toolboxCanvas||!media?.width||!media?.height)return null;
+    const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,ratio=media.width/media.height;
+    let width=stageWidth,height=width/ratio;if(height>stageHeight){height=stageHeight;width=height*ratio}
+    return {stageWidth,stageHeight,width,height,swapped:false};
+  }
   $effect(()=>{
     const canvas=toolboxCanvas;
     if(!canvas){transformCanvasWidth=0;transformCanvasHeight=0;return}
@@ -345,6 +450,17 @@
     activeKind=kind; search="";
     const first=kindTools(kind)[0]; selected=first?localizedTool(first,language):null;
     if(selected)chooseTool(selected);
+  }
+  function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
+    if(mode!==workspaceMode&&workspaceMode==="toolbox")resetSelectedTool();
+    workspaceMode=mode;
+  }
+  function encoderQualityMode(){
+    const encoder=toolValue("encoder");
+    if(encoder.includes("amf"))return "CQP";
+    if(encoder.includes("nvenc"))return "CQ";
+    if(encoder.includes("qsv"))return "Global Quality";
+    return "CRF";
   }
 
   function numericPresets(toolId: string, field?: Field): number[] {
@@ -571,8 +687,22 @@
   }
 
   function paramsFrom(tool: Tool) {
-    return Object.fromEntries(tool.fields.map((field) => [field.key, String(field.value)]));
+    const params=Object.fromEntries(tool.fields.map((field) => [field.key, String(field.value)]));
+    if(tool.id==="color")for(const key of ["brightness","contrast","saturation","gamma","hue","temperature","sharpen","blur","deband","vignette"])params[`${key}_enabled`]=String(colorOn(key));
+    if(tool.id==="text")params.layers=JSON.stringify(textLayers);
+    return params;
   }
+
+  async function analyzeCompression(){
+    if(!media||selected?.id!=="compression"||qualityAnalyzing||busy)return;
+    const analyzedPath=media.path;
+    qualityAnalyzing=true;error="";qualityAnalysis=null;jobStatus=language==="tr"?"kalite analiz ediliyor":"analyzing quality";
+    try{
+      const result=await invoke<QualityAnalysis>("analyze_quality",{request:{input:analyzedPath,goal:toolValue("goal")||"balanced",sample_duration:toolNumber("sample_duration")||2}});
+      if(selected?.id==="compression"&&media?.path===analyzedPath){qualityAnalysis=result;elapsed=result.elapsed;progress=100;jobStatus=language==="tr"?"analiz tamamlandı":"analysis complete"}
+    }catch(reason){error=String(reason);jobStatus="failed"}finally{qualityAnalyzing=false}
+  }
+  function applyQualityRecommendation(){if(qualityAnalysis)setToolNumber("crf",qualityAnalysis.recommended_crf)}
 
   function discordBudget(){
     if(!media?.duration)return null;
@@ -601,7 +731,8 @@
       if (tool.id === "cut") return "Bitiş zamanı başlangıçtan büyük olmalı.";
     }
     if (tool.id === "replace_audio" && !params.audio_path) return "Önce replacement audio dosyasını seç.";
-    if (tool.id === "text" && !params.text.trim()) return "Yazı boş olamaz.";
+    if (tool.id === "text" && (!textLayers.length || textLayers.some(layer=>!layer.text.trim()))) return language==="tr"?"En az bir dolu yazı katmanı ekle.":"Add at least one non-empty text layer.";
+    if(tool.id==="color"&&!Object.values(colorEnabled).some(Boolean)&&toolValue("denoise")==="off"&&toolValue("grayscale")!=="on"&&toolValue("deinterlace")==="off")return language==="tr"?"Önce en az bir video filtresini etkinleştir.":"Enable at least one video filter.";
     if (tool.id === "discord_compressor") {
       if (!media?.duration || Number(params.target_mb) < 2) return language === "tr" ? "Discord sıkıştırması için geçerli bir süre ve en az 2 MB sınır gerekli." : "Discord compression needs a valid duration and a limit of at least 2 MB.";
       const budget=discordBudget();
@@ -627,19 +758,6 @@
     jobStatus = `running · ${selected.title.toLowerCase()}`;
     const started = performance.now();
     try {
-      if (selected.id === "smart_quality") {
-        qualityAnalysis = await invoke<QualityAnalysis>("analyze_quality", {
-          request: {
-            input: media.path,
-            goal: String(toolField("goal")?.value ?? "balanced"),
-            sample_duration: Number(toolField("sample_duration")?.value ?? 2),
-          },
-        });
-        elapsed = qualityAnalysis.elapsed;
-        progress = 100;
-        jobStatus = language === "tr" ? "analiz tamamlandı" : "analysis complete";
-        return;
-      }
       if (selected.id === "file_hash") {
         hashResult = await invoke<string>("hash_file", { path: media.path });
         elapsed = (performance.now() - started) / 1000;
@@ -651,6 +769,15 @@
         request: { input: media.path, operation: selected.id, params: paramsFrom(selected) },
       });
       output = result.output;
+      const appliedTool=selected.id;
+      if(["color","text"].includes(appliedTool)){
+        media=await invoke<MediaInfo>("probe_media",{path:result.output});
+        mediaUrl=`${convertFileSrc(result.output)}?applied=${Date.now()}`;
+        toolboxCurrent=0;toolboxPlaying=false;
+        const fresh=kindTools(activeKind).find(tool=>tool.id===appliedTool);
+        if(fresh)selected=localizedTool(fresh,language);
+        colorEnabled={};textLayers=[];activeTextId=null;
+      }
       if (media.kind === "image") {
         renderedImageUrl = `${convertFileSrc(result.output)}?render=${Date.now()}`;
         imageCompare = 50;
@@ -684,7 +811,6 @@
     if (selected.id === "noise") return media.height && media.height <= 720 ? "Safe 3 · Recommended 6" : "Safe 4 · Recommended 8";
     if (selected.id === "deep_fry") return "Safe 2 · Recommended 4";
     if (selected.id === "distortion") return "Safe 1 · Recommended 3";
-    if (selected.id === "color") return "Safe 1.03 / 1.05 / 0 · Recommended 1.08 / 1.10 / 0";
     if (selected.id === "corruption") return "Safe 1 · Recommended 2";
     if (selected.id === "discord_compressor" && media.duration) {
       const budget=discordBudget();if(!budget)return "";
@@ -906,9 +1032,9 @@
     </section>
   {:else}
     <nav class="mode-tabs">
-        <button class:active={workspaceMode === "toolbox"} onclick={() => workspaceMode="toolbox"}>{t("toolbox")}</button>
-        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => workspaceMode="autocut"}>SMARTCUT</button>{/if}
-        <button class:active={workspaceMode === "batch"} onclick={() => workspaceMode="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
+        <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")}>{t("toolbox")}</button>
+        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")}>SMARTCUT</button>{/if}
+        <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
     </nav>
     {#if workspaceMode === "autocut" && media.kind === "video"}
       <AutoCutWorkspace {media} {mediaUrl} {language} />
@@ -949,7 +1075,7 @@
             {#if media.kind === "video"}
               <div class="video-canvas" bind:this={toolboxCanvas}>
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={toolboxVideo} style={transformPreviewStyle()} src={mediaUrl} preload="metadata" ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
+              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
               {#if selected?.id === "transform" && toolValue("crop_mode") !== "off"}
                 <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                   <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
@@ -960,6 +1086,17 @@
                     <i class="crop-grid v one"></i><i class="crop-grid v two"></i><i class="crop-grid h one"></i><i class="crop-grid h two"></i>
                     {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize crop ${handle}`} onpointerdown={(event)=>startTransformCrop(event,handle)}></button>{/each}
                   </div>
+                </div>
+              {/if}
+              {#if selected?.id === "text"}
+                <div class="text-preview-layer">
+                  {#each textLayers as layer (layer.id)}
+                    <button class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} onclick={()=>activeTextId=layer.id} onpointerdown={(event)=>startTextDrag(event,layer)}>
+                      <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i>
+                      <span>{layer.text}</span>
+                      <i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
+                    </button>
+                  {/each}
                 </div>
               {/if}
               </div>
@@ -1054,11 +1191,60 @@
 
       <aside class="settings panel">
         {#if selected}
-          <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={() => { if (selected) chooseTool(kindTools(activeKind).find((item) => item.id === selected?.id) ?? selected); }}>{t("defaults")}</button></div>
+          <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={resetSelectedTool}>{t("defaults")}</button></div>
           <div class="selected-title"><span class="index mono">{String(kindTools(activeKind).findIndex((tool) => tool.id === selected?.id) + 1).padStart(2,"0")}</span><div><h2>{selected.title}</h2><p>{selected.description}</p></div></div>
-          {#if selected.id !== "transform"}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
+          {#if !["transform","text","color"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
           {#if recommendation()}<div class="recommend"><b>{t("forVideo")}</b><span>{recommendation()}</span></div>{/if}
           <div class="field-list">
+          {#if selected.id === "color"}
+            <div class="color-workspace">
+              <button class="reset-filters" onclick={resetColorFilters}>{language==="tr"?"Video filtrelerini sıfırla":"Reset video filters"}</button>
+              {#each colorGroups as group}
+                <section class="color-group"><h4>{group.title}</h4>
+                  {#each group.keys as key}
+                    {@const field=toolField(key)}
+                    {#if field}
+                      <label class="color-control">
+                        <span><input type="checkbox" checked={colorOn(key)} onchange={()=>toggleColor(key)}><b>{language==="tr"?(field.label):colorLabels[key]}</b><em>{colorValueLabel(key)}</em><button type="button" title="Reset" onclick={(event)=>{event.preventDefault();resetColorKey(key)}}>↻</button></span>
+                        <input type="range" min={field.min} max={field.max} step={field.step} value={field.value} disabled={!colorOn(key)} oninput={(event)=>setToolNumber(key,Number(event.currentTarget.value))}>
+                      </label>
+                    {/if}
+                  {/each}
+                  {#if group.title === "Cleanup"}
+                    <div class="denoise-control">
+                      <label class="color-toggle"><input type="checkbox" checked={toolValue("denoise")!=="off"} onchange={(event)=>setToolValue("denoise",event.currentTarget.checked?"medium":"off")}><span>{language==="tr"?"Gürültü azaltma":"Denoise"}</span></label>
+                      <div class="segmented">{#each ["low","medium","high"] as mode}<button class:active={toolValue("denoise")===mode} disabled={toolValue("denoise")==="off"} onclick={()=>setToolValue("denoise",mode)}>{mode}</button>{/each}</div>
+                    </div>
+                  {/if}
+                  {#if group.title === "Style"}
+                    <label class="color-toggle"><input type="checkbox" checked={toolValue("grayscale")==="on"} onchange={(event)=>setToolValue("grayscale",event.currentTarget.checked?"on":"off")}><span>{language==="tr"?"Gri tonlama":"Grayscale"}</span></label>
+                  {/if}
+                </section>
+              {/each}
+              <section class="color-group"><h4>{language==="tr"?"Tarama":"Interlace"}</h4><div class="segmented">{#each ["off","auto","on"] as mode}<button class:active={toolValue("deinterlace")===mode} onclick={()=>setToolValue("deinterlace",mode)}>{mode}</button>{/each}</div></section>
+            </div>
+          {:else if selected.id === "text"}
+            <div class="text-workspace">
+              <button class="add-text" onclick={addTextLayer}>＋ {language==="tr"?"Yazı ekle":"Add text"}</button>
+              {#if textLayers.length}
+                <div class="text-tabs">{#each textLayers as layer,index (layer.id)}<button class:active={activeTextId===layer.id} onclick={()=>activeTextId=layer.id}>{index+1}. {layer.text||"—"}</button>{/each}</div>
+                {@const layer=activeText()}
+                {#if layer}
+                  <label class="field"><span>{language==="tr"?"Yazı":"Text"}</span><input type="text" value={layer.text} oninput={(event)=>updateTextLayer({text:event.currentTarget.value})}></label>
+                  <label class="field"><span>{language==="tr"?"Font":"Font"}</span><select value={layer.font_path} onchange={(event)=>chooseTextFont(event.currentTarget.value)}>{#each systemFonts as font}<option value={font.path}>{font.name}</option>{/each}</select></label>
+                  <div class="text-color-editor">
+                    <span>{language==="tr"?"Renk":"Color"}</span>
+                    <div class="text-color-row"><i style:background={layer.color}></i><input aria-label="Hex color" value={layer.color} maxlength="7" onchange={(event)=>setTextColor(event.currentTarget.value)}></div>
+                    <div class="text-swatches">{#each textColors as color}<button class:active={layer.color===color} style:background={color} aria-label={`Use ${color}`} onclick={()=>setTextColor(color)}></button>{/each}</div>
+                  </div>
+                  <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" min="8" max="600" step="1" value={layer.size} oninput={(event)=>updateTextLayer({size:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.size)} px</small></label>
+                  <label class="field"><span>{language==="tr"?"Opaklık":"Opacity"}<small>%</small></span><input type="range" min="0" max="100" step="1" value={layer.opacity} oninput={(event)=>updateTextLayer({opacity:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.opacity)}%</small></label>
+                  <button class="remove-text" onclick={()=>removeTextLayer(layer.id)}>{language==="tr"?"Seçili yazıyı kaldır":"Remove selected text"}</button>
+                  <p class="text-help">{language==="tr"?"Yazıyı önizlemede sürükle; sağ alt tutamacından boyutlandır.":"Drag text in the preview; resize it from the bottom-right handle."}</p>
+                {/if}
+              {:else}<p class="text-empty">{language==="tr"?"Önizlemeye ilk katmanı eklemek için Yazı ekle’ye bas.":"Choose Add text to place the first layer in the preview."}</p>{/if}
+            </div>
+          {/if}
           {#if selected.id === "discord_compressor"}
             {@const budget = discordBudget()}
             <details class="discord-help">
@@ -1085,6 +1271,7 @@
             <div class="quality-guide">
               <h4>{language === "tr" ? "KAYNAK VE CODEC REHBERİ" : "SOURCE & CODEC GUIDE"}</h4>
               <p><b>{language === "tr" ? "Kaynak:" : "Source:"}</b> {media.pixel_format ?? "unknown"}{media.bits_per_raw_sample ? ` · ${media.bits_per_raw_sample}-bit` : ""}{media.color_transfer ? ` · ${media.color_transfer}` : ""}</p>
+              <p><b>Quality / {encoderQualityMode()} {toolNumber("crf")}:</b> {language==="tr"?(encoderQualityMode()==="CRF"&&toolNumber("crf")===0?"CPU kodlamada gerçek kayıpsız; dosya çok büyük olur.":"Yüksek kalite ayarıdır, gerçek kayıpsız değildir. Sayı düştükçe kalite ve dosya boyutu artar."):(encoderQualityMode()==="CRF"&&toolNumber("crf")===0?"Truly lossless for CPU encoding; file size will be very large.":"A high-quality setting, not mathematically lossless. Lower values increase quality and file size.")}</p>
               <ul>
                 <li><b>H.264</b><span>{language === "tr" ? "En uyumlu ve çoğu kullanım için en güvenli seçim." : "Most compatible and the safest choice for general use."}</span></li>
                 <li><b>HEVC</b><span>{language === "tr" ? "Aynı kalitede daha küçük olabilir; eski cihazlarda destek zayıftır." : "Can be smaller at the same quality, but older devices may not support it."}</span></li>
@@ -1167,10 +1354,10 @@
               </label>
               {/if}
             {/each}
-            {#if selected.id === "smart_quality"}
+            {#if selected.id === "compression"}
               <div class="quality-guide">
-                <h4>{language === "tr" ? "PUANLARI NASIL OKUMALISIN?" : "HOW TO READ THE SCORES"}</h4>
-                <p>{language === "tr" ? "VMAF, sıkıştırılmış görüntüyü kaynağa benzerlik açısından 0–100 arasında ölçer. Puan yükseldikçe görüntü kaynağa daha çok benzer. CRF yükseldikçe dosya genellikle küçülür fakat kalite düşer." : "VMAF measures how similar the compressed picture is to the source from 0–100. A higher score is closer to the source. A higher CRF usually makes a smaller file but lowers quality."}</p>
+                <h4>{language === "tr" ? "CRF VE AKILLI ANALİZ" : "CRF & SMART ANALYSIS"}</h4>
+                <p>{language === "tr" ? "CRF 0 gerçek kayıpsızdır fakat çok büyük dosya üretir. CRF 16 çok yüksek kalitedir; 17 de kayıpsız değildir. Değer yükseldikçe dosya küçülür ve kalite kademeli azalır. VMAF analizi kaynak videoya uygun değeri ölçer." : "CRF 0 is truly lossless but creates a very large file. CRF 16 is very high quality; 17 is not lossless either. Higher values reduce size and gradually reduce quality. VMAF can measure a suitable value for this source."}</p>
                 <ul>
                   <li><b>95–100</b><span>{language === "tr" ? "Neredeyse kayıpsız görünür." : "Looks nearly transparent."}</span></li>
                   <li><b>90–94</b><span>{language === "tr" ? "Çoğu kullanım için çok iyi." : "Very good for most uses."}</span></li>
@@ -1178,6 +1365,7 @@
                   <li><b>&lt;85</b><span>{language === "tr" ? "Kalite kaybı belirginleşir." : "Quality loss becomes obvious."}</span></li>
                 </ul>
                 <small>{language === "tr" ? "Hız için örnekler en fazla 720p ölçülür. Boyut tahmini yalnızca video akışıdır; ses ve kapsayıcı birkaç MB ekleyebilir." : "For speed, samples are measured at up to 720p. The size estimate covers video only; audio and container overhead may add a few MB."}</small>
+                <button class="analyze-video" onclick={analyzeCompression} disabled={qualityAnalyzing||busy}>{qualityAnalyzing?(language==="tr"?"Analiz ediliyor…":"Analyzing…"):(language==="tr"?"Videoyu analiz et":"Analyze Video")}</button>
               </div>
               {#if qualityAnalysis}
                 <div class="quality-result">
@@ -1191,7 +1379,8 @@
                       </article>
                     {/each}
                   </div>
-                  <p>{language === "tr" ? `Kalite / Sıkıştırma aracında CRF ${qualityAnalysis.recommended_crf} seçersen bu videoda hedeflediğin dengeye en yakın sonucu alman beklenir. Bu bir tahmindir; bütün video işlenmediği için kesin dosya boyutu sahnelere göre değişebilir.` : `Using CRF ${qualityAnalysis.recommended_crf} in Quality / Compression should give the closest match to your chosen goal for this video. It is an estimate; final size may vary because the complete video was not encoded.`}</p>
+                  <p>{language === "tr" ? `CRF ${qualityAnalysis.recommended_crf}, seçtiğin kalite hedefi için önerilir. Bu bir tahmindir; kesin dosya boyutu sahnelere göre değişebilir.` : `CRF ${qualityAnalysis.recommended_crf} is recommended for the selected quality goal. This is an estimate; final size may vary by scene.`}</p>
+                  <button class="apply-quality" onclick={applyQualityRecommendation}>{language==="tr"?`Öneriyi uygula · CRF ${qualityAnalysis.recommended_crf}`:`Apply Recommendation · CRF ${qualityAnalysis.recommended_crf}`}</button>
                 </div>
               {/if}
             {/if}
@@ -1203,8 +1392,8 @@
             {/if}
           </div>
           <div class="run-box">
-            <button class="run" onclick={runTool} disabled={busy}>▶ {selected.id === "smart_quality" ? (language === "tr" ? "kaliteyi analiz et" : "analyze quality") : selected.id === "file_hash" ? (language === "tr" ? "SHA-256 hesapla" : "calculate SHA-256") : `${t("render")} ${selected.title.toLocaleLowerCase(language)}`}</button>
-            <p>{selected.id === "smart_quality" ? (language === "tr" ? "Yalnızca geçici örnekler oluşturulur; final çıktı ve kaynak değişmez." : "Only temporary samples are created; no final output or source changes.") : selected.id === "file_hash" ? (language === "tr" ? "Yalnızca dosya okunur; yeni dosya oluşturulmaz." : "The file is only read; no output file is created.") : t("outputNote")}</p>
+            <button class="run" onclick={runTool} disabled={busy||qualityAnalyzing}>▶ {selected.id === "file_hash" ? (language === "tr" ? "SHA-256 hesapla" : "calculate SHA-256") : `${t("render")} ${selected.title.toLocaleLowerCase(language)}`}</button>
+            <p>{selected.id === "file_hash" ? (language === "tr" ? "Yalnızca dosya okunur; yeni dosya oluşturulmaz." : "The file is only read; no output file is created.") : t("outputNote")}</p>
           </div>
         {:else}
           <div class="empty-settings"><span>←</span><p>{t("selectTool")}</p></div>

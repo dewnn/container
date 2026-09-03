@@ -85,14 +85,10 @@ export const tools: Tool[] = [
   },
   {
     id: "compression", title: "Quality / Compression", category: "Quality", kind: ["video"], accent: "green",
-    description: "CRF ile kalite ve dosya boyutunu dengeler.", detail: "16 yüksek kalite, 20 dengeli, 24 küçük dosya için uygundur.",
-    fields: [number("crf", "CRF", 20, 0, 30, 1), select("preset", "CPU preset", "veryfast", [["ultrafast","Ultra fast"],["veryfast","Very fast"],["medium","Medium"],["slow","Slow / smaller"]])],
-  },
-  {
-    id: "smart_quality", title: "Smart Quality Analysis", category: "Quality", kind: ["video"], accent: "blue",
-    description: "Videoya uygun CRF değerini kısa örneklerle ölçer.",
-    detail: "Videonun başından, ortasından ve sonundan kısa parçalar alır; 16, 20, 24 ve 28 CRF değerlerini dener. Her denemeyi VMAF ile kaynak görüntüye karşı ölçer. Final video oluşturmaz ve kaynak dosyaya dokunmaz.",
+    description: "CRF ile kaliteyi ayarlar; istersen VMAF analizi uygun değeri önerir.", detail: "CRF 0 matematiksel olarak kayıpsızdır fakat çok büyük dosya üretir. 16 çok yüksek, 20 dengeli, 24 daha küçük çıktı içindir. VMAF analizi videona uygun CRF değerini ölçebilir.",
     fields: [
+      number("crf", "CRF", 20, 0, 30, 1, "", "0 lossless; 16 very high quality; 20 balanced; 24 smaller."),
+      select("preset", "CPU preset", "veryfast", [["ultrafast","Ultra fast"],["veryfast","Very fast"],["medium","Medium"],["slow","Slow / smaller"]]),
       select("goal", "Quality goal", "balanced", [["high","High quality"],["balanced","Balanced"],["small","Smaller file"]]),
       select("sample_duration", "Sample duration", "2", [["1","1 second / faster"],["2","2 seconds / recommended"],["3","3 seconds / more precise"]]),
     ],
@@ -122,25 +118,24 @@ export const tools: Tool[] = [
   },
   {
     id: "text", title: "Text", category: "Overlay", kind: ["video"], accent: "blue",
-    description: "Videonun üzerine Impact yazı işler.", detail: "Opacity hem yazıya hem kontura uygulanır; 0 görünmez, 100 tam görünürdür.",
-    fields: [
-      { key:"text", label:"Text", type:"text", value:"CONTAINER" },
-      select("position","Position","center",[["top-left","Top left"],["top","Top center"],["top-right","Top right"],["left","Middle left"],["center","Center"],["right","Middle right"],["bottom-left","Bottom left"],["bottom","Bottom center"],["bottom-right","Bottom right"]]),
-      { key:"color", label:"Color", type:"text", value:"white", hint:"FFmpeg color name or 0xRRGGBB" },
-      number("size","Font size",64,8,600,1,"px"), number("opacity","Opacity",100,0,100,1,"%"),
-    ],
+    description: "Birden fazla yazıyı önizlemede sürükleyip boyutlandırarak yerleştirir.", detail: "Add Text ile katman ekle; önizlemedeki veya listedeki yazıya tıklayarak ayarlarını düzenle.",
+    fields: [],
   },
   {
     id: "color", title: "Color Adjustment", category: "Effects", kind: ["video"], accent: "blue",
-    description: "Kontrast, doygunluk ve parlaklığı birlikte ayarlar.", detail: "1/1/0 görüntüyü değiştirmez. Küçük adımlarla ilerlemek daha güvenlidir.",
-    fields: [number("contrast","Contrast",1.08,-2,3,0.01), number("saturation","Saturation",1.10,0,3,0.01), number("brightness","Brightness",0,-1,1,0.01)],
+    description: "Renk, ton, detay ve temizlik ayarlarını canlı önizlemeyle düzenler.", detail: "Yalnızca işaretlediğin filtreler uygulanır. Başka araca geçersen uygulanmamış değişiklikler sıfırlanır.",
+    fields: [
+      number("brightness","Brightness",0,-100,100,1,"%"), number("contrast","Contrast",100,0,200,1,"%"), number("saturation","Saturation",100,0,200,1,"%"), number("gamma","Gamma",100,10,300,1,"%"),
+      number("hue","Hue",0,-180,180,1,"deg"), number("temperature","Temperature",6500,1000,40000,100,"K"),
+      number("sharpen","Sharpen",25,0,100,1,"%"), number("blur","Gaussian Blur",20,0,100,1,"%"), select("denoise","Denoise","off",[["off","Off"],["low","Low"],["medium","Medium"],["high","High"]]), number("deband","Deband",25,0,100,1,"%"),
+      number("vignette","Vignette",35,0,100,1,"%"), select("grayscale","Grayscale","off",[["off","Off"],["on","On"]]), select("deinterlace","Interlace","off",[["off","Off"],["auto","Auto"],["on","On"]]),
+    ],
   },
   {
     id: "noise", title: "Visual Noise", category: "Effects", kind: ["video"], accent: "purple",
     description: "Hareketli analog gren/noise ekler.", detail: "720p için 3 güvenli, 6 dengeli bir başlangıçtır.",
     fields: [number("amount","Noise amount",6,1,100,1)],
   },
-  { id:"negate", title:"Negate", category:"Effects", kind:["video"], accent:"green", description:"Bütün renkleri negatifine çevirir.", detail:"Fotoğraf negatifi benzeri tek tıklamalı efekttir.", fields:[] },
   {
     id:"deep_fry", title:"Deep Fry", category:"Effects", kind:["video"], accent:"red", description:"Aşırı kontrast, renk, keskinlik, noise ve renk kayması uygular.", detail:"1–2 güvenli; 4 belirgin; 8–10 çok ağırdır.",
     fields:[number("level","Fry level",4,1,10,1)],
@@ -166,13 +161,13 @@ export const tools: Tool[] = [
     fields:[select("resolution","Proxy resolution","auto",[["auto","Auto / recommended"],["540","540p"],["720","720p"],["1080","1080p"]]),select("quality","Proxy quality","edit",[["edit","Editing / high quality"],["compact","Compact / smaller"]])],
   },
   {
-    id:"fix_timestamps", title:"Fix Timestamps", category:"Export", kind:["video","audio"], accent:"yellow",
+    id:"fix_timestamps", title:"Fix Timestamps", category:"Utilities", kind:["video","audio"], accent:"yellow",
     description:"Bozuk veya negatif zaman damgalarını onarmayı dener.",
     detail:"Fast Repair kaliteyi değiştirmeden akışları kopyalar. Deep Repair daha uyumludur fakat videoyu yeniden kodlar; yalnızca hızlı yöntem yetmezse kullanın.",
     fields:[select("method","Repair method","fast",[["fast","Fast / lossless remux"],["deep","Deep / re-encode"]])],
   },
   {
-    id:"file_hash", title:"File Hash", category:"Export", kind:["video","audio","image"], accent:"blue",
+    id:"file_hash", title:"File Hash", category:"Utilities", kind:["video","audio","image"], accent:"blue",
     description:"Dosyanın SHA-256 dijital parmak izini hesaplar.",
     detail:"Dosyayı değiştirmez ve yeni dosya üretmez. Aynı içeriğe sahip iki dosyanın SHA-256 değeri de aynıdır; indirme veya kopyanın bozulup bozulmadığını kontrol etmek için kullanılır.",
     fields:[],
@@ -192,9 +187,6 @@ export const tools: Tool[] = [
   {
     id:"gif", title:"GIF Maker", category:"Export", kind:["video"], accent:"purple", description:"Videonun bir bölümünü paletli GIF’e dönüştürür.", detail:"Yüksek çözünürlük ve FPS dosyayı çok büyütür.",
     fields:[number("start","Start",0,0,86400,0.01,"s"),number("duration","Duration",5,0.01,86400,0.01,"s"),number("height","Height",480,2,2160,2,"px"),number("fps","FPS",15,1,60,1),select("max_colors","Maximum colors","256",[["32","32 / smallest"],["64","64 / compact"],["128","128 / balanced"],["256","256 / best"]]),select("palette_mode","Palette mode","auto",[["auto","Auto / scene aware"],["single","Single palette"],["multi","Per-frame palette"]]),select("dither","Dithering","balanced",[["balanced","Balanced"],["sharp","Sharp detail"],["small","Smaller file"],["off","Off"]]),select("transparency","Transparency","off",[["off","Off / opaque"],["preserve","Preserve alpha"]]),select("loop","Loop","0",[["0","Infinite"],["-1","Play once"],["2","2 times"],["3","3 times"]])],
-  },
-  {
-    id:"cfr", title:"Convert to CFR", category:"Export", kind:["video"], accent:"blue", description:"Değişken kare hızını sabit kare hızına çevirir.", detail:"Kurgu programlarındaki timeline ve ses senkron sorunlarını azaltır.", fields:[number("fps","Target FPS",30,1,2400,1,"fps")],
   },
   { id:"remove_audio", title:"Remove Audio", category:"Audio", kind:["video"], accent:"red", description:"Videodaki ses akışını kaldırır.", detail:"Görüntü yeniden kodlanmadan kopyalanır.", fields:[] },
   {
@@ -227,15 +219,13 @@ const enText: Record<string, [string, string]> = {
   frame_blend:["Lowers FPS while blending frames.","Motion may gain trails similar to a long-exposure look."],
   dedupe:["Removes frames that are duplicates of nearby frames.","Useful for stuck screen recordings, animation, and repeated frames. Timestamps are preserved so audio does not speed up or lose sync. The output may use variable frame rate."],
   speed:["Speeds up or slows down picture and sound together.","0.5× makes it twice as long; 2× makes it roughly half as long."],
-  compression:["Balances quality and file size with CRF.","16 is high quality, 20 balanced, and 24 suits smaller files."],
-  smart_quality:["Measures a suitable CRF for this video using short samples.","It samples the beginning, middle, and end; tests CRF 16, 20, 24, and 28; then compares every result with the source using VMAF. It does not render a final video or modify the source."],
+  compression:["Controls quality with CRF and can recommend a value using VMAF.","CRF 0 is mathematically lossless but extremely large. 16 is very high quality, 20 balanced, and 24 smaller. Analyze Video measures a suitable CRF for this source."],
   bitrate:["Controls file size using a target video bitrate.","Actual bitrate may vary slightly with scene complexity."],
   discord_compressor:["Compresses a video to fit a Discord upload-size limit.","File size is a fixed budget: longer duration and larger audio leave less room for picture. Smart mode adjusts audio, resolution, and FPS together; two-pass encoding distributes the remaining video budget more efficiently across scenes."],
   potatoify:["Deliberately damages FPS, resolution, and bitrate together.","Creates a low-quality internet video or meme look."],
-  text:["Burns Impact text onto the video.","Opacity applies to both text and outline; 0 is invisible and 100 fully visible."],
-  color:["Adjusts contrast, saturation, and brightness together.","1/1/0 leaves the image unchanged. Small steps are safer."],
+  text:["Places multiple editable text layers over the video.","Add a text layer, then select, drag, and resize it directly in the preview."],
+  color:["Adjusts color, tone, detail, and cleanup with a live preview.","Only enabled filters are rendered. Unapplied changes reset when you leave the tool."],
   noise:["Adds animated analogue grain/noise.","For 720p, 3 is safe and 6 is a balanced starting point."],
-  negate:["Inverts all colors.","A one-click photographic negative effect."],
   deep_fry:["Applies extreme contrast, color, sharpening, noise, and color shift.","1–2 is safe, 4 is obvious, and 8–10 is very heavy."],
   corruption:["Applies controlled glitches to encoded video packets.","The output may become partly unreadable; the source is never changed."],
   encode:["Re-encodes using the selected CPU or hardware codec.","FFmpeg reports a clear error if the hardware encoder is unavailable."],
@@ -246,7 +236,6 @@ const enText: Record<string, [string, string]> = {
   remux:["Changes only the container without re-encoding.","Very fast and lossless; codecs must be compatible with the target container."],
   screenshot:["Saves one frame at the selected timestamp.","PNG is lossless, JPG is small, and WebP is balanced."],
   gif:["Turns part of the video into a palette GIF.","High resolution and FPS can make the file very large."],
-  cfr:["Converts variable frame rate to constant frame rate.","Reduces timeline and audio-sync problems in editing software."],
   remove_audio:["Removes the audio stream from the video.","The picture is copied without re-encoding."],
   extract_audio:["Extracts video audio to a separate file.","AAC, MP3, WAV, FLAC, and OPUS are supported."],
   replace_audio:["Replaces the video audio with another audio file.","The picture is copied and the new audio is encoded as AAC."],
@@ -256,10 +245,10 @@ const enText: Record<string, [string, string]> = {
   image_potatoify:["Damages an image through repeated JPEG compression.","Profiles adjust JPEG blocks, color loss, and resolution damage together."],
 };
 
-const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",dedupe:"Tekrar Eden Kareleri Kaldır",speed:"Video Hızı",compression:"Kalite / Sıkıştırma",smart_quality:"Akıllı Kalite Analizi",bitrate:"Bitrate Kontrolü",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",color:"Renk Ayarı",noise:"Görsel Gürültü",negate:"Negatif",corruption:"Video Bozma",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",cfr:"CFR'ye Dönüştür",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_potatoify:"Görsel Potatoify"};
-const trCategories: Record<string,string> = {Transform:"Dönüştürme",Upscale:"Upscale",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Audio:"Ses",Image:"Görsel"};
+const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",dedupe:"Tekrar Eden Kareleri Kaldır",speed:"Video Hızı",compression:"Kalite / Sıkıştırma",bitrate:"Bitrate Kontrolü",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",color:"Renk Ayarı",noise:"Görsel Gürültü",corruption:"Video Bozma",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_potatoify:"Görsel Potatoify"};
+const trCategories: Record<string,string> = {Transform:"Dönüştürme",Upscale:"Upscale",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Utilities:"Araçlar",Audio:"Ses",Image:"Görsel"};
 trTitles.transform = "Dönüştür";
-const trFields: Record<string,string> = {"Target ratio":"Hedef oran",Dimension:"Boyut yönü",Pixels:"Piksel","Output resolution":"Çıktı çözünürlüğü","Quality / CRF":"Kalite / CRF","Quality goal":"Kalite hedefi","Sample duration":"Örnek süresi","Target FPS":"Hedef FPS",Multiplier:"Hız çarpanı","Speed mode":"Hız yöntemi",CRF:"CRF","CPU preset":"CPU ön ayarı","Target bitrate":"Hedef bitrate","Discord size limit":"Discord boyut sınırı","Video codec":"Video codec'i","Maximum resolution":"En yüksek çözünürlük","Frame rate limit":"Kare hızı sınırı","Audio bitrate":"Ses bitrate'i","Compression speed":"Sıkıştırma hızı","Video badness":"Video bozulması","Audio badness":"Ses bozulması","Scale divisor":"Ölçek böleni",Text:"Yazı",Position:"Konum",Color:"Renk","Font size":"Yazı boyutu",Opacity:"Opaklık",Contrast:"Kontrast",Saturation:"Doygunluk",Brightness:"Parlaklık","Noise amount":"Gürültü miktarı","Fry level":"Fry seviyesi",Severity:"Şiddet",Encoder:"Kodlayıcı",Quality:"Kalite","Pixel format":"Piksel formatı","Audio tracks":"Ses parçaları","Selected audio track":"Seçili ses parçası",Start:"Başlangıç",End:"Bitiş","Cut mode":"Kesim yöntemi",Container:"Kapsayıcı",Timestamp:"Zaman",Format:"Format",Duration:"Süre",Height:"Yükseklik","Maximum colors":"En fazla renk","Palette mode":"Palet yöntemi",Dithering:"Renk geçişi",Transparency:"Şeffaflık",Loop:"Tekrar","Audio format":"Ses formatı","Replacement audio":"Yeni ses dosyası","Output format":"Çıktı formatı",Badness:"Bozulma","Times to compress":"Sıkıştırma sayısı","Detection profile":"Algılama profili","Proxy resolution":"Proxy çözünürlüğü","Proxy quality":"Proxy kalitesi","Repair method":"Onarım yöntemi"};
+const trFields: Record<string,string> = {"Target ratio":"Hedef oran",Dimension:"Boyut yönü",Pixels:"Piksel","Output resolution":"Çıktı çözünürlüğü","Quality / CRF":"Kalite / CRF","Quality goal":"Kalite hedefi","Sample duration":"Örnek süresi","Target FPS":"Hedef FPS",Multiplier:"Hız çarpanı","Speed mode":"Hız yöntemi",CRF:"CRF","CPU preset":"CPU ön ayarı","Target bitrate":"Hedef bitrate","Discord size limit":"Discord boyut sınırı","Video codec":"Video codec'i","Maximum resolution":"En yüksek çözünürlük","Frame rate limit":"Kare hızı sınırı","Audio bitrate":"Ses bitrate'i","Compression speed":"Sıkıştırma hızı","Video badness":"Video bozulması","Audio badness":"Ses bozulması","Scale divisor":"Ölçek böleni",Text:"Yazı",Position:"Konum",Color:"Renk","Font size":"Yazı boyutu",Opacity:"Opaklık",Contrast:"Kontrast",Saturation:"Doygunluk",Brightness:"Parlaklık",Gamma:"Gama",Hue:"Renk tonu",Temperature:"Sıcaklık",Sharpen:"Keskinlik","Gaussian Blur":"Gauss Bulanıklığı",Denoise:"Gürültü azaltma",Deband:"Bant giderme",Vignette:"Vinyet",Grayscale:"Gri tonlama",Interlace:"Tarama","Noise amount":"Gürültü miktarı","Fry level":"Fry seviyesi",Severity:"Şiddet",Encoder:"Kodlayıcı",Quality:"Kalite","Pixel format":"Piksel formatı","Audio tracks":"Ses parçaları","Selected audio track":"Seçili ses parçası",Start:"Başlangıç",End:"Bitiş","Cut mode":"Kesim yöntemi",Container:"Kapsayıcı",Timestamp:"Zaman",Format:"Format",Duration:"Süre",Height:"Yükseklik","Maximum colors":"En fazla renk","Palette mode":"Palet yöntemi",Dithering:"Renk geçişi",Transparency:"Şeffaflık",Loop:"Tekrar","Audio format":"Ses formatı","Replacement audio":"Yeni ses dosyası","Output format":"Çıktı formatı",Badness:"Bozulma","Times to compress":"Sıkıştırma sayısı","Detection profile":"Algılama profili","Proxy resolution":"Proxy çözünürlüğü","Proxy quality":"Proxy kalitesi","Repair method":"Onarım yöntemi"};
 
 export function localizedTool(tool: Tool, language: "tr"|"en"): Tool {
   const copy=cloneTool(tool);
