@@ -8,13 +8,15 @@
 
   interface MediaInfo { path:string; name:string; duration:number|null; fps:number|null; audio_codec:string|null; start_timecode:string|null; kind?:string }
   interface Cut { start:number; end:number; enabled:boolean }
-  interface Analysis { cuts:Cut[]; waveform:number[]; duration:number }
+  interface Analysis { cuts:Cut[]; waveform:number[]; duration:number; boundary_refinement:boolean; overlaps_before_normalization:number }
   interface Result { output:string; elapsed:number }
   interface Progress { percent:number; status:string }
-  interface Recommendation { threshold:number; min_silence:number; min_speech:number; padding:number; noise_floor_db:number; speech_level_db:number }
+  interface Recommendation { threshold:number; min_silence:number; min_speech:number; minimum_pause:number; keep_before_speech:number; keep_after_speech:number; noise_floor_db:number; speech_level_db:number }
+  interface Preset { id:"natural"|"balanced"|"tight"; minimum_pause:number; keep_before_speech:number; keep_after_speech:number }
   interface LinkedTrack { path:string; offset:number; timecode:boolean }
+  interface HistorySnapshot { threshold:number;minSilence:number;minSpeech:number;minimumPause:number;keepBeforeSpeech:number;keepAfterSpeech:number;preset:string;cuts:Cut[];autoSummary:string;skipRemoved:boolean;output:string;exportFormat:string;quality:string;resolution:string;analysisInput:string;linkedTracks:LinkedTrack[];hasAnalyzed:boolean;lastAnalyzedKey:string }
 
-  let { media, mediaUrl, language }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en" } = $props();
+  let { media, mediaUrl, language, onhistorychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; onhistorychange?:(undo:boolean,redo:boolean)=>void } = $props();
   const words:Record<"tr"|"en",Record<string,string>>={
     tr:{detection:"ALGILAMA",silenceParams:"sessizlik parametreleri",threshold:"EŞİK",minSilence:"EN AZ SESSİZLİK",minSpeech:"EN AZ KONUŞMA",padding:"KENAR PAYI",help:"Eşik, Silero modelinin bir parçayı konuşma sayması için gereken güven değeridir. Yükseldikçe daha çok yer kesilir. Kenar payı kelimelerin başını ve sonunu korur.",listen:"BAŞKA BİR KAYDI DİNLE",camera:"kamera sesini kullan",analyzing:"ANALİZ EDİLİYOR…",detect:"SESSİZLİĞİ ALGILA",export:"DIŞA AKTAR",kept:"tutuldu",removed:"kaldırıldı",format:"FORMAT",quality:"KALİTE",resolution:"ÇÖZÜNÜRLÜK",high:"Yüksek",medium:"Orta",small:"Küçük",source:"Kaynak",linked:"BAĞLANTILI KAYITLAR",add:"+ EKLE",exporting:"AKTARILIYOR",cancelExport:"AKTARMAYI İPTAL ET",showOutput:"ÇIKTIYI GÖSTER",timeline:"ZAMAN ÇİZELGESİ",waveform:"ses dalgası oluşturuluyor…",skipping:"kesimler atlanıyor",playingAll:"tümü oynatılıyor",cuts:"KESİMLER",editable:"düzenlenebilir tutma bölgeleri",regions:"bölge",output:"çıktı",keep:"TUT",off:"KAPALI",empty:"Kesim listesini oluşturmak için algılamayı çalıştır.",noise:"gürültü",voice:"konuşma"},
     en:{detection:"DETECTION",silenceParams:"silence parameters",threshold:"THRESHOLD",minSilence:"MIN SILENCE",minSpeech:"MIN SPEECH",padding:"PADDING",help:"Threshold is the confidence Silero needs to count a segment as speech. Raising it cuts more. Padding protects word beginnings and endings.",listen:"LISTEN TO ANOTHER TRACK",camera:"use camera audio",analyzing:"ANALYZING…",detect:"DETECT SILENCE",export:"EXPORT",kept:"kept",removed:"removed",format:"FORMAT",quality:"QUALITY",resolution:"RESOLUTION",high:"High",medium:"Medium",small:"Small",source:"Source",linked:"LINKED TRACKS",add:"+ ADD",exporting:"EXPORTING",cancelExport:"CANCEL EXPORT",showOutput:"SHOW OUTPUT",timeline:"TIMELINE",waveform:"building waveform…",skipping:"skipping cuts",playingAll:"playing all",cuts:"CUTS",editable:"editable keep regions",regions:"regions",output:"output",keep:"KEEP",off:"OFF",empty:"Run detection to build a cut list.",noise:"noise",voice:"voice"}
@@ -23,9 +25,13 @@
   let video:HTMLVideoElement|null = $state(null);
   let stage:HTMLElement|null = $state(null);
   let threshold = $state(0.50);
-  let minSilence = $state(0.25);
+  let minSilence = $state(0.10);
   let minSpeech = $state(0.15);
-  let padding = $state(0.12);
+  let minimumPause = $state(0.35);
+  let keepBeforeSpeech = $state(0.10);
+  let keepAfterSpeech = $state(0.18);
+  let preset = $state("balanced");
+  let presets:Preset[] = $state([]);
   let cuts:Cut[] = $state([]);
   let waveform:number[] = $state([]);
   let waveformLoading = $state(true);
@@ -52,11 +58,13 @@
   let navEl:HTMLElement|null = $state(null);
   let viewStart = $state(0);
   let viewEnd = $state(0);
+  let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
+  let historyApplying=false;
 
   const duration = $derived(media.duration ?? 0);
   const kept = $derived(cuts.filter(c => c.enabled).reduce((n,c)=>n+Math.max(0,c.end-c.start),0));
   const removed = $derived(Math.max(0,duration-kept));
-  const settingsKey = $derived(`${threshold}|${minSilence}|${minSpeech}|${padding}|${analysisInput}`);
+  const settingsKey = $derived(`${threshold}|${minSilence}|${minSpeech}|${minimumPause}|${keepBeforeSpeech}|${keepAfterSpeech}|${analysisInput}`);
   const viewSpan = $derived(Math.max(.001,viewEnd-viewStart));
   const zoomLevel = $derived(duration&&viewSpan ? duration/viewSpan : 1);
   const segments = $derived.by(()=>{
@@ -66,10 +74,23 @@
     return list.filter(s=>s.end>viewStart&&s.start<viewEnd);
   });
   const pct = (value:number) => duration ? `${Math.max(0,Math.min(100,value/duration*100))}%` : "0%";
+  const rangePct = (value:number,min:number,max:number) => `${Math.max(0,Math.min(100,(value-min)/(max-min)*100))}%`;
   const time = (value:number) => {
     const safe=Math.max(0,Number(value)||0), h=Math.floor(safe/3600), m=Math.floor(safe%3600/60), s=Math.floor(safe%60), ms=Math.floor((safe%1)*1000);
     return `${h?String(h).padStart(2,"0")+":" : ""}${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}.${String(ms).padStart(3,"0")}`;
   };
+
+  const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
+  function snapshot():HistorySnapshot{return clone({threshold,minSilence,minSpeech,minimumPause,keepBeforeSpeech,keepAfterSpeech,preset,cuts,autoSummary,skipRemoved,output,exportFormat,quality,resolution,analysisInput,linkedTracks,hasAnalyzed,lastAnalyzedKey})}
+  const signature=(value:HistorySnapshot)=>JSON.stringify(value);
+  function commit(value:HistorySnapshot){if(historyApplying)return;if(historyIndex>=0&&signature(history[historyIndex])===signature(value))return;history=[...history.slice(0,historyIndex+1),value].slice(-80);historyIndex=history.length-1}
+  function resetHistory(){history=[snapshot()];historyIndex=0}
+  function applyHistory(value:HistorySnapshot){historyApplying=true;video?.pause();const restored=clone(value);threshold=restored.threshold;minSilence=restored.minSilence;minSpeech=restored.minSpeech;minimumPause=restored.minimumPause;keepBeforeSpeech=restored.keepBeforeSpeech;keepAfterSpeech=restored.keepAfterSpeech;preset=restored.preset;cuts=restored.cuts;autoSummary=restored.autoSummary;skipRemoved=restored.skipRemoved;output=restored.output;exportFormat=restored.exportFormat;quality=restored.quality;resolution=restored.resolution;analysisInput=restored.analysisInput;linkedTracks=restored.linkedTracks;hasAnalyzed=restored.hasAnalyzed;lastAnalyzedKey=restored.lastAnalyzedKey;error="";requestAnimationFrame(()=>historyApplying=false)}
+  export function undo(){if(analyzing||autoTuning||exporting)return;commit(snapshot());if(historyIndex<=0)return;historyIndex--;applyHistory(history[historyIndex])}
+  export function redo(){if(analyzing||autoTuning||exporting||historyIndex>=history.length-1)return;historyIndex++;applyHistory(history[historyIndex])}
+
+  $effect(()=>{const value=snapshot();if(historyApplying||autoTuning)return;const key=signature(value);const timer=window.setTimeout(()=>{const current=snapshot();if(!historyApplying&&!autoTuning&&key===signature(current))commit(value)},280);return()=>window.clearTimeout(timer)});
+  $effect(()=>onhistorychange(!analyzing&&!autoTuning&&!exporting&&historyIndex>0,!analyzing&&!autoTuning&&!exporting&&historyIndex>=0&&historyIndex<history.length-1));
 
   function seek(value:number) { if(video){ video.currentTime=Math.max(0,Math.min(duration,value)); current=video.currentTime; } }
   function togglePlay(){ if(!video)return; if(video.paused)video.play().catch(()=>{});else video.pause(); }
@@ -97,24 +118,33 @@
     else cut.end=Math.min(index<next.length-1?next[index+1].start:duration,Math.max(cut.start+.05,proposed));
     cuts=next;
   }
-  function addCut(){ const start=Math.max(0,current-1),end=Math.min(duration,current+1);cuts=[...cuts,{start,end,enabled:true}].sort((a,b)=>a.start-b.start); }
+  function addCut(){
+    const ordered=[...cuts].sort((a,b)=>a.start-b.start);if(ordered.some(c=>current>=c.start&&current<=c.end))return;
+    const previous=ordered.filter(c=>c.end<current).at(-1)?.end??0,next=ordered.find(c=>c.start>current)?.start??duration;
+    const start=Math.max(previous,current-1),end=Math.min(next,current+1);if(end-start<.05)return;
+    cuts=[...ordered,{start,end,enabled:true}].sort((a,b)=>a.start-b.start);
+  }
   function jumpCut(c:Cut){seek(c.start);}
   function previousCut(){const list=cuts.filter(c=>c.enabled&&c.start<current-.05);seek(list.at(-1)?.start??0)}
   function nextCut(){const c=cuts.find(c=>c.enabled&&c.start>current+.05);seek(c?.start??duration)}
 
   async function analyze(){
     analyzing=true;error="";output="";
-    try{const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,padding}});cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=settingsKey;}
+    try{const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=settingsKey;}
     catch(reason){error=String(reason)}finally{analyzing=false}
   }
   async function autoTune(){
     autoTuning=true;error="";autoSummary="";
     try{
       const result=await invoke<Recommendation>("recommend_autocut_settings",{path:analysisInput||media.path});
-      threshold=result.threshold;minSilence=result.min_silence;minSpeech=result.min_speech;padding=result.padding;
+      threshold=result.threshold;minSilence=result.min_silence;minSpeech=result.min_speech;minimumPause=result.minimum_pause;keepBeforeSpeech=result.keep_before_speech;keepAfterSpeech=result.keep_after_speech;preset="auto";
       autoSummary=`${t("noise")} ${result.noise_floor_db.toFixed(1)} dB · ${t("voice")} ${result.speech_level_db.toFixed(1)} dB`;
       await tick(); await analyze();
     }catch(reason){error=String(reason)}finally{autoTuning=false}
+  }
+  function applyPreset(id:"natural"|"balanced"|"tight"){
+    const value=presets.find(item=>item.id===id);if(!value)return;
+    preset=id;minimumPause=value.minimum_pause;keepBeforeSpeech=value.keep_before_speech;keepAfterSpeech=value.keep_after_speech;autoSummary="";
   }
   async function exportCuts(){
     armCompletionSound();
@@ -155,7 +185,7 @@
 
   $effect(()=>{
     const key=settingsKey;
-    if(!hasAnalyzed||key===lastAnalyzedKey||analyzing||autoTuning)return;
+    if(historyApplying||!hasAnalyzed||key===lastAnalyzedKey||analyzing||autoTuning)return;
     const timer=setTimeout(()=>analyze(),140);
     return()=>clearTimeout(timer);
   });
@@ -169,6 +199,8 @@
     const key=(e:KeyboardEvent)=>{const tag=(document.activeElement as HTMLElement)?.tagName;if(["INPUT","SELECT","TEXTAREA"].includes(tag))return;if(e.code==="Space"){e.preventDefault();togglePlay()}else if(e.key==="ArrowLeft")seek(current-5);else if(e.key==="ArrowRight")seek(current+5)};
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
+    resetHistory();
+    invoke<Preset[]>("autocut_presets").then(result=>{presets=result;const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
     invoke<number[]>("compute_autocut_waveform",{path:media.path}).then(result=>waveform=result).catch(reason=>error=String(reason)).finally(()=>waveformLoading=false);
     return()=>{unlisten?.();window.removeEventListener("keydown",key)};
   });
@@ -179,11 +211,16 @@
     <div class="ac-card">
       <header><div><h3>{t("detection")}</h3><p>{t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
       <div class="ac-fields">
-        <label><span>{t("threshold")} <b>{threshold.toFixed(2)}</b></span><input type="range" min="0.05" max="0.95" step="0.01" bind:value={threshold}></label>
-        <label><span>{t("minSilence")} <b>{minSilence.toFixed(2)}s</b></span><input type="range" min="0.05" max="2" step="0.05" bind:value={minSilence}></label>
-        <label><span>{t("minSpeech")} <b>{minSpeech.toFixed(2)}s</b></span><input type="range" min="0.05" max="2" step="0.05" bind:value={minSpeech}></label>
-        <label><span>{t("padding")} <b>{padding.toFixed(2)}s</b></span><input type="range" min="0" max="1" step="0.02" bind:value={padding}></label>
-        <p class="ac-help">{t("help")}</p>
+        <div class="ac-presets"><button class:active={preset==="natural"} onclick={()=>applyPreset("natural")}>{language==="tr"?"DOĞAL":"NATURAL"}</button><button class:active={preset==="balanced"} onclick={()=>applyPreset("balanced")}>{language==="tr"?"DENGELİ":"BALANCED"}</button><button class:active={preset==="tight"} onclick={()=>applyPreset("tight")}>{language==="tr"?"SIKI":"TIGHT"}</button><button class:active={preset==="auto"} onclick={autoTune}>AUTO</button></div>
+        <label><span>{language==="tr"?"EN AZ DURAKLAMA":"MINIMUM PAUSE"} <b>{Math.round(minimumPause*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minimumPause,.15,1.5)}`} min="0.15" max="1.5" step="0.025" bind:value={minimumPause} oninput={()=>preset="custom"}></label>
+        <label><span>{language==="tr"?"KONUŞMADAN ÖNCE KORU":"KEEP BEFORE SPEECH"} <b>{Math.round(keepBeforeSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepBeforeSpeech,0,.5)}`} min="0" max="0.5" step="0.01" bind:value={keepBeforeSpeech} oninput={()=>preset="custom"}></label>
+        <label><span>{language==="tr"?"KONUŞMADAN SONRA KORU":"KEEP AFTER SPEECH"} <b>{Math.round(keepAfterSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepAfterSpeech,0,.6)}`} min="0" max="0.6" step="0.01" bind:value={keepAfterSpeech} oninput={()=>preset="custom"}></label>
+        <p class="ac-help">{language==="tr"?"Kısa doğal duraklamalar korunur. Kelime sonlarına, başlangıçlardan biraz daha fazla nefes payı bırakılır.":"Short natural pauses stay intact. Word endings receive slightly more breathing room than beginnings."}</p>
+        <details class="ac-advanced"><summary>{language==="tr"?"GELİŞMİŞ ALGILAMA":"ADVANCED DETECTION"}</summary><div>
+          <label><span>{t("threshold")} <b>{threshold.toFixed(2)}</b></span><input type="range" style={`--range-pct:${rangePct(threshold,.05,.95)}`} min="0.05" max="0.95" step="0.01" bind:value={threshold} oninput={()=>preset="custom"}></label>
+          <label><span>{t("minSilence")} <b>{Math.round(minSilence*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minSilence,.05,.5)}`} min="0.05" max="0.5" step="0.01" bind:value={minSilence} oninput={()=>preset="custom"}></label>
+          <label><span>{t("minSpeech")} <b>{Math.round(minSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minSpeech,.05,.5)}`} min="0.05" max="0.5" step="0.01" bind:value={minSpeech} oninput={()=>preset="custom"}></label>
+        </div></details>
         {#if autoSummary}<p class="auto-summary">AUTO · {autoSummary}</p>{/if}
         <button class="ac-secondary listen" onclick={chooseAnalysis}>{analysisInput?`${t("listen")}: ${base(analysisInput)}`:t("listen")}</button>
         {#if analysisInput}<button class="clear-source" onclick={()=>analysisInput=""}>{t("camera")}</button>{/if}
@@ -202,9 +239,9 @@
         {#each linkedTracks as track,index}
           <div class="linked-row"><span title={track.path}><b>{track.timecode?"tc":"≈"}</b> {base(track.path)}</span><input aria-label="Track offset" type="number" step="0.01" bind:value={track.offset}><button onclick={()=>linkedTracks=linkedTracks.filter((_,i)=>i!==index)}>×</button></div>
         {/each}
+        {#if output}<button class="ac-secondary" onclick={()=>revealItemInDir(output)}>{t("showOutput")}</button>{/if}
         <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||!cuts.length}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
         {#if exporting}<button class="ac-secondary danger" onclick={cancel}>{t("cancelExport")}</button>{/if}
-        {#if output}<button class="ac-secondary" onclick={()=>revealItemInDir(output)}>{t("showOutput")}</button>{/if}
       </div>
     </div>
   </aside>
@@ -259,7 +296,7 @@
       {#each cuts as cut,index}
         <article class:disabled={!cut.enabled}>
           <button class="cut-number" onclick={()=>jumpCut(cut)}>{String(index+1).padStart(2,"0")}</button>
-          <div><label>IN<input type="number" min="0" max={duration} step="0.01" value={cut.start} onchange={e=>updateCut(index,"start",Number(e.currentTarget.value))}></label><label>OUT<input type="number" min="0" max={duration} step="0.01" value={cut.end} onchange={e=>updateCut(index,"end",Number(e.currentTarget.value))}></label><small>{time(cut.end-cut.start)}</small></div>
+          <div><label>IN<input type="number" min="0" max={duration} step="0.001" value={cut.start.toFixed(3)} onchange={e=>updateCut(index,"start",Number(e.currentTarget.value))}></label><label>OUT<input type="number" min="0" max={duration} step="0.001" value={cut.end.toFixed(3)} onchange={e=>updateCut(index,"end",Number(e.currentTarget.value))}></label><small>{time(cut.end-cut.start)}</small></div>
           <button class="cut-toggle" onclick={()=>{cuts=cuts.map((c,i)=>i===index?{...c,enabled:!c.enabled}:c)}}>{cut.enabled?t("keep"):t("off")}</button>
           <button class="cut-delete" onclick={()=>cuts=cuts.filter((_,i)=>i!==index)}>×</button>
         </article>

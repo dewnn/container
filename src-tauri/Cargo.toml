@@ -1,6 +1,6 @@
 [package]
 name = "container-studio"
-version = "0.7.0"
+version = "0.8.0"
 description = "CONTAINER FFmpeg media toolbox"
 authors = ["dewn"]
 edition = "2021"
@@ -25,7 +25,7 @@ serde_json = "1"
 base64 = "0.22"
 sha2 = "0.10"
 dirs = "6"
-voice_activity_detector = "0.2"
+silero-vad-rust = { version = "6.2.2", default-features = false }
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

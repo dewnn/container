@@ -2,14 +2,16 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use silero_vad_rust::load_silero_vad;
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     io::Read,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::Instant,
 };
@@ -18,7 +20,6 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
 };
-use voice_activity_detector::VoiceActivityDetector;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -56,7 +57,8 @@ struct VadCache {
     path: PathBuf,
     modified: Option<std::time::SystemTime>,
     len: u64,
-    scores: Vec<f32>,
+    scores: Arc<Vec<f32>>,
+    samples: Arc<Vec<i16>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -144,6 +146,22 @@ struct TextLayer {
     opacity: f64,
     #[serde(default)]
     font_path: String,
+    #[serde(default)]
+    outline: f64,
+    #[serde(default)]
+    outline_color: String,
+    #[serde(default)]
+    shadow: f64,
+    #[serde(default)]
+    shadow_color: String,
+    #[serde(default)]
+    background: bool,
+    #[serde(default)]
+    background_color: String,
+    #[serde(default)]
+    background_opacity: f64,
+    #[serde(default)]
+    background_padding: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,7 +307,16 @@ struct AutoCutRequest {
     threshold: f64,
     min_silence: f64,
     min_speech: f64,
-    padding: f64,
+    #[serde(default)]
+    padding: Option<f64>,
+    #[serde(default)]
+    minimum_pause: Option<f64>,
+    #[serde(default)]
+    keep_before_speech: Option<f64>,
+    #[serde(default)]
+    keep_after_speech: Option<f64>,
+    #[serde(default)]
+    boundary_refinement: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -297,6 +324,8 @@ struct AutoCutAnalysis {
     cuts: Vec<KeepInterval>,
     waveform: Vec<f32>,
     duration: f64,
+    boundary_refinement: bool,
+    overlaps_before_normalization: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -304,9 +333,48 @@ struct AutoCutRecommendation {
     threshold: f64,
     min_silence: f64,
     min_speech: f64,
-    padding: f64,
+    minimum_pause: f64,
+    keep_before_speech: f64,
+    keep_after_speech: f64,
     noise_floor_db: f64,
     speech_level_db: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct AutoCutPreset {
+    id: &'static str,
+    minimum_pause: f64,
+    keep_before_speech: f64,
+    keep_after_speech: f64,
+}
+
+const AUTOCUT_PRESETS: [AutoCutPreset; 3] = [
+    AutoCutPreset {
+        id: "natural",
+        minimum_pause: 0.500,
+        keep_before_speech: 0.150,
+        keep_after_speech: 0.250,
+    },
+    AutoCutPreset {
+        id: "balanced",
+        minimum_pause: 0.350,
+        keep_before_speech: 0.100,
+        keep_after_speech: 0.180,
+    },
+    AutoCutPreset {
+        id: "tight",
+        minimum_pause: 0.225,
+        keep_before_speech: 0.075,
+        keep_after_speech: 0.130,
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct AutoCutEditSettings {
+    minimum_pause: f64,
+    keep_before_speech: f64,
+    keep_after_speech: f64,
+    boundary_refinement: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -843,18 +911,25 @@ fn recommend_from_levels(levels: &[f64], block_seconds: f64) -> AutoCutRecommend
     let typical_speech = median(&mut speech_runs, 0.4);
     let min_silence = (typical_gap * 0.70).clamp(0.18, 0.80);
     let min_speech = (typical_speech * 0.25).clamp(0.10, 0.30);
-    let padding = (min_silence * 0.50).clamp(0.12, 0.30);
+    // Auto remains conservative: level analysis may choose detector values,
+    // but it never turns a clean noise floor into hyper-aggressive editing.
+    let minimum_pause = (typical_gap * 0.80).clamp(0.35, 0.65);
     AutoCutRecommendation {
         threshold: (0.65 - spread * 0.005).clamp(0.35, 0.65),
         min_silence: (min_silence * 100.0).round() / 100.0,
         min_speech: (min_speech * 100.0).round() / 100.0,
-        padding: (padding * 100.0).round() / 100.0,
+        minimum_pause: (minimum_pause * 100.0).round() / 100.0,
+        keep_before_speech: 0.10,
+        keep_after_speech: 0.18,
         noise_floor_db: (noise * 10.0).round() / 10.0,
         speech_level_db: (speech * 10.0).round() / 10.0,
     }
 }
 
-async fn cached_vad_scores(state: &JobState, input: &Path) -> Result<Vec<f32>, String> {
+async fn cached_vad_data(
+    state: &JobState,
+    input: &Path,
+) -> Result<(Arc<Vec<f32>>, Arc<Vec<i16>>), String> {
     let metadata = std::fs::metadata(input).map_err(|e| e.to_string())?;
     let path = std::fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
     let modified = metadata.modified().ok();
@@ -865,7 +940,7 @@ async fn cached_vad_scores(state: &JobState, input: &Path) -> Result<Vec<f32>, S
         .as_ref()
     {
         if cache.path == path && cache.len == metadata.len() && cache.modified == modified {
-            return Ok(cache.scores.clone());
+            return Ok((cache.scores.clone(), cache.samples.clone()));
         }
     }
     let output = hidden_command("ffmpeg")
@@ -878,24 +953,34 @@ async fn cached_vad_scores(state: &JobState, input: &Path) -> Result<Vec<f32>, S
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    let samples: Vec<i16> = output
-        .stdout
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect();
-    let scores = tokio::task::spawn_blocking(move || -> Result<Vec<f32>, String> {
-        let mut detector = VoiceActivityDetector::builder()
-            .sample_rate(16000_i64)
-            .chunk_size(512_usize)
-            .build()
-            .map_err(|e| format!("Silero VAD could not initialize: {e}"))?;
-        Ok(samples
-            .chunks(512)
-            .map(|chunk| detector.predict(chunk.iter().map(|sample| *sample as f32 / 32768.0)))
-            .collect())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let samples = Arc::new(
+        output
+            .stdout
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect::<Vec<_>>(),
+    );
+    let samples_for_scoring = samples.clone();
+    let scores = Arc::new(
+        tokio::task::spawn_blocking(move || -> Result<Vec<f32>, String> {
+            let mut detector =
+                load_silero_vad().map_err(|e| format!("Silero V6 could not initialize: {e}"))?;
+            let mut scores = Vec::with_capacity(samples_for_scoring.len().div_ceil(512));
+            for chunk in samples_for_scoring.chunks(512) {
+                let mut frame = vec![0.0_f32; 512];
+                for (output, sample) in frame.iter_mut().zip(chunk) {
+                    *output = *sample as f32 / 32768.0;
+                }
+                let probability = detector
+                    .forward_chunk(&frame, 16_000)
+                    .map_err(|e| format!("Silero V6 inference failed: {e}"))?;
+                scores.push(probability[[0, 0]]);
+            }
+            Ok(scores)
+        })
+        .await
+        .map_err(|e| e.to_string())??,
+    );
     *state
         .vad_cache
         .lock()
@@ -904,8 +989,16 @@ async fn cached_vad_scores(state: &JobState, input: &Path) -> Result<Vec<f32>, S
         modified,
         len: metadata.len(),
         scores: scores.clone(),
+        samples: samples.clone(),
     });
-    Ok(scores)
+    Ok((scores, samples))
+}
+
+#[cfg(test)]
+async fn cached_vad_scores(state: &JobState, input: &Path) -> Result<Arc<Vec<f32>>, String> {
+    cached_vad_data(state, input)
+        .await
+        .map(|(scores, _)| scores)
 }
 
 fn keeps_from_vad_scores(
@@ -920,101 +1013,284 @@ fn keeps_from_vad_scores(
     if scores.is_empty() || duration <= 0.0 {
         return Vec::new();
     }
-    // Silero emits one probability every 32 ms. A short triangular filter
-    // removes single-frame spikes/dips without blurring real word boundaries.
-    let smoothed: Vec<f32> = (0..scores.len())
-        .map(|index| {
-            let mut weighted = 0.0_f32;
-            let mut weight_sum = 0.0_f32;
-            for offset in -2_i32..=2 {
-                let sample = index as i32 + offset;
-                if sample >= 0 && sample < scores.len() as i32 {
-                    let weight = (3 - offset.abs()) as f32;
-                    weighted += scores[sample as usize] * weight;
-                    weight_sum += weight;
-                }
-            }
-            weighted / weight_sum.max(1.0)
-        })
-        .collect();
+
+    // Keep this state machine in parity with cobanov/autocut's vad.rs. The
+    // model scores are deliberately not smoothed and there is no attack
+    // debounce: speech enters on the first score at threshold and exits below
+    // threshold - 0.15. min_silence then merges short non-speech runs, and
+    // min_speech is applied only after that merge.
     let release = (threshold - 0.15).max(0.05) as f32;
-    let attack_chunks =
-        ((min_speech * 0.35).clamp(CHUNK_SECONDS, 0.096) / CHUNK_SECONDS).ceil() as usize;
-    let release_chunks = (min_silence / CHUNK_SECONDS).ceil().max(1.0) as usize;
-    let mut regions: Vec<(usize, usize)> = Vec::new();
-    let mut speaking = false;
-    let mut start = 0_usize;
-    let mut attack_count = 0_usize;
-    let mut release_count = 0_usize;
-    for (index, &score) in smoothed.iter().enumerate() {
-        if speaking {
-            if score < release {
-                release_count += 1;
-                if release_count >= release_chunks {
-                    let end = index + 1 - release_count;
-                    if end > start {
-                        regions.push((start, end));
-                    }
-                    speaking = false;
-                    attack_count = 0;
-                    release_count = 0;
-                }
-            } else {
-                release_count = 0;
-            }
-        } else if score >= threshold as f32 {
-            attack_count += 1;
-            if attack_count >= attack_chunks {
-                start = index + 1 - attack_count;
-                speaking = true;
-                release_count = 0;
-            }
-        } else {
-            attack_count = 0;
-        }
-    }
-    if speaking {
-        let end = if release_count > 0 {
-            scores.len().saturating_sub(release_count)
-        } else {
+    let debug_enabled = std::env::var("CONTAINER_VAD_DEBUG")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let mut debug_log = String::new();
+    if debug_enabled {
+        let _ = writeln!(
+            debug_log,
+            "CONTAINER Silero VAD parity trace\nthreshold={threshold:.3} release={release:.3} min_silence={min_silence:.3}s min_speech={min_speech:.3}s padding={padding:.3}s duration={duration:.3}s chunks={} chunk_seconds={CHUNK_SECONDS:.3}",
             scores.len()
+        );
+    }
+
+    let mut speaking = false;
+    let mut flags = Vec::with_capacity(scores.len());
+    for (index, &score) in scores.iter().enumerate() {
+        let event = if !speaking && score >= threshold as f32 {
+            speaking = true;
+            " ENTER_SPEECH"
+        } else if speaking && score < release {
+            speaking = false;
+            " EXIT_SPEECH"
+        } else {
+            ""
         };
-        if end > start {
-            regions.push((start, end));
+        flags.push(speaking);
+        if debug_enabled {
+            let _ = writeln!(
+                debug_log,
+                "FRAME index={index} sample={} time={:.3}s probability={score:.6} speech={}{}",
+                index * 512,
+                index as f64 * CHUNK_SECONDS,
+                speaking,
+                event
+            );
         }
     }
-    let min_gap = (min_silence / CHUNK_SECONDS).ceil() as usize;
+
+    let mut regions = Vec::new();
+    let mut candidate_start = None;
+    for (index, is_speech) in flags.iter().copied().enumerate() {
+        match (candidate_start, is_speech) {
+            (None, true) => {
+                candidate_start = Some(index);
+                if debug_enabled {
+                    let _ = writeln!(debug_log, "CANDIDATE_START chunk={index}");
+                }
+            }
+            (Some(start), false) => {
+                regions.push((start, index));
+                candidate_start = None;
+                if debug_enabled {
+                    let _ = writeln!(debug_log, "CANDIDATE_END chunks={start}..{index}");
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = candidate_start {
+        regions.push((start, flags.len()));
+        if debug_enabled {
+            let _ = writeln!(
+                debug_log,
+                "CANDIDATE_END chunks={start}..{} EOF",
+                flags.len()
+            );
+        }
+    }
+
+    let min_gap = vad_chunks_for_seconds(min_silence, CHUNK_SECONDS);
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (start, end) in regions {
         if let Some(last) = merged.last_mut() {
-            if start.saturating_sub(last.1) <= min_gap {
+            let gap = start.saturating_sub(last.1);
+            // AutoCut uses a strict comparison: a silence must be at least
+            // min_silence long to split two speech regions.
+            if gap < min_gap {
+                if debug_enabled {
+                    let _ = writeln!(
+                        debug_log,
+                        "MERGE previous={}..{} next={start}..{end} gap_chunks={gap}",
+                        last.0, last.1
+                    );
+                }
                 last.1 = last.1.max(end);
                 continue;
             }
         }
         merged.push((start, end));
     }
-    let min_len = (min_speech / CHUNK_SECONDS).ceil() as usize;
+
+    let min_len = vad_chunks_for_seconds(min_speech, CHUNK_SECONDS);
     let mut keeps: Vec<KeepInterval> = merged
         .into_iter()
-        .filter(|(s, e)| e - s >= min_len)
-        .map(|(s, e)| KeepInterval {
-            start: (s as f64 * CHUNK_SECONDS - padding).max(0.0),
-            end: (e as f64 * CHUNK_SECONDS + padding).min(duration),
-            enabled: true,
+        .filter_map(|(start, end)| {
+            let length = end.saturating_sub(start);
+            let peak = scores[start..end]
+                .iter()
+                .copied()
+                .fold(0.0_f32, f32::max);
+            // Preserve compact, high-confidence interjections (at least 64 ms)
+            // while still rejecting isolated one-frame clicks/spikes.
+            let strong_short_speech = length >= 2
+                && peak >= ((threshold as f32 + 0.30).min(0.90));
+            if length < min_len && !strong_short_speech {
+                if debug_enabled {
+                    let _ = writeln!(
+                        debug_log,
+                        "REJECT_SHORT chunks={start}..{end} length_chunks={length} peak={peak:.4} required_chunks={min_len}",
+                    );
+                }
+                return None;
+            }
+            let padded_start = (start as f64 * CHUNK_SECONDS - padding).max(0.0);
+            let padded_end = (end as f64 * CHUNK_SECONDS + padding).min(duration);
+            if debug_enabled {
+                let _ = writeln!(
+                    debug_log,
+                    "PADDING chunks={start}..{end} raw={:.3}..{:.3} padded={padded_start:.3}..{padded_end:.3}",
+                    start as f64 * CHUNK_SECONDS,
+                    end as f64 * CHUNK_SECONDS
+                );
+            }
+            Some(KeepInterval {
+                start: padded_start,
+                end: padded_end,
+                enabled: true,
+            })
         })
         .collect();
+
     let mut normalized: Vec<KeepInterval> = Vec::new();
     for keep in keeps.drain(..) {
         if let Some(last) = normalized.last_mut() {
             if keep.start <= last.end {
+                if debug_enabled {
+                    let _ = writeln!(
+                        debug_log,
+                        "MERGE_PADDED previous={:.3}..{:.3} next={:.3}..{:.3}",
+                        last.start, last.end, keep.start, keep.end
+                    );
+                }
                 last.end = last.end.max(keep.end);
                 continue;
             }
         }
         normalized.push(keep)
     }
+
+    if debug_enabled {
+        for (index, keep) in normalized.iter().enumerate() {
+            let _ = writeln!(
+                debug_log,
+                "FINAL_KEEP index={} start={:.3} end={:.3} duration={:.3}",
+                index + 1,
+                keep.start,
+                keep.end,
+                keep.end - keep.start
+            );
+        }
+        let path = std::env::var_os("CONTAINER_VAD_DEBUG_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("container-vad-debug.log"));
+        if let Err(error) = std::fs::write(&path, debug_log) {
+            eprintln!(
+                "Could not write VAD debug trace to {}: {error}",
+                path.display()
+            );
+        } else {
+            eprintln!("VAD debug trace written to {}", path.display());
+        }
+    }
     normalized
+}
+
+fn vad_chunks_for_seconds(seconds: f64, chunk_seconds: f64) -> usize {
+    (seconds.max(0.0) / chunk_seconds).ceil() as usize
+}
+
+fn refine_boundary(samples: &[i16], sample: usize, direction: i8) -> usize {
+    const SAMPLE_RATE: usize = 16_000;
+    const SEARCH: usize = SAMPLE_RATE * 120 / 1000;
+    const WINDOW: usize = SAMPLE_RATE * 10 / 1000;
+    if samples.is_empty() || sample == 0 || sample >= samples.len() {
+        return sample.min(samples.len());
+    }
+    let rms = |start: usize| {
+        let end = (start + WINDOW).min(samples.len());
+        if end <= start {
+            return 0.0;
+        }
+        let energy = samples[start..end]
+            .iter()
+            .map(|value| {
+                let normalized = *value as f64 / 32768.0;
+                normalized * normalized
+            })
+            .sum::<f64>();
+        (energy / (end - start) as f64).sqrt()
+    };
+    let reference = if direction < 0 {
+        rms(sample.min(samples.len().saturating_sub(WINDOW)))
+    } else {
+        rms(sample.saturating_sub(WINDOW))
+    };
+    let (from, to) = if direction < 0 {
+        (sample.saturating_sub(SEARCH), sample)
+    } else {
+        (sample, (sample + SEARCH).min(samples.len()))
+    };
+    let mut quietest = (sample, f64::MAX);
+    for position in (from..to).step_by(WINDOW.max(1)) {
+        let energy = rms(position);
+        if energy < quietest.1 {
+            quietest = (position, energy);
+        }
+    }
+    // Background music/gameplay may never become quiet. In that case VAD is
+    // the safer boundary and refinement deliberately does nothing.
+    if quietest.1 <= 0.006 || quietest.1 <= reference * 0.65 {
+        if direction < 0 {
+            quietest.0.min(sample)
+        } else {
+            (quietest.0 + WINDOW).max(sample).min(samples.len())
+        }
+    } else {
+        sample
+    }
+}
+
+fn natural_keeps_from_vad_scores(
+    scores: &[f32],
+    samples: &[i16],
+    threshold: f64,
+    min_silence: f64,
+    min_speech: f64,
+    settings: AutoCutEditSettings,
+    duration: f64,
+) -> (Vec<KeepInterval>, usize) {
+    const SAMPLE_RATE: f64 = 16_000.0;
+    let mut speech =
+        keeps_from_vad_scores(scores, threshold, min_silence, min_speech, 0.0, duration);
+    let minimum_pause_samples = (settings.minimum_pause * SAMPLE_RATE).round() as usize;
+    let mut stable: Vec<(usize, usize)> = Vec::with_capacity(speech.len());
+    for region in speech.drain(..) {
+        let start = (region.start * SAMPLE_RATE).round().max(0.0) as usize;
+        let end = (region.end * SAMPLE_RATE).round().max(0.0) as usize;
+        if let Some(previous) = stable.last_mut() {
+            if start.saturating_sub(previous.1) < minimum_pause_samples {
+                previous.1 = previous.1.max(end);
+                continue;
+            }
+        }
+        stable.push((start, end));
+    }
+    let mut padded = Vec::with_capacity(stable.len());
+    for (mut start, mut end) in stable {
+        if settings.boundary_refinement {
+            start = refine_boundary(samples, start, -1);
+            end = refine_boundary(samples, end, 1);
+        }
+        padded.push(KeepInterval {
+            start: (start as f64 / SAMPLE_RATE - settings.keep_before_speech).max(0.0),
+            end: (end as f64 / SAMPLE_RATE + settings.keep_after_speech).min(duration),
+            enabled: true,
+        });
+    }
+    let overlaps = padded
+        .windows(2)
+        .filter(|pair| pair[1].start <= pair[0].end)
+        .count();
+    (normalize_keep_intervals(&padded, duration), overlaps)
 }
 
 #[tauri::command]
@@ -1075,15 +1351,30 @@ async fn compute_video_filmstrip(path: String) -> Result<String, String> {
         return Err("Filmstrip preview requires a video file.".into());
     }
     let duration = info.duration.unwrap_or(1.0).max(0.1);
-    let filter = format!(
-        "fps=12/{duration:.6},scale=160:90:force_original_aspect_ratio=increase,crop=160:90,tile=12x1:padding=1:margin=0"
-    );
-    let output = hidden_command("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
-        .arg(&input)
+    // Seek before each input so a long/high-FPS recording is not decoded from
+    // start to finish merely to obtain a few representative thumbnails.
+    const TILES: usize = 7;
+    let mut command = hidden_command("ffmpeg");
+    command.args(["-hide_banner", "-loglevel", "error"]);
+    for index in 0..TILES {
+        let at = duration * (index as f64 + 0.5) / TILES as f64;
+        command.args(["-ss", &format!("{at:.6}"), "-i"]).arg(&input);
+    }
+    let mut filters = Vec::with_capacity(TILES + 1);
+    for index in 0..TILES {
+        filters.push(format!("[{index}:v]scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2:black[v{index}]"));
+    }
+    let inputs = (0..TILES)
+        .map(|index| format!("[v{index}]"))
+        .collect::<String>();
+    filters.push(format!("{inputs}hstack=inputs={TILES}[strip]"));
+    let filter = filters.join(";");
+    let output = command
         .args([
-            "-vf",
+            "-filter_complex",
             &filter,
+            "-map",
+            "[strip]",
             "-frames:v",
             "1",
             "-f",
@@ -1108,6 +1399,24 @@ async fn compute_video_filmstrip(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn autocut_presets() -> Vec<AutoCutPreset> {
+    AUTOCUT_PRESETS.to_vec()
+}
+
+fn autocut_edit_settings(request: &AutoCutRequest) -> AutoCutEditSettings {
+    // Compatibility path for pre-asymmetric clients/saved state: the old
+    // padding value becomes both sides and minimum-pause does not alter the
+    // already validated min-silence segmentation.
+    let legacy_padding = request.padding.unwrap_or(0.12);
+    AutoCutEditSettings {
+        minimum_pause: request.minimum_pause.unwrap_or(request.min_silence),
+        keep_before_speech: request.keep_before_speech.unwrap_or(legacy_padding),
+        keep_after_speech: request.keep_after_speech.unwrap_or(legacy_padding),
+        boundary_refinement: request.boundary_refinement.unwrap_or(false),
+    }
+}
+
+#[tauri::command]
 async fn analyze_autocut(
     state: State<'_, JobState>,
     request: AutoCutRequest,
@@ -1120,7 +1429,10 @@ async fn analyze_autocut(
     check_range(request.threshold, 0.05, 0.95, "Threshold")?;
     check_range(request.min_silence, 0.03, 30.0, "Minimum silence")?;
     check_range(request.min_speech, 0.03, 30.0, "Minimum speech")?;
-    check_range(request.padding, 0.0, 5.0, "Padding")?;
+    let edit = autocut_edit_settings(&request);
+    check_range(edit.minimum_pause, 0.03, 30.0, "Minimum pause")?;
+    check_range(edit.keep_before_speech, 0.0, 5.0, "Keep before speech")?;
+    check_range(edit.keep_after_speech, 0.0, 5.0, "Keep after speech")?;
     let input = PathBuf::from(request.analysis_input.as_deref().unwrap_or(&request.input));
     if !input.is_file() {
         return Err("Analysis audio file was not found.".into());
@@ -1129,19 +1441,22 @@ async fn analyze_autocut(
     if analysis_info.audio_codec.is_none() && analysis_info.kind != "audio" {
         return Err("Silence detection requires an audio stream.".into());
     }
-    let scores = cached_vad_scores(&state, &input).await?;
-    let cuts = keeps_from_vad_scores(
+    let (scores, samples) = cached_vad_data(&state, &input).await?;
+    let (cuts, overlaps_before_normalization) = natural_keeps_from_vad_scores(
         &scores,
+        &samples,
         request.threshold,
         request.min_silence,
         request.min_speech,
-        request.padding,
+        edit,
         duration,
     );
     Ok(AutoCutAnalysis {
         cuts,
         waveform: waveform_for(&input).await?,
         duration,
+        boundary_refinement: edit.boundary_refinement,
+        overlaps_before_normalization,
     })
 }
 
@@ -1154,7 +1469,8 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn enabled_cuts(cuts: &[KeepInterval], duration: f64) -> Result<Vec<KeepInterval>, String> {
+fn normalize_keep_intervals(cuts: &[KeepInterval], duration: f64) -> Vec<KeepInterval> {
+    const TIMESTAMP_EPSILON: f64 = 0.001;
     let mut values: Vec<_> = cuts
         .iter()
         .filter(|c| c.enabled)
@@ -1166,10 +1482,117 @@ fn enabled_cuts(cuts: &[KeepInterval], duration: f64) -> Result<Vec<KeepInterval
         .filter(|c| c.end - c.start >= 0.01)
         .collect();
     values.sort_by(|a, b| a.start.total_cmp(&b.start));
-    if values.is_empty() {
-        return Err("At least one enabled cut is required.".into());
+    let debug = std::env::var("CONTAINER_AUTOCUT_DEBUG")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let mut normalized: Vec<KeepInterval> = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        if let Some(previous) = normalized.last_mut() {
+            let gap = value.start - previous.end;
+            if debug {
+                eprintln!(
+                    "AUTOCUT REGION input={} start={:.6} end={:.6} duration={:.6} previous_end={:.6} gap={:.6} overlap={:.6}",
+                    index + 1,
+                    value.start,
+                    value.end,
+                    value.end - value.start,
+                    previous.end,
+                    gap,
+                    (-gap).max(0.0)
+                );
+            }
+            if value.start <= previous.end + TIMESTAMP_EPSILON {
+                previous.end = previous.end.max(value.end);
+                continue;
+            }
+        } else if debug {
+            eprintln!(
+                "AUTOCUT REGION input=1 start={:.6} end={:.6} duration={:.6}",
+                value.start,
+                value.end,
+                value.end - value.start
+            );
+        }
+        normalized.push(value);
     }
-    Ok(values)
+    debug_assert!(normalized
+        .windows(2)
+        .all(|pair| pair[0].end < pair[1].start));
+    normalized
+}
+
+fn enabled_cuts(cuts: &[KeepInterval], duration: f64) -> Result<Vec<KeepInterval>, String> {
+    let normalized = normalize_keep_intervals(cuts, duration);
+    if normalized.is_empty() {
+        Err("At least one enabled cut is required.".into())
+    } else {
+        Ok(normalized)
+    }
+}
+
+fn autocut_filter_graph(cuts: &[KeepInterval], has_audio: bool, resolution: &str) -> String {
+    let mut graph = String::new();
+    if cuts.len() > 1 {
+        let video_outputs = (0..cuts.len())
+            .map(|index| format!("[vsrc{index}]"))
+            .collect::<String>();
+        let _ = writeln!(graph, "[0:v]split={}{video_outputs};", cuts.len());
+        if has_audio {
+            let audio_outputs = (0..cuts.len())
+                .map(|index| format!("[asrc{index}]"))
+                .collect::<String>();
+            let _ = writeln!(graph, "[0:a]asplit={}{audio_outputs};", cuts.len());
+        }
+    }
+    for (index, cut) in cuts.iter().enumerate() {
+        let video_source = if cuts.len() == 1 {
+            "[0:v]".to_string()
+        } else {
+            format!("[vsrc{index}]")
+        };
+        let _ = writeln!(
+            graph,
+            "{video_source}trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS[v{index}];",
+            cut.start, cut.end
+        );
+        if has_audio {
+            let audio_source = if cuts.len() == 1 {
+                "[0:a]".to_string()
+            } else {
+                format!("[asrc{index}]")
+            };
+            let _ = writeln!(
+                graph,
+                "{audio_source}atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS[a{index}];",
+                cut.start, cut.end
+            );
+        }
+    }
+    let inputs = (0..cuts.len())
+        .map(|index| {
+            if has_audio {
+                format!("[v{index}][a{index}]")
+            } else {
+                format!("[v{index}]")
+            }
+        })
+        .collect::<String>();
+    let video_label = if resolution == "source" {
+        "vout"
+    } else {
+        "vconcat"
+    };
+    let _ = writeln!(
+        graph,
+        "{inputs}concat=n={}:v=1:a={}[{video_label}]{};",
+        cuts.len(),
+        usize::from(has_audio),
+        if has_audio { "[aout]" } else { "" }
+    );
+    if resolution != "source" {
+        let _ = writeln!(graph, "[vconcat]scale=-2:{resolution}[vout];");
+    }
+    graph
 }
 
 async fn export_autocut_inner(
@@ -1273,17 +1696,10 @@ async fn export_autocut_inner(
         });
     }
     let output = unique_output(&input, "smartcut", "mp4")?;
-    let list_path =
-        std::env::temp_dir().join(format!("container-autocut-{}.txt", std::process::id()));
-    let escaped = input.to_string_lossy().replace('\'', "'\\''");
-    let mut list = "ffconcat version 1.0\n".to_string();
-    for cut in &cuts {
-        list.push_str(&format!(
-            "file '{escaped}'\ninpoint {:.6}\noutpoint {:.6}\n",
-            cut.start, cut.end
-        ));
+    let graph = autocut_filter_graph(&cuts, info.audio_codec.is_some(), &request.resolution);
+    if std::env::var_os("CONTAINER_AUTOCUT_DEBUG").is_some() {
+        eprintln!("AUTOCUT FILTER GRAPH\n{graph}");
     }
-    std::fs::write(&list_path, list).map_err(|e| e.to_string())?;
     let crf = match request.quality.as_str() {
         "high" => "18",
         "small" => "26",
@@ -1298,14 +1714,14 @@ async fn export_autocut_inner(
     let started = Instant::now();
     let mut command = hidden_command("ffmpeg");
     command
-        .args(["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i"])
-        .arg(&list_path)
+        .args(["-hide_banner", "-y", "-i"])
+        .arg(&input)
+        .arg("-filter_complex")
+        .arg(&graph)
+        .args(["-map", "[vout]"])
         .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", crf]);
-    if request.resolution != "source" {
-        command.args(["-vf", &format!("scale=-2:{}", request.resolution)]);
-    }
     if info.audio_codec.is_some() {
-        command.args(["-c:a", "aac", "-b:a", audio_bitrate]);
+        command.args(["-map", "[aout]", "-c:a", "aac", "-b:a", audio_bitrate]);
     } else {
         command.arg("-an");
     }
@@ -1359,7 +1775,6 @@ async fn export_autocut_inner(
     let status = child.wait().await.map_err(|e| e.to_string())?;
     *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
     let errors = stderr_task.await.unwrap_or_default();
-    let _ = std::fs::remove_file(&list_path);
     if state.cancelled.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(&output);
         return Err("Job cancelled.".into());
@@ -2018,7 +2433,33 @@ async fn build_command(
                 if !font.is_file() {
                     return Err("The selected font is no longer available.".into());
                 }
-                text_filters.push(format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:x=w*{x:.6}-text_w/2:y=h*{y:.6}-text_h/2:borderw=2:bordercolor=black@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),opacity*0.45));
+                let outline = check_range(layer.outline, 0.0, 20.0, "Outline")?;
+                let shadow = check_range(layer.shadow, 0.0, 30.0, "Shadow")?;
+                let outline_color = if layer.outline_color.is_empty() {
+                    "#000000"
+                } else {
+                    &layer.outline_color
+                };
+                let shadow_color = if layer.shadow_color.is_empty() {
+                    "#000000"
+                } else {
+                    &layer.shadow_color
+                };
+                let mut filter = format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:x=w*{x:.6}-text_w/2:y=h*{y:.6}-text_h/2:borderw={outline:.0}:bordercolor={}:shadowx={shadow:.0}:shadowy={shadow:.0}:shadowcolor={}@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),drawtext_escape(outline_color),drawtext_escape(shadow_color),opacity*0.75);
+                if layer.background {
+                    let background_opacity =
+                        check_range(layer.background_opacity, 0.0, 100.0, "Background opacity")?
+                            / 100.0;
+                    let background_padding =
+                        check_range(layer.background_padding, 0.0, 80.0, "Background padding")?;
+                    let background_color = if layer.background_color.is_empty() {
+                        "#000000"
+                    } else {
+                        &layer.background_color
+                    };
+                    filter.push_str(&format!(":box=1:boxcolor={}@{background_opacity:.4}:boxborderw={background_padding:.0}",drawtext_escape(background_color)));
+                }
+                text_filters.push(filter);
             }
             args.extend([
                 "-vf".into(),
@@ -3624,6 +4065,7 @@ pub fn run() {
             list_media_files,
             compute_autocut_waveform,
             compute_video_filmstrip,
+            autocut_presets,
             recommend_autocut_settings,
             analyze_autocut,
             export_autocut,
@@ -3684,6 +4126,59 @@ mod tests {
     }
 
     #[test]
+    fn export_normalization_merges_duplicate_overlapping_and_touching_ranges() {
+        let cuts = vec![
+            KeepInterval {
+                start: 4.0,
+                end: 5.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 0.0,
+                end: 1.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 0.0,
+                end: 1.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 0.8,
+                end: 2.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 2.0005,
+                end: 3.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 4.2,
+                end: 4.8,
+                enabled: true,
+            },
+            KeepInterval {
+                start: -5.0,
+                end: -1.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 9.0,
+                end: 8.0,
+                enabled: true,
+            },
+        ];
+        let normalized = enabled_cuts(&cuts, 8.0).unwrap();
+        assert_eq!(normalized.len(), 2);
+        assert_eq!((normalized[0].start, normalized[0].end), (0.0, 3.0));
+        assert_eq!((normalized[1].start, normalized[1].end), (4.0, 5.0));
+        assert!(normalized
+            .windows(2)
+            .all(|pair| pair[0].end < pair[1].start));
+    }
+
+    #[test]
     fn automatic_audio_profile_separates_noise_from_voice() {
         let mut levels = vec![-58.0; 80];
         levels.extend(vec![-14.0; 120]);
@@ -3693,6 +4188,9 @@ mod tests {
         assert!((0.35..=0.65).contains(&recommendation.threshold));
         assert!((0.18..=0.80).contains(&recommendation.min_silence));
         assert!((0.10..=0.30).contains(&recommendation.min_speech));
+        assert!((0.35..=0.65).contains(&recommendation.minimum_pause));
+        assert_eq!(recommendation.keep_before_speech, 0.10);
+        assert_eq!(recommendation.keep_after_speech, 0.18);
         assert!(recommendation.speech_level_db > recommendation.noise_floor_db);
     }
 
@@ -3767,6 +4265,238 @@ mod tests {
         assert_eq!(keeps.len(), 1);
         assert!(keeps[0].start < 0.35);
         assert!(keeps[0].end > 1.70);
+    }
+
+    #[test]
+    fn vad_matches_autocut_hysteresis_without_smoothing_or_attack() {
+        // AutoCut enters immediately at 0.50, remains active at 0.40, and
+        // exits only below 0.35. A one-chunk utterance is kept when the
+        // requested minimum speech duration is one chunk.
+        let scores = [0.0, 0.50, 0.40, 0.34, 0.0];
+        let keeps = keeps_from_vad_scores(&scores, 0.50, 0.0, 0.032, 0.0, 1.0);
+        assert_eq!(keeps.len(), 1);
+        assert_eq!(keeps[0].start, 0.032);
+        assert_eq!(keeps[0].end, 0.096);
+    }
+
+    #[test]
+    fn vad_uses_autocuts_strict_min_silence_boundary() {
+        // With a 64 ms requirement, a two-chunk (64 ms) gap is a real split;
+        // AutoCut merges only gaps strictly shorter than the requested value.
+        let scores = [0.9, 0.0, 0.0, 0.9];
+        let keeps = keeps_from_vad_scores(&scores, 0.5, 0.064, 0.032, 0.0, 1.0);
+        assert_eq!(keeps.len(), 2);
+        assert_eq!((keeps[0].start, keeps[0].end), (0.0, 0.032));
+        assert_eq!((keeps[1].start, keeps[1].end), (0.096, 0.128));
+    }
+
+    #[test]
+    fn vad_applies_padding_after_segmentation_and_merges_overlap() {
+        let scores = [0.9, 0.0, 0.0, 0.9];
+        let keeps = keeps_from_vad_scores(&scores, 0.5, 0.032, 0.032, 0.04, 1.0);
+        assert_eq!(keeps.len(), 1);
+        assert_eq!(keeps[0].start, 0.0);
+        assert_eq!(keeps[0].end, 0.168);
+    }
+
+    #[test]
+    fn strong_two_frame_interjection_survives_min_speech_filter() {
+        let scores = [0.0, 0.96, 0.95, 0.0];
+        let keeps = keeps_from_vad_scores(&scores, 0.5, 0.1, 0.15, 0.0, 1.0);
+        assert_eq!(keeps.len(), 1);
+        assert!((keeps[0].end - keeps[0].start - 0.064).abs() < 1e-9);
+    }
+
+    #[test]
+    fn editing_minimum_pause_preserves_natural_micro_pauses() {
+        let mut scores = vec![0.9; 10];
+        scores.extend(vec![0.0; 8]);
+        scores.extend(vec![0.9; 10]);
+        let samples = vec![0_i16; scores.len() * 512];
+        let (balanced, _) = natural_keeps_from_vad_scores(
+            &scores,
+            &samples,
+            0.5,
+            0.1,
+            0.15,
+            AutoCutEditSettings {
+                minimum_pause: 0.35,
+                keep_before_speech: 0.1,
+                keep_after_speech: 0.18,
+                boundary_refinement: false,
+            },
+            2.0,
+        );
+        assert_eq!(balanced.len(), 1, "256 ms pause should remain intact");
+    }
+
+    #[test]
+    fn asymmetric_padding_uses_after_on_left_and_before_on_right() {
+        let mut scores = vec![0.9; 10];
+        scores.extend(vec![0.0; 20]);
+        scores.extend(vec![0.9; 10]);
+        let samples = vec![0_i16; scores.len() * 512];
+        let (keeps, _) = natural_keeps_from_vad_scores(
+            &scores,
+            &samples,
+            0.5,
+            0.1,
+            0.15,
+            AutoCutEditSettings {
+                minimum_pause: 0.35,
+                keep_before_speech: 0.1,
+                keep_after_speech: 0.18,
+                boundary_refinement: false,
+            },
+            2.0,
+        );
+        assert_eq!(keeps.len(), 2);
+        assert!((keeps[0].end - (0.320 + 0.180)).abs() < 1e-9);
+        assert!((keeps[1].start - (0.960 - 0.100)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn boundary_refinement_only_expands_toward_safe_quiet_audio() {
+        let sample = 8_000;
+        let mut samples = vec![0_i16; 12_000];
+        for value in &mut samples[sample - 320..sample + 800] {
+            *value = 8_000;
+        }
+        let refined_start = refine_boundary(&samples, sample, -1);
+        let refined_end = refine_boundary(&samples, sample, 1);
+        assert!(refined_start <= sample);
+        assert!(refined_end >= sample + 800);
+    }
+
+    #[test]
+    fn editing_presets_are_centralized_and_directionally_safe() {
+        assert_eq!(AUTOCUT_PRESETS[0].id, "natural");
+        assert_eq!(AUTOCUT_PRESETS[1].id, "balanced");
+        assert_eq!(AUTOCUT_PRESETS[2].id, "tight");
+        for preset in AUTOCUT_PRESETS {
+            assert!(preset.keep_after_speech > preset.keep_before_speech);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "set CONTAINER_VAD_PARITY_MEDIA to run the real-media parity report"]
+    async fn vad_real_media_parity_report() {
+        let source = PathBuf::from(
+            std::env::var("CONTAINER_VAD_PARITY_MEDIA")
+                .expect("CONTAINER_VAD_PARITY_MEDIA must point to a media file"),
+        );
+        let duration_output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(duration_output.status.success());
+        let duration = String::from_utf8_lossy(&duration_output.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap();
+        let state = JobState::default();
+        let (scores, samples) = cached_vad_data(&state, &source).await.unwrap();
+        let v6 = keeps_from_vad_scores(&scores, 0.5, 0.1, 0.15, 0.3, duration);
+        let v6_kept: f64 = v6.iter().map(|keep| keep.end - keep.start).sum();
+        eprintln!(
+            "V6_PARITY source={} chunks={} regions={} kept={v6_kept:.3}s removed={:.3}s duration={duration:.3}s",
+            source.display(),
+            scores.len(),
+            v6.len(),
+            duration - v6_kept
+        );
+        let balanced_settings = AutoCutEditSettings {
+            minimum_pause: 0.35,
+            keep_before_speech: 0.10,
+            keep_after_speech: 0.18,
+            boundary_refinement: true,
+        };
+        let (balanced, overlaps) = natural_keeps_from_vad_scores(
+            &scores,
+            &samples,
+            0.5,
+            0.1,
+            0.15,
+            balanced_settings,
+            duration,
+        );
+        let balanced_kept: f64 = balanced.iter().map(|keep| keep.end - keep.start).sum();
+        eprintln!(
+            "BALANCED regions={} cuts={} kept={balanced_kept:.3}s removed={:.3}s threshold=.50 minimum_pause=.350s min_speech=.150s before=.100s after=.180s refinement=true overlaps_before_normalization={overlaps}",
+            balanced.len(),
+            balanced.len().saturating_sub(1),
+            duration - balanced_kept
+        );
+        assert!(!balanced.is_empty());
+        if std::env::var("CONTAINER_PARITY_EXPORT").as_deref() == Ok("1") {
+            let expected_duration: f64 = balanced.iter().map(|cut| cut.end - cut.start).sum();
+            let fps = 30.0_f64;
+            let expected_video_duration: f64 = balanced
+                .iter()
+                .map(|cut| {
+                    let frame_duration = ((cut.end * fps).ceil() - (cut.start * fps).ceil()) / fps;
+                    frame_duration.max(cut.end - cut.start)
+                })
+                .sum();
+            let rendered = export_autocut_inner(
+                None,
+                &state,
+                AutoCutExportRequest {
+                    input: source.to_string_lossy().into_owned(),
+                    cuts: balanced.clone(),
+                    format: "mp4".into(),
+                    quality: "medium".into(),
+                    resolution: "source".into(),
+                    linked_tracks: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let rendered = PathBuf::from(rendered.output);
+            let info = probe_media(rendered.to_string_lossy().into_owned())
+                .await
+                .unwrap();
+            let actual_duration = info.duration.unwrap();
+            eprintln!("RENDER_DURATIONS logical={expected_duration:.6} frame_aligned={expected_video_duration:.6} actual={actual_duration:.6}");
+            assert!((actual_duration - expected_video_duration).abs() < 0.05);
+            let mut output_cursor = 0.0;
+            for cut in &balanced {
+                let first_frame = (cut.start * fps).ceil();
+                let frame_count = ((cut.end * fps).ceil() - first_frame).max(1.0);
+                let segment_duration = (frame_count / fps).max(cut.end - cut.start);
+                let middle_frame = (frame_count / 2.0).floor();
+                let source_signature =
+                    sample_video_signature(&source, (first_frame + middle_frame) / fps);
+                let output_signature =
+                    sample_video_signature(&rendered, output_cursor + middle_frame / fps);
+                let mean_error = source_signature
+                    .iter()
+                    .zip(output_signature.iter())
+                    .map(|(left, right)| (*left as f64 - *right as f64).abs())
+                    .sum::<f64>()
+                    / source_signature.len() as f64;
+                assert!(
+                    mean_error < 14.0,
+                    "source-range order mismatch: MAE={mean_error}"
+                );
+                output_cursor += segment_duration;
+            }
+            assert!(packet_timestamps_are_monotonic(&rendered, "v:0"));
+            assert!(packet_timestamps_are_monotonic(&rendered, "a:0"));
+            eprintln!(
+                "RENDER_VALIDATED path={} logical_duration={expected_duration:.3}s frame_aligned_duration={expected_video_duration:.3}s actual_duration={actual_duration:.3}s regions={} video_timestamps=monotonic audio_timestamps=monotonic signatures=matched",
+                rendered.display(),
+                balanced.len()
+            );
+        }
     }
 
     #[test]
@@ -4189,6 +4919,243 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    fn sample_video_rgb(path: &Path, at: f64) -> [u8; 3] {
+        let output = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-ss"])
+            .arg(format!("{at:.3}"))
+            .arg("-i")
+            .arg(path)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=1:1,format=rgb24",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        [output.stdout[0], output.stdout[1], output.stdout[2]]
+    }
+
+    fn sample_video_signature(path: &Path, at: f64) -> Vec<u8> {
+        let output = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-ss"])
+            .arg(format!("{at:.6}"))
+            .arg("-i")
+            .arg(path)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=16:9,format=rgb24",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output.stdout
+    }
+
+    fn packet_timestamps_are_monotonic(path: &Path, stream: &str) -> bool {
+        let output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                stream,
+                "-show_frames",
+                "-show_entries",
+                "frame=best_effort_timestamp_time",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return false;
+        }
+        let mut previous = f64::NEG_INFINITY;
+        for current in String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<f64>().ok())
+        {
+            if current + 1e-9 < previous {
+                return false;
+            }
+            previous = current;
+        }
+        previous.is_finite()
+    }
+
+    fn sample_audio_frequency(path: &Path, at: f64) -> f64 {
+        let output = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-ss"])
+            .arg(format!("{at:.3}"))
+            .arg("-i")
+            .arg(path)
+            .args([
+                "-t", "0.35", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let samples = output
+            .stdout
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        let crossings = samples
+            .windows(2)
+            .filter(|pair| (pair[0] < 0 && pair[1] >= 0) || (pair[0] >= 0 && pair[1] < 0))
+            .count();
+        crossings as f64 * 16_000.0 / (2.0 * samples.len() as f64)
+    }
+
+    #[tokio::test]
+    async fn smartcut_export_never_replays_a_source_range() {
+        let root = std::env::temp_dir().join("container_smartcut_replay_regression");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("abc-source.mp4");
+        let video_source = "color=c=black:s=160x90:r=30:d=6,drawbox=x=0:y=0:w=iw:h=ih:color=red:t=fill:enable='between(t,0,1)',drawbox=x=0:y=0:w=iw:h=ih:color=green:t=fill:enable='between(t,2,3)',drawbox=x=0:y=0:w=iw:h=ih:color=blue:t=fill:enable='between(t,4,5)'";
+        let audio_source = "aevalsrc=exprs='if(between(t,0,1),0.5*sin(2*PI*440*t),if(between(t,2,3),0.5*sin(2*PI*660*t),if(between(t,4,5),0.5*sin(2*PI*880*t),0)))':s=48000:d=6";
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg(video_source)
+            .args(["-f", "lavfi", "-i"])
+            .arg(audio_source)
+            .args([
+                "-c:v",
+                "libx264",
+                "-g",
+                "180",
+                "-keyint_min",
+                "180",
+                "-sc_threshold",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let cuts = vec![
+            KeepInterval {
+                start: 0.0,
+                end: 1.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 2.0,
+                end: 3.0,
+                enabled: true,
+            },
+            KeepInterval {
+                start: 4.0,
+                end: 5.0,
+                enabled: true,
+            },
+        ];
+        // Reproduce the old exporter with two ranges that overlap by 200 ms.
+        // The old `enabled_cuts` passed both ranges through and concat appended
+        // the shared source time twice, producing a 2.2 s file from a 2.0 s
+        // source-time union.
+        let legacy_list = root.join("legacy.ffconcat");
+        let escaped = source.to_string_lossy().replace('\'', "'\\''");
+        std::fs::write(
+            &legacy_list,
+            format!(
+                "ffconcat version 1.0\nfile '{escaped}'\ninpoint 0\noutpoint 1.2\nfile '{escaped}'\ninpoint 1\noutpoint 2\n"
+            ),
+        )
+        .unwrap();
+        let legacy = root.join("legacy-export.mp4");
+        let legacy_status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+            ])
+            .arg(&legacy_list)
+            .args(["-c:v", "libx264", "-c:a", "aac"])
+            .arg(&legacy)
+            .status()
+            .unwrap();
+        assert!(legacy_status.success());
+        let legacy_info = probe_media(legacy.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert!(legacy_info.duration.is_some_and(|duration| duration > 2.15));
+
+        let rendered = export_autocut_inner(
+            None,
+            &JobState::default(),
+            AutoCutExportRequest {
+                input: source.to_string_lossy().into_owned(),
+                cuts,
+                format: "mp4".into(),
+                quality: "medium".into(),
+                resolution: "source".into(),
+                linked_tracks: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let rendered = PathBuf::from(rendered.output);
+        let colors = [
+            sample_video_rgb(&rendered, 0.5),
+            sample_video_rgb(&rendered, 1.5),
+            sample_video_rgb(&rendered, 2.5),
+        ];
+        assert!(colors[0][0] > colors[0][1] * 2 && colors[0][0] > colors[0][2] * 2);
+        assert!(colors[1][1] > colors[1][0] * 2 && colors[1][1] > colors[1][2] * 2);
+        assert!(colors[2][2] > colors[2][0] * 2 && colors[2][2] > colors[2][1] * 2);
+        let frequencies = [
+            sample_audio_frequency(&rendered, 0.3),
+            sample_audio_frequency(&rendered, 1.3),
+            sample_audio_frequency(&rendered, 2.3),
+        ];
+        for (actual, expected) in frequencies.into_iter().zip([440.0, 660.0, 880.0]) {
+            assert!(
+                (actual - expected).abs() < 35.0,
+                "actual={actual} expected={expected}"
+            );
+        }
+        let rendered_info = probe_media(rendered.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert!(rendered_info
+            .duration
+            .is_some_and(|duration| (duration - 3.0).abs() < 0.08));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[tokio::test]
     async fn transform_rotation_and_flip_filters_follow_visible_axes() {
         let root = std::env::temp_dir().join("container_transform_matrix_test");
@@ -4383,7 +5350,7 @@ mod tests {
                 "text",
                 values(&[(
                     "layers",
-                    r##"[{"text":"CONTAINER","x":50,"y":50,"size":24,"color":"#ffffff","opacity":50}]"##,
+                    r##"[{"text":"CONTAINER","x":50,"y":50,"size":24,"color":"#ffffff","opacity":80,"outline":2,"outline_color":"#000000","shadow":3,"shadow_color":"#000000","background":true,"background_color":"#102030","background_opacity":55,"background_padding":8}]"##,
                 )]),
             ),
             (

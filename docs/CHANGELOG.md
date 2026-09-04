@@ -4,6 +4,30 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-09-04
+
+### Added
+
+- Silence Cutter now uses the fully local Silero V6 model with Natural, Balanced, Tight and automatic editing presets.
+- Added separate Minimum Pause, Keep Before Speech and Keep After Speech controls with conservative waveform boundary refinement.
+- Added application-wide undo and redo with `Ctrl+Z` and `Ctrl+Shift+Z` across Toolbox, Silence Cutter and Batch workflows.
+- Color Adjustment now includes quick looks and a before/after preview; Text overlays support outline, shadow and background styling.
+- Quality / Compression now offers approachable High Quality, Balanced and Small File profiles alongside advanced controls.
+
+### Changed
+
+- Silence Cutter keeps one shared speech segmentation engine for manual, preset and Auto modes, while keeping technical detection controls under Advanced.
+- Timeline frame generation is faster and keeps the preview geometry stable when switching tools; timeline hover now shows the target timestamp.
+- Slider fills and handles now follow the active light or dark theme consistently.
+
+### Fixed
+
+- SmartCut export now normalizes duplicate, contained, overlapping and touching source ranges before rendering, preventing replayed audio or video around cuts.
+- MP4 SmartCut exports now trim audio and video from one source through an exact timestamp-reset concat graph instead of keyframe-sensitive concat-demuxer ranges.
+- Short, high-confidence words and interjections are preserved while natural micro-pauses remain intact.
+- SmartCut timestamps are displayed cleanly without floating-point artifacts, and preview, timeline and export share the same normalized ranges.
+- CONTAINER can be captured by OBS Window Capture, and the Show Output action remains visible in compact window layouts.
+
 ## [0.7.0] - 2026-09-03
 
 ### Added

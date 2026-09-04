@@ -41,7 +41,8 @@
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
   interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
   interface FontOption { name:string; path:string }
-  interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string }
+  interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
+  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean> }
 
   const windowIconBuffers = {
     dark: fetch("/logo-dark.png").then(response => response.arrayBuffer()),
@@ -63,6 +64,10 @@
   let elapsed = $state(0);
   let search = $state("");
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
+  let autoCutWorkspace:{undo:()=>void;redo:()=>void}|null=$state(null);
+  let batchWorkspace:{undo:()=>void;redo:()=>void}|null=$state(null);
+  let autoCutCanUndo=$state(false),autoCutCanRedo=$state(false);
+  let batchCanUndo=$state(false),batchCanRedo=$state(false);
   let toolboxVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
   let toolboxCanvas: HTMLElement | null = $state(null);
@@ -77,10 +82,12 @@
   let qualityAnalyzing = $state(false);
   let hashResult = $state("");
   let colorEnabled: Record<string,boolean> = $state({});
+  let colorPreviewVisible = $state(true);
   let textLayers: TextLayer[] = $state([]);
   let activeTextId: number | null = $state(null);
   let systemFonts: FontOption[] = $state([]);
   let fontsLoading = $state(false);
+  let qualityAdvanced = $state(localStorage.getItem("container-quality-mode")==="advanced");
   let nextTextId = 1;
   let imageCompare = $state(50);
   let imageViewport: HTMLElement | null = $state(null);
@@ -94,6 +101,7 @@
   let toolboxFilmstripUrl = $state("");
   let toolboxFilmstripLoading = $state(false);
   let toolboxTimeline: HTMLElement | null = $state(null);
+  let timelineHover = $state<number|null>(null);
   let language: "tr" | "en" = $state("en");
   let theme: "dark" | "light" = $state(document.documentElement.dataset.theme === "light" ? "light" : "dark");
   let availableEncoders: string[] | null = $state(null);
@@ -106,6 +114,9 @@
   let updateChecking = $state(false);
   let updateInstalling = $state(false);
   let updateStatus = $state("");
+  let editHistory: EditorSnapshot[] = $state([]);
+  let editHistoryIndex = $state(-1);
+  let historyApplying = false;
   let updateDownloaded = $state(0);
   let updateTotal = $state(0);
   const messages:Record<"tr"|"en",Record<string,string>>={
@@ -115,8 +126,42 @@
   const t=(key:string)=>messages[language][key]??key;
   const kindTools=(kind:MediaKind)=>localizedForSection(kind,media?.kind??kind,language);
   const timelineTool = $derived.by(()=>selected ? ["cut","screenshot","gif"].includes(selected.id) : false);
+  const canUndo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
+  const canRedo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenDrop: UnlistenFn | null = null;
+
+  function cloneEditorValue<T>(value:T):T{return JSON.parse(JSON.stringify(value)) as T}
+
+  function captureEditorSnapshot():EditorSnapshot|null{
+    if(!media)return null;
+    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields});
+  }
+  function snapshotSignature(snapshot:EditorSnapshot){return JSON.stringify(snapshot)}
+  function resetEditorHistory(){const snapshot=captureEditorSnapshot();editHistory=snapshot?[snapshot]:[];editHistoryIndex=snapshot?0:-1}
+  function commitEditorSnapshot(snapshot:EditorSnapshot){
+    if(historyApplying)return;
+    if(editHistoryIndex>=0&&snapshotSignature(editHistory[editHistoryIndex])===snapshotSignature(snapshot))return;
+    editHistory=[...editHistory.slice(0,editHistoryIndex+1),snapshot].slice(-80);
+    editHistoryIndex=editHistory.length-1;
+  }
+  function flushEditorSnapshot(){const snapshot=captureEditorSnapshot();if(snapshot)commitEditorSnapshot(snapshot)}
+  function applyEditorSnapshot(snapshot:EditorSnapshot,direction:"undo"|"redo"){
+    historyApplying=true;
+    toolboxVideo?.pause();
+    media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl;selected=cloneEditorValue(snapshot.selected);activeKind=snapshot.activeKind;output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
+    requestAnimationFrame(()=>historyApplying=false);
+  }
+  function undoEditor(){if(busy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
+  function redoEditor(){if(busy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.redo();return}if(workspaceMode==="batch"){batchWorkspace?.redo();return}if(editHistoryIndex>=editHistory.length-1)return;editHistoryIndex+=1;applyEditorSnapshot(editHistory[editHistoryIndex],"redo")}
+
+  $effect(()=>{
+    const snapshot=captureEditorSnapshot();
+    if(!snapshot||historyApplying)return;
+    const signature=snapshotSignature(snapshot);
+    const timer=window.setTimeout(()=>{const current=captureEditorSnapshot();if(!historyApplying&&current&&signature===snapshotSignature(current))commitEditorSnapshot(snapshot)},280);
+    return()=>window.clearTimeout(timer);
+  });
 
   const categories = $derived.by(() => {
     const list = kindTools(activeKind).filter((tool) => `${tool.title} ${tool.description}`.toLocaleLowerCase(language).includes(search.toLocaleLowerCase(language)));
@@ -136,6 +181,7 @@
     return `${amount.toFixed(unit ? 2 : 0)} ${units[unit]}`;
   };
   const formatDuration = (value: number | null) => value == null ? "—" : `${value.toFixed(2)}s`;
+  const rangePercent = (value:number,min:number,max:number) => Math.max(0,Math.min(100,(value-min)/Math.max(.000001,max-min)*100));
   const playerTime = (value: number) => {
     const safe = Math.max(0, Number(value) || 0);
     const hours = Math.floor(safe / 3600);
@@ -178,6 +224,7 @@
     const changed = selected?.id !== tool.id;
     if(changed){
       colorEnabled={};
+      colorPreviewVisible=true;
       textLayers=[];
       activeTextId=null;
     }
@@ -230,7 +277,7 @@
     if(!selected)return;
     const source=kindTools(activeKind).find(item=>item.id===selected?.id);
     if(source)selected=localizedTool(source,language);
-    colorEnabled={};textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
+    colorEnabled={};colorPreviewVisible=true;textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
   }
 
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
@@ -238,6 +285,7 @@
   function fieldVisible(key:string){
     if(selected?.id==="transform" && key!=="crf") return false;
     if(selected?.id==="color" || selected?.id==="text") return false;
+    if(selected?.id==="compression"&&!qualityAdvanced)return false;
     if(key==="audio_track") return String(toolField("audio_mode")?.value)==="selected";
     if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
@@ -254,6 +302,7 @@
     const source=kindTools(activeKind).find(tool=>tool.id==="color");
     if(source)selected=localizedTool(source,language);
     colorEnabled={};
+    colorPreviewVisible=true;
   }
   function colorOn(key:string){return !!colorEnabled[key]}
   function toggleColor(key:string){colorEnabled={...colorEnabled,[key]:!colorEnabled[key]}}
@@ -263,7 +312,7 @@
   }
   function colorValueLabel(key:string){const value=toolNumber(key);return key==="temperature"?`${value} K`:key==="hue"?`${value}°`:`${value}%`}
   function colorPreviewStyle(){
-    if(selected?.id!=="color")return "";
+    if(selected?.id!=="color"||!colorPreviewVisible)return "";
     const filters:string[]=[];
     if(colorOn("brightness"))filters.push(`brightness(${Math.max(0,1+toolNumber("brightness")/100)})`);
     if(colorOn("contrast"))filters.push(`contrast(${toolNumber("contrast")/100})`);
@@ -282,7 +331,14 @@
     if(toolValue("grayscale")==="on")filters.push("grayscale(1)");
     return filters.length?`filter:${filters.join(" ")}`:"";
   }
-  function previewVideoStyle(){return selected?.id==="transform"?transformPreviewStyle():colorPreviewStyle()}
+  function neutralPreviewStyle(){
+    const box=mediaDisplayBox();if(!box)return "";
+    return `position:absolute;left:50%;top:50%;width:${box.width}px;height:${box.height}px;transform:translate(-50%,-50%)`;
+  }
+  function previewVideoStyle(){
+    const geometry=selected?.id==="transform"?transformPreviewStyle():neutralPreviewStyle();
+    return `${geometry};${colorPreviewStyle()}`;
+  }
 
   function activeText(){return textLayers.find(layer=>layer.id===activeTextId)??null}
   async function ensureSystemFonts(){
@@ -295,7 +351,7 @@
     const fonts=await ensureSystemFonts();
     const font=fonts.find(item=>item.name.toLowerCase()==="impact")??fonts.find(item=>item.name.toLowerCase().startsWith("arial"))??fonts[0];
     if(!font){error=language==="tr"?"Bilgisayarda kullanılabilir font bulunamadı.":"No usable system font was found.";return}
-    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,fontName:font.name,font_path:font.path};
+    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,fontName:font.name,font_path:font.path,outline:0,outline_color:"#000000",shadow:0,shadow_color:"#000000",background:false,background_color:"#000000",background_opacity:65,background_padding:12};
     textLayers=[...textLayers,layer];activeTextId=layer.id;
   }
   function updateTextLayer(patch:Partial<TextLayer>){textLayers=textLayers.map(layer=>layer.id===activeTextId?{...layer,...patch}:layer)}
@@ -303,11 +359,27 @@
   function textLayerStyle(layer:TextLayer){
     const box=mediaDisplayBox();if(!box||!media?.width)return "display:none";
     const scale=box.width/media.width;
-    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)}`;
+    const outline=Math.max(0,layer.outline*scale),shadow=Math.max(0,layer.shadow*scale),padding=Math.max(0,layer.background_padding*scale);
+    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)};-webkit-text-stroke:${outline}px ${layer.outline_color};text-shadow:${shadow?`${shadow}px ${shadow}px ${Math.max(1,shadow*.7)}px ${layer.shadow_color}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"3px 8px"}`;
   }
   function chooseTextFont(path:string){const font=systemFonts.find(item=>item.path===path);if(font)updateTextLayer({fontName:font.name,font_path:font.path})}
   function setTextColor(value:string){if(/^#[0-9a-f]{6}$/i.test(value))updateTextLayer({color:value.toLowerCase()})}
+  function hexWithAlpha(color:string,opacity:number){return /^#[0-9a-f]{6}$/i.test(color)?`${color}${Math.round(Math.max(0,Math.min(100,opacity))*2.55).toString(16).padStart(2,"0")}`:"transparent"}
   const textColors=["#ffffff","#000000","#00f1ff","#38d67a","#e7c84f","#fa646d","#6ba8ff","#d85cff"];
+  function applyColorPreset(preset:string){
+    resetColorFilters();
+    const apply=(values:Record<string,number>)=>{for(const [key,value] of Object.entries(values)){setToolNumber(key,value);colorEnabled={...colorEnabled,[key]:true}}};
+    if(preset==="natural")apply({contrast:105,saturation:105,sharpen:18});
+    if(preset==="cinematic")apply({contrast:112,saturation:88,temperature:5600,vignette:28});
+    if(preset==="warm")apply({temperature:5000,saturation:108,contrast:104});
+    if(preset==="cold")apply({temperature:8500,saturation:103,contrast:106});
+    if(preset==="bw"){apply({contrast:112});setToolValue("grayscale","on")}
+  }
+  function setQualityMode(advanced:boolean){qualityAdvanced=advanced;localStorage.setItem("container-quality-mode",advanced?"advanced":"simple")}
+  function applyQualityProfile(profile:"high"|"balanced"|"small"){
+    const values={high:{crf:16,preset:"slow",goal:"high"},balanced:{crf:20,preset:"veryfast",goal:"balanced"},small:{crf:24,preset:"veryfast",goal:"small"}}[profile];
+    setToolNumber("crf",values.crf);setToolValue("preset",values.preset);setToolValue("goal",values.goal);qualityAnalysis=null;
+  }
   function startTextDrag(event:PointerEvent,layer:TextLayer,resizeDirection:-1|0|1=0){
     if(!toolboxCanvas||!media?.width)return;event.preventDefault();event.stopPropagation();activeTextId=layer.id;
     const box=mediaDisplayBox();if(!box)return;const mediaWidth=media.width;const startX=event.clientX,startY=event.clientY,origin={...layer};
@@ -331,7 +403,8 @@
   function mediaDisplayBox(){
     if(!toolboxCanvas||!media?.width||!media?.height)return null;
     const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,ratio=media.width/media.height;
-    let width=stageWidth,height=width/ratio;if(height>stageHeight){height=stageHeight;width=height*ratio}
+    const availableWidth=Math.max(1,stageWidth-16),availableHeight=Math.max(1,stageHeight-16);
+    let width=availableWidth,height=width/ratio;if(height>availableHeight){height=availableHeight;width=height*ratio}
     return {stageWidth,stageHeight,width,height,swapped:false};
   }
   $effect(()=>{
@@ -416,7 +489,14 @@
     try{toolboxFilmstripUrl=await invoke<string>("compute_video_filmstrip",{path:media.path})}catch(reason){error=String(reason)}finally{toolboxFilmstripLoading=false}
   }
   function timelineAt(clientX:number){if(!toolboxTimeline||!media?.duration)return 0;const rect=toolboxTimeline.getBoundingClientRect();return Math.max(0,Math.min(media.duration,(clientX-rect.left)/rect.width*media.duration))}
-  function seekTimeline(event:MouseEvent){const at=timelineAt(event.clientX);seekToolbox(at);if(selected?.id==="screenshot")setToolNumber("timestamp",at)}
+  function seekTimeline(event:MouseEvent){
+    const at=timelineAt(event.clientX);seekToolbox(at);
+    if(selected?.id==="screenshot"){setToolNumber("timestamp",at);return}
+    if(!media?.duration||!selected||!["cut","gif"].includes(selected.id))return;
+    const bounds=timelineBounds(),span=Math.max(.01,bounds.end-bounds.start),start=Math.max(0,Math.min(media.duration-span,at)),end=Math.min(media.duration,start+span);
+    if(selected.id==="gif"){setToolNumber("start",start);setToolNumber("duration",end-start)}else{setToolNumber("start",start);setToolNumber("end",end)}
+  }
+  function hoverTimeline(event:PointerEvent){if(!toolboxTimeline)return;const rect=toolboxTimeline.getBoundingClientRect();timelineHover=Math.max(0,Math.min(100,(event.clientX-rect.left)/rect.width*100))}
   function startToolTimelineDrag(event:PointerEvent,mode:"start"|"end"|"point"|"range"){
     event.preventDefault();event.stopPropagation();if(!selected||!media?.duration)return;
     const initial=timelineBounds(),pointerStart=timelineAt(event.clientX),span=initial.end-initial.start;
@@ -448,8 +528,8 @@
     const allowed=kind===media.kind||(media.kind==="video"&&kind==="audio");
     if(!allowed)return;
     activeKind=kind; search="";
-    const first=kindTools(kind)[0]; selected=first?localizedTool(first,language):null;
-    if(selected)chooseTool(selected);
+    const first=kindTools(kind)[0];
+    if(first)chooseTool(first);else selected=null;
   }
   function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
     if(mode!==workspaceMode&&workspaceMode==="toolbox")resetSelectedTool();
@@ -536,9 +616,12 @@
       if (first) chooseTool(first);
       progress = 0;
       jobStatus = "ready";
+      resetEditorHistory();
     } catch (reason) {
       media = null;
       selected = null;
+      editHistory = [];
+      editHistoryIndex = -1;
       error = String(reason);
       jobStatus = "error";
     }
@@ -565,6 +648,8 @@
     imageDragging = false;
     imageViewInitialized = false;
     toolboxFilmstripUrl="";toolboxFilmstripLoading=false;
+    editHistory = [];
+    editHistoryIndex = -1;
   }
 
   function seekToolbox(value: number) {
@@ -904,7 +989,14 @@
       }
     }).catch(() => { availableEncoders = null; });
     const playerKeys = (event: KeyboardEvent) => {
-      if (workspaceMode !== "toolbox" || media?.kind !== "video") return;
+      if (!media) return;
+      if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redoEditor(); else undoEditor();
+        return;
+      }
+      if (workspaceMode !== "toolbox") return;
+      if (media.kind !== "video" || event.ctrlKey || event.altKey || event.metaKey) return;
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag && ["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
       if (event.code === "Space") { event.preventDefault(); toggleToolboxPlayer(); }
@@ -967,6 +1059,7 @@
         {#if media.fps}<span><b>fps</b>{media.fps.toFixed(3)}</span><em>·</em>{/if}
         <span><b>codec</b>{media.codec}</span><em>·</em><span><b>size</b>{formatBytes(media.size)}</span>
       </div>
+      <div class="history-actions"><button onclick={undoEditor} disabled={!canUndo} title={language==="tr"?"Geri al · Ctrl+Z":"Undo · Ctrl+Z"} aria-label={language==="tr"?"Geri al":"Undo"}>↶</button><button onclick={redoEditor} disabled={!canRedo} title={language==="tr"?"İleri al · Ctrl+Shift+Z":"Redo · Ctrl+Shift+Z"} aria-label={language==="tr"?"İleri al":"Redo"}>↷</button></div>
       <div class="language-switch theme-only"><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
       <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
@@ -1037,9 +1130,9 @@
         <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
     </nav>
     {#if workspaceMode === "autocut" && media.kind === "video"}
-      <AutoCutWorkspace {media} {mediaUrl} {language} />
+      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} />
     {:else if workspaceMode === "batch"}
-      <BatchWorkspace initialPath={media.path} {language} {availableEncoders} />
+      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} />
     {:else}
     <section class="workspace">
       <aside class="tool-pane panel">
@@ -1157,7 +1250,7 @@
         {#if timelineTool && media.duration}
           <div class="tool-timeline panel">
             <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div><b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${playerTime(timelineBounds().start)} — ${playerTime(timelineBounds().end)}`}</b></header>
-            <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} role="presentation">
+            <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} onpointermove={hoverTimeline} onpointerleave={()=>timelineHover=null} role="presentation">
               {#if toolboxFilmstripUrl}<img class="filmstrip" src={toolboxFilmstripUrl} alt="Video filmstrip" draggable="false">{:else}<span class="wave-loading">{toolboxFilmstripLoading ? (language==="tr"?"video kareleri hazırlanıyor…":"building video frames…") : "—"}</span>{/if}
               {#if selected?.id === "screenshot"}
                 <i class="timeline-point" role="slider" tabindex="0" aria-label="Timestamp" aria-valuemin="0" aria-valuemax={media.duration} aria-valuenow={timelineBounds().start} style:left={`${timelineBounds().start/media.duration*100}%`} onkeydown={(event)=>timelineHandleKey(event,"point")} onpointerdown={(event)=>startToolTimelineDrag(event,"point")}><b></b></i>
@@ -1166,6 +1259,7 @@
                   <i class="timeline-edge left" role="slider" tabindex="0" aria-label="Start" aria-valuemin="0" aria-valuemax={timelineBounds().end} aria-valuenow={timelineBounds().start} onkeydown={(event)=>timelineHandleKey(event,"start")} onpointerdown={(event)=>startToolTimelineDrag(event,"start")}></i><i class="timeline-edge right" role="slider" tabindex="0" aria-label="End" aria-valuemin={timelineBounds().start} aria-valuemax={media.duration} aria-valuenow={timelineBounds().end} onkeydown={(event)=>timelineHandleKey(event,"end")} onpointerdown={(event)=>startToolTimelineDrag(event,"end")}></i>
                 </div>
               {/if}
+              {#if timelineHover!==null}<i class="timeline-hover" class:right={timelineHover>85} style:left={`${timelineHover}%`}><b>{playerTime(media.duration*timelineHover/100)}</b></i>{/if}
               <em class="timeline-playhead" style:left={`${toolboxCurrent/media.duration*100}%`}></em>
             </div>
             <div class="tool-ruler mono"><span>{playerTime(0)}</span><span>{playerTime(media.duration/4)}</span><span>{playerTime(media.duration/2)}</span><span>{playerTime(media.duration*3/4)}</span><span>{playerTime(media.duration)}</span></div>
@@ -1198,7 +1292,8 @@
           <div class="field-list">
           {#if selected.id === "color"}
             <div class="color-workspace">
-              <button class="reset-filters" onclick={resetColorFilters}>{language==="tr"?"Video filtrelerini sıfırla":"Reset video filters"}</button>
+              <div class="color-top-actions"><button class="reset-filters" onclick={resetColorFilters}>{language==="tr"?"Sıfırla":"Reset"}</button><button class:active={!colorPreviewVisible} class="compare-color" onclick={()=>colorPreviewVisible=!colorPreviewVisible}>{colorPreviewVisible?(language==="tr"?"Öncesini göster":"Show before"):(language==="tr"?"Sonrasını göster":"Show after")}</button></div>
+              <section class="color-presets"><h4>{language==="tr"?"Hızlı görünümler":"Quick looks"}</h4><div>{#each [["natural",language==="tr"?"Doğal":"Natural"],["cinematic",language==="tr"?"Sinematik":"Cinematic"],["warm",language==="tr"?"Sıcak":"Warm"],["cold",language==="tr"?"Soğuk":"Cold"],["bw",language==="tr"?"Siyah-beyaz":"B&W"]] as preset}<button onclick={()=>applyColorPreset(preset[0])}>{preset[1]}</button>{/each}</div></section>
               {#each colorGroups as group}
                 <section class="color-group"><h4>{group.title}</h4>
                   {#each group.keys as key}
@@ -1206,7 +1301,7 @@
                     {#if field}
                       <label class="color-control">
                         <span><input type="checkbox" checked={colorOn(key)} onchange={()=>toggleColor(key)}><b>{language==="tr"?(field.label):colorLabels[key]}</b><em>{colorValueLabel(key)}</em><button type="button" title="Reset" onclick={(event)=>{event.preventDefault();resetColorKey(key)}}>↻</button></span>
-                        <input type="range" min={field.min} max={field.max} step={field.step} value={field.value} disabled={!colorOn(key)} oninput={(event)=>setToolNumber(key,Number(event.currentTarget.value))}>
+                        <input type="range" style={`--range-pct:${rangePercent(Number(field.value),Number(field.min),Number(field.max))}%`} min={field.min} max={field.max} step={field.step} value={field.value} disabled={!colorOn(key)} oninput={(event)=>setToolNumber(key,Number(event.currentTarget.value))}>
                       </label>
                     {/if}
                   {/each}
@@ -1237,10 +1332,22 @@
                     <div class="text-color-row"><i style:background={layer.color}></i><input aria-label="Hex color" value={layer.color} maxlength="7" onchange={(event)=>setTextColor(event.currentTarget.value)}></div>
                     <div class="text-swatches">{#each textColors as color}<button class:active={layer.color===color} style:background={color} aria-label={`Use ${color}`} onclick={()=>setTextColor(color)}></button>{/each}</div>
                   </div>
-                  <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" min="8" max="600" step="1" value={layer.size} oninput={(event)=>updateTextLayer({size:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.size)} px</small></label>
-                  <label class="field"><span>{language==="tr"?"Opaklık":"Opacity"}<small>%</small></span><input type="range" min="0" max="100" step="1" value={layer.opacity} oninput={(event)=>updateTextLayer({opacity:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.opacity)}%</small></label>
+                  <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.size,8,600)}%`} min="8" max="600" step="1" value={layer.size} oninput={(event)=>updateTextLayer({size:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.size)} px</small></label>
+                  <label class="field"><span>{language==="tr"?"Opaklık":"Opacity"}<small>%</small></span><input type="range" style={`--range-pct:${rangePercent(layer.opacity,0,100)}%`} min="0" max="100" step="1" value={layer.opacity} oninput={(event)=>updateTextLayer({opacity:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.opacity)}%</small></label>
+                  <details class="text-style-options">
+                    <summary>{language==="tr"?"Kontur, gölge ve arka plan":"Outline, shadow & background"}</summary>
+                    <label class="field"><span>{language==="tr"?"Kontur":"Outline"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.outline,0,20)}%`} min="0" max="20" step="1" value={layer.outline} oninput={(event)=>updateTextLayer({outline:Number(event.currentTarget.value)})}><small class="hint">{layer.outline}px</small></label>
+                    <label class="field"><span>{language==="tr"?"Kontur rengi":"Outline color"}</span><input type="text" value={layer.outline_color} maxlength="7" onchange={(event)=>/^#[0-9a-f]{6}$/i.test(event.currentTarget.value)&&updateTextLayer({outline_color:event.currentTarget.value})}></label>
+                    <label class="field"><span>{language==="tr"?"Gölge":"Shadow"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.shadow,0,30)}%`} min="0" max="30" step="1" value={layer.shadow} oninput={(event)=>updateTextLayer({shadow:Number(event.currentTarget.value)})}><small class="hint">{layer.shadow}px</small></label>
+                    <label class="color-toggle"><input type="checkbox" checked={layer.background} onchange={(event)=>updateTextLayer({background:event.currentTarget.checked})}><span>{language==="tr"?"Arka plan kutusu":"Background box"}</span></label>
+                    {#if layer.background}
+                      <label class="field"><span>{language==="tr"?"Arka plan rengi":"Background color"}</span><input type="text" value={layer.background_color} maxlength="7" onchange={(event)=>/^#[0-9a-f]{6}$/i.test(event.currentTarget.value)&&updateTextLayer({background_color:event.currentTarget.value})}></label>
+                      <label class="field"><span>{language==="tr"?"Arka plan opaklığı":"Background opacity"}<small>%</small></span><input type="range" style={`--range-pct:${rangePercent(layer.background_opacity,0,100)}%`} min="0" max="100" step="1" value={layer.background_opacity} oninput={(event)=>updateTextLayer({background_opacity:Number(event.currentTarget.value)})}><small class="hint">{layer.background_opacity}%</small></label>
+                      <label class="field"><span>{language==="tr"?"İç boşluk":"Padding"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.background_padding,0,80)}%`} min="0" max="80" step="1" value={layer.background_padding} oninput={(event)=>updateTextLayer({background_padding:Number(event.currentTarget.value)})}><small class="hint">{layer.background_padding}px</small></label>
+                    {/if}
+                  </details>
                   <button class="remove-text" onclick={()=>removeTextLayer(layer.id)}>{language==="tr"?"Seçili yazıyı kaldır":"Remove selected text"}</button>
-                  <p class="text-help">{language==="tr"?"Yazıyı önizlemede sürükle; sağ alt tutamacından boyutlandır.":"Drag text in the preview; resize it from the bottom-right handle."}</p>
+                  <p class="text-help">{language==="tr"?"Yazıyı önizlemede sürükle; iki yanındaki tutamaçlardan boyutlandır.":"Drag text in the preview; resize it from either side handle."}</p>
                 {/if}
               {:else}<p class="text-empty">{language==="tr"?"Önizlemeye ilk katmanı eklemek için Yazı ekle’ye bas.":"Choose Add text to place the first layer in the preview."}</p>{/if}
             </div>
@@ -1329,6 +1436,10 @@
               {/if}
             </div>
           {/if}
+            {#if selected.id === "compression"}
+              <div class="quality-mode-switch"><button class:active={!qualityAdvanced} onclick={()=>setQualityMode(false)}>{language==="tr"?"Basit":"Simple"}</button><button class:active={qualityAdvanced} onclick={()=>setQualityMode(true)}>{language==="tr"?"Gelişmiş":"Advanced"}</button></div>
+              {#if !qualityAdvanced}<div class="quality-profiles">{#each [["high",language==="tr"?"Yüksek kalite":"High quality","CRF 16"],["balanced",language==="tr"?"Dengeli":"Balanced","CRF 20"],["small",language==="tr"?"Küçük dosya":"Small file","CRF 24"]] as profile}<button class:active={toolValue("goal")===profile[0]} onclick={()=>applyQualityProfile(profile[0] as "high"|"balanced"|"small")}><b>{profile[1]}</b><small>{profile[2]}</small></button>{/each}</div>{/if}
+            {/if}
             {#each selected.fields as field}
               {#if !fieldLivesOnTimeline(field.key) && fieldVisible(field.key)}
               <label class="field">

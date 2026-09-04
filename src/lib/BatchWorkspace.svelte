@@ -6,7 +6,8 @@
   import { localizedTool, tools, type Field, type Tool } from "./tools";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
 
-  let { initialPath, language, availableEncoders }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null}=$props();
+  interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
+  let { initialPath, language, availableEncoders, onhistorychange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void}=$props();
   const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","dedupe","gif"];
   const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)).map(tool=>{
     const copy=localizedTool(tool,language);
@@ -22,8 +23,19 @@
   let items:{path:string;status:string;progress:number;output?:string;error?:string}[]=$state([]);
   let running=$state(false),cancelAll=$state(false),recursive=$state(false),aggregate=$state(0);
   let currentIndex=$state(-1);
+  let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
+  let historyApplying=false;
   const name=(path:string)=>path.split(/[\\/]/).pop()??path;
-  onMount(()=>{if(initialPath)addPaths([initialPath])});
+  const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
+  const snapshot=():HistorySnapshot=>clone({selected,items,recursive});
+  const signature=(value:HistorySnapshot)=>JSON.stringify(value);
+  function commit(value:HistorySnapshot){if(historyApplying||running)return;if(historyIndex>=0&&signature(history[historyIndex])===signature(value))return;history=[...history.slice(0,historyIndex+1),value].slice(-80);historyIndex=history.length-1}
+  function applyHistory(value:HistorySnapshot){historyApplying=true;const restored=clone(value);selected=restored.selected;items=restored.items;recursive=restored.recursive;aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;currentIndex=-1;requestAnimationFrame(()=>historyApplying=false)}
+  export function undo(){if(running)return;commit(snapshot());if(historyIndex<=0)return;historyIndex--;applyHistory(history[historyIndex])}
+  export function redo(){if(running||historyIndex>=history.length-1)return;historyIndex++;applyHistory(history[historyIndex])}
+  $effect(()=>{const value=snapshot();if(historyApplying||running)return;const key=signature(value);const timer=window.setTimeout(()=>{const current=snapshot();if(!historyApplying&&!running&&key===signature(current))commit(value)},280);return()=>window.clearTimeout(timer)});
+  $effect(()=>onhistorychange(!running&&historyIndex>0,!running&&historyIndex>=0&&historyIndex<history.length-1));
+  onMount(()=>{if(initialPath)addPaths([initialPath]);history=[snapshot()];historyIndex=0});
   const params=()=>Object.fromEntries(selected.fields.filter(field=>field.key!=="audio_track").map(field=>[field.key,String(field.value)]));
   function addPaths(paths:string[]){const known=new Set(items.map(item=>item.path.toLowerCase()));for(const path of paths)if(!known.has(path.toLowerCase())){items=[...items,{path,status:"waiting",progress:0}];known.add(path.toLowerCase())}}
   async function addFiles(){const result=await open({multiple:true,filters:[{name:"Media",extensions:["mp4","mkv","mov","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","ogg","jpg","jpeg","png","webp"]}]});if(Array.isArray(result))addPaths(result)}
