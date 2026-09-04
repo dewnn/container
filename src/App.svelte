@@ -1,7 +1,7 @@
 <script lang="ts">
   import "@fontsource-variable/geist";
   import "@fontsource-variable/geist-mono";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -43,6 +43,7 @@
   interface FontOption { name:string; path:string }
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
   interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean> }
+  interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown }
 
   const windowIconBuffers = {
     dark: fetch("/logo-dark.png").then(response => response.arrayBuffer()),
@@ -63,9 +64,14 @@
   let frame = $state("—");
   let elapsed = $state(0);
   let search = $state("");
+  let favoriteIds:string[]=$state([]);
+  let favoritesOnly=$state(false);
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
-  let autoCutWorkspace:{undo:()=>void;redo:()=>void}|null=$state(null);
-  let batchWorkspace:{undo:()=>void;redo:()=>void}|null=$state(null);
+  let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
+  let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
+  let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
+  let recoveryCandidate:RecoverySession|null=$state(null);
+  let restoringSession=$state(false);
   let autoCutCanUndo=$state(false),autoCutCanRedo=$state(false);
   let batchCanUndo=$state(false),batchCanRedo=$state(false);
   let toolboxVideo: HTMLVideoElement | null = $state(null);
@@ -133,6 +139,32 @@
 
   function cloneEditorValue<T>(value:T):T{return JSON.parse(JSON.stringify(value)) as T}
 
+  const recoveryKey="container-recovery-v1";
+  function validRecovery(value:unknown):value is RecoverySession{
+    if(!value||typeof value!=="object")return false;
+    const candidate=value as Partial<RecoverySession>;
+    return candidate.version===1&&typeof candidate.savedAt==="number"&&typeof candidate.mediaPath==="string"&&candidate.mediaPath.length>0&&["toolbox","autocut","batch"].includes(candidate.workspaceMode??"");
+  }
+  function persistRecovery(){
+    if(!media||restoringSession)return;
+    const value:RecoverySession={version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode,toolbox:captureEditorSnapshot(),autocut:autoCutSession,batch:batchSession};
+    localStorage.setItem(recoveryKey,JSON.stringify(value));
+  }
+  function discardRecovery(){localStorage.removeItem(recoveryKey);recoveryCandidate=null}
+  async function restorePreviousSession(){
+    const saved=recoveryCandidate;if(!saved||restoringSession)return;
+    restoringSession=true;error="";
+    await loadMedia(saved.mediaPath);
+    if(!media){restoringSession=false;discardRecovery();return}
+    if(saved.toolbox){applyEditorSnapshot(saved.toolbox,"redo");resetEditorHistory()}
+    workspaceMode=saved.workspaceMode;
+    autoCutSession=saved.autocut;batchSession=saved.batch;
+    await tick();
+    if(saved.workspaceMode==="autocut"&&saved.autocut)autoCutWorkspace?.restoreSession(saved.autocut);
+    if(saved.workspaceMode==="batch"&&saved.batch)batchWorkspace?.restoreSession(saved.batch);
+    restoringSession=false;recoveryCandidate=null;persistRecovery();
+  }
+
   function captureEditorSnapshot():EditorSnapshot|null{
     if(!media)return null;
     return cloneEditorValue({media,mediaUrl,selected,activeKind,output,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields});
@@ -163,14 +195,24 @@
     return()=>window.clearTimeout(timer);
   });
 
+  $effect(()=>{
+    const snapshot=captureEditorSnapshot();
+    if(!snapshot||historyApplying||restoringSession)return;
+    workspaceMode;autoCutSession;batchSession;
+    const timer=window.setTimeout(persistRecovery,500);
+    return()=>window.clearTimeout(timer);
+  });
+
   const categories = $derived.by(() => {
-    const list = kindTools(activeKind).filter((tool) => `${tool.title} ${tool.description}`.toLocaleLowerCase(language).includes(search.toLocaleLowerCase(language)));
+    const list = kindTools(activeKind).filter((tool) => (!favoritesOnly||favoriteIds.includes(tool.id))&&`${tool.title} ${tool.description}`.toLocaleLowerCase(language).includes(search.toLocaleLowerCase(language)));
     const map = new Map<string, Tool[]>();
     for (const tool of list) map.set(tool.category, [...(map.get(tool.category) ?? []), tool]);
     const entries=[...map.entries()];
     if(activeKind==="image")entries.sort(([left],[right])=>left==="Utilities"?1:right==="Utilities"?-1:0);
     return entries;
   });
+
+  function toggleFavorite(id:string){favoriteIds=favoriteIds.includes(id)?favoriteIds.filter(value=>value!==id):[...favoriteIds,id];localStorage.setItem("container-favorites",JSON.stringify(favoriteIds))}
 
   const formatBytes = (value: number) => {
     if (!Number.isFinite(value)) return "—";
@@ -600,6 +642,8 @@
       activeKind = media.kind;
       mediaUrl = convertFileSrc(path);
       workspaceMode = "toolbox";
+      autoCutSession = null;
+      batchSession = null;
       toolboxCurrent = 0;
       toolboxPlaying = false;
       renderedImageUrl = "";
@@ -650,6 +694,7 @@
     toolboxFilmstripUrl="";toolboxFilmstripLoading=false;
     editHistory = [];
     editHistoryIndex = -1;
+    autoCutSession=null;batchSession=null;discardRecovery();
   }
 
   function seekToolbox(value: number) {
@@ -972,9 +1017,11 @@
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
     document.documentElement.lang=language;
     theme=document.documentElement.dataset.theme==="light"?"light":"dark";
+    try{const savedFavorites=JSON.parse(localStorage.getItem("container-favorites")??"[]");if(Array.isArray(savedFavorites))favoriteIds=savedFavorites.filter(value=>typeof value==="string")}catch{favoriteIds=[]}
+    try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession}catch{discardRecovery()}
     void updateWindowIcon(theme);
     void getVersion().then((version) => appVersion = version).catch(() => {});
-    void invoke<string | null>("startup_media_path").then((path) => { if (path) void loadMedia(path); }).catch(() => {});
+    void invoke<string | null>("startup_media_path").then((path) => { if (path){recoveryCandidate=null;void loadMedia(path);} }).catch(() => {});
     // Run both checks on every launch. The UI stays quiet unless the user
     // needs FFmpeg or a newer signed release is available.
     void (async () => {
@@ -1006,6 +1053,7 @@
     const blockBrowserMenu = (event: MouseEvent) => event.preventDefault();
     window.addEventListener("keydown", playerKeys);
     window.addEventListener("contextmenu", blockBrowserMenu);
+    window.addEventListener("beforeunload", persistRecovery);
     listen<ProgressEvent>("container-progress", (event) => {
       progress = Math.max(0, Math.min(100, event.payload.percent));
       speed = event.payload.speed || "—";
@@ -1024,7 +1072,7 @@
       }
     }).then((fn) => unlistenDrop = fn);
 
-    return () => { unlistenProgress?.(); unlistenDrop?.(); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); };
+    return () => { unlistenProgress?.(); unlistenDrop?.(); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -1094,14 +1142,20 @@
       <button class="update-backdrop" aria-label={language === "tr" ? "FFmpeg bildirimini kapat" : "Close FFmpeg notice"} onclick={() => dependencyPanel = false}></button>
       <dialog class="update-dialog dependency-dialog panel" open aria-labelledby="dependency-title">
         <header><div><span class="status-dot missing"></span><h2 id="dependency-title">{language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED"}</h2></div><button onclick={() => dependencyPanel = false} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
-        <div class="dependency-message"><span>!</span><div><h3>{language === "tr" ? "MEDYA ARAÇLARI HENÜZ KULLANILAMAZ" : "MEDIA TOOLS ARE NOT READY YET"}</h3><p>{language === "tr" ? "CONTAINER, bilgisayarındaki FFmpeg ve FFprobe’yu kullanır. Resmî indirme sayfasından güncel full build’i kur, bin klasörünü PATH’e ekle ve ardından tekrar kontrol et." : "CONTAINER uses FFmpeg and FFprobe installed on your computer. Install a current full build from the official download page, add its bin folder to PATH, then check again."}</p></div></div>
-        <footer><button class="ghost" onclick={() => dependencyPanel = false}>{language === "tr" ? "ŞİMDİ DEĞİL" : "NOT NOW"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button><button class="install-update" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "FFMPEG İNDİR" : "DOWNLOAD FFMPEG"}</button></footer>
+        <div class="dependency-message"><span>!</span><div><h3>{language === "tr" ? "MEDYA ARAÇLARI HENÜZ KULLANILAMAZ" : "MEDIA TOOLS ARE NOT READY YET"}</h3><p>{language === "tr" ? "Kurulumla gelen FFmpeg bileşenleri bulunamadı veya çalıştırılamadı. CONTAINER’ı yeniden kurup tekrar dene." : "The FFmpeg components included with CONTAINER are missing or could not start. Reinstall CONTAINER and try again."}</p></div></div>
+        <footer><button class="ghost" onclick={() => dependencyPanel = false}>{language === "tr" ? "ŞİMDİ DEĞİL" : "NOT NOW"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></footer>
       </dialog>
     </div>
   {/if}
 
   {#if !media}
     <section class="landing">
+      {#if recoveryCandidate}
+        <section class="recovery-card panel">
+          <div><span>↻</span><div><h3>{language==="tr"?"ÖNCEKİ ÇALIŞMA BULUNDU":"PREVIOUS WORK FOUND"}</h3><p><b>{basename(recoveryCandidate.mediaPath)}</b> · {new Date(recoveryCandidate.savedAt).toLocaleString(language==="tr"?"tr-TR":"en-US")}</p></div></div>
+          <aside><button class="ghost" onclick={discardRecovery}>{language==="tr"?"VAZGEÇ":"DISCARD"}</button><button class="restore-session" onclick={restorePreviousSession} disabled={restoringSession}>{restoringSession?"…":(language==="tr"?"ÇALIŞMAYI GERİ YÜKLE":"RESTORE WORK")}</button></aside>
+        </section>
+      {/if}
       <button class="dropzone" class:active={dragActive} onclick={selectMedia} disabled={ffmpegStatus !== null && !ffmpegStatus.ready}>
         <span class="drop-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
@@ -1114,8 +1168,8 @@
       </button>
       {#if ffmpegStatus && !ffmpegStatus.ready}
         <section class="dependency-card">
-          <div><span>!</span><div><h3>{language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED"}</h3><p>{language === "tr" ? "CONTAINER dosyaları işlemez; bilgisayarındaki FFmpeg ve FFprobe’yu kullanır. Full build kurup bin klasörünü PATH’e ekle, ardından uygulamayı yeniden başlat." : "CONTAINER uses FFmpeg and FFprobe installed on your computer. Install a full build, add its bin folder to PATH, then restart the app."}</p></div></div>
-          <aside><button class="ghost" onclick={() => openUrl("https://ffmpeg.org/download.html#build-windows")}>{language === "tr" ? "FFMPEG İNDİR" : "DOWNLOAD FFMPEG"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></aside>
+          <div><span>!</span><div><h3>{language === "tr" ? "FFMPEG BİLEŞENİ EKSİK" : "FFMPEG COMPONENT MISSING"}</h3><p>{language === "tr" ? "CONTAINER kurulumuna dahil olan medya bileşenleri bulunamadı. Uygulamayı yeniden kurup tekrar dene." : "Media components included with CONTAINER were not found. Reinstall the application and try again."}</p></div></div>
+          <aside><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></aside>
         </section>
       {/if}
       <div class="landing-copy motto-only">
@@ -1130,9 +1184,9 @@
         <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
     </nav>
     {#if workspaceMode === "autocut" && media.kind === "video"}
-      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} />
+      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} />
     {:else if workspaceMode === "batch"}
-      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} />
+      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} />
     {:else}
     <section class="workspace">
       <aside class="tool-pane panel">
@@ -1146,18 +1200,23 @@
           {/each}
         </div>
         <input class="search" bind:value={search} placeholder={t("search")} />
+        <button class="favorites-filter" class:active={favoritesOnly} onclick={()=>favoritesOnly=!favoritesOnly}><span>★</span>{language==="tr"?"FAVORİLER":"FAVORITES"}<b>{favoriteIds.length}</b></button>
         <div class="tool-scroll">
           {#each categories as [category, entries]}
             <section class="tool-group">
               <h4>{category}</h4>
               {#each entries as tool}
-                <button class="tool-row" class:active={selected?.id === tool.id} onclick={() => chooseTool(tool)}>
-                  <i class:blue={tool.accent === "blue"} class:green={tool.accent === "green"} class:purple={tool.accent === "purple"} class:red={tool.accent === "red"} class:yellow={tool.accent === "yellow"}></i>
-                  <span><b>{tool.title}</b><small>{tool.description}</small></span><em>›</em>
-                </button>
+                <div class="tool-entry">
+                  <button class="tool-row" class:active={selected?.id === tool.id} onclick={() => chooseTool(tool)}>
+                    <i class:blue={tool.accent === "blue"} class:green={tool.accent === "green"} class:purple={tool.accent === "purple"} class:red={tool.accent === "red"} class:yellow={tool.accent === "yellow"}></i>
+                    <span><b>{tool.title}</b><small>{tool.description}</small></span><em>›</em>
+                  </button>
+                  <button class="favorite-toggle" class:active={favoriteIds.includes(tool.id)} onclick={()=>toggleFavorite(tool.id)} title={language==="tr"?"Favoriye ekle/kaldır":"Add/remove favorite"} aria-label={language==="tr"?`${tool.title} favori`:`Favorite ${tool.title}`}>★</button>
+                </div>
               {/each}
             </section>
           {/each}
+          {#if favoritesOnly&&categories.length===0}<p class="favorites-empty">{language==="tr"?"Bu bölümde henüz favori araç yok.":"No favorite tools in this section yet."}</p>{/if}
         </div>
       </aside>
 

@@ -28,7 +28,7 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 
 ### Toolbox
 
-- Context-aware Video, Audio and Image categories
+- Context-aware Video, Audio and Image categories with persistent favorites
 - Ratio/crop, resize, FPS conversion, frame interpolation and frame blending
 - Duplicate-frame removal, speed control and bitrate/quality controls
 - Discord size-targeted compression and smart quality analysis
@@ -39,15 +39,16 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 - Image conversion, scaling, quality reduction and before/after preview
 - Hardware encoder detection with safe CPU fallback
 - Batch workspace for repeated jobs
+- Automatic recovery after a crash or closing the app
 
 ### SmartCut
 
-- Local Silero V5 speech detection
+- Local Silero speech detection
 - Automatic settings based on the selected recording
 - Editable keep regions and cut-skipping preview
 - Timeline navigation and external microphone/audio analysis
 - MP4 export with quality and resolution presets
-- FCPXML 1.11 export for DaVinci Resolve and Premiere-compatible workflows
+- FCPXML 1.11 timeline export
 - Linked camera/audio tracks aligned from embedded timecode
 
 ## Download
@@ -55,42 +56,13 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 Windows builds are published on the repository's **Releases** page:
 
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
-- `CONTAINER-Portable-<version>-x64.exe` — standalone app executable
+- `CONTAINER-Portable-<version>-x64.zip` — portable folder (extract before running)
 
 The Setup build also adds **Send to → CONTAINER** to Windows Explorer. Right-click a video, audio file or image and send it directly to CONTAINER. The shortcut is removed when the app is uninstalled; the Portable build does not modify this menu.
 
-## Install FFmpeg
+## FFmpeg included
 
-CONTAINER requires both `ffmpeg` and `ffprobe` on `PATH`. Install a current **full build** using one of the following PowerShell commands:
-
-### Winget — recommended
-
-```powershell
-winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements
-```
-
-### Chocolatey
-
-Run PowerShell as Administrator:
-
-```powershell
-choco install ffmpeg-full -y
-```
-
-### Scoop
-
-```powershell
-scoop install ffmpeg
-```
-
-You can also use the [official FFmpeg Windows download page](https://ffmpeg.org/download.html#build-windows) for a manual installation. After installation, open a new PowerShell window and confirm that both commands work:
-
-```powershell
-ffmpeg -version
-ffprobe -version
-```
-
-Restart CONTAINER after installation. The app checks both tools on every launch; if either one is missing, it displays a setup notice with a download link and a **Check again** action. FFmpeg 9.0.1 is the tested reference version.
+Windows packages include the tested FFmpeg 9.0.1 full build and FFprobe. Users do not need to install FFmpeg, edit `PATH`, or run a package-manager command. The installer is the recommended download; the portable ZIP must be extracted with all files kept together.
 
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
@@ -111,7 +83,7 @@ Security design and verification notes are documented in [docs/SECURITY_AUDIT.md
 
 CONTAINER is released under the [MIT License](LICENSE).
 
-SmartCut was inspired by the workflow of [cobanov/autocut](https://github.com/cobanov/autocut) and is implemented inside CONTAINER's own architecture. See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for dependency licenses and attribution.
+SmartCut's interface and Silero-based voice-detection workflow were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). Bundled FFmpeg remains licensed separately under GPLv3. See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for dependency licenses and source links.
 
 ## Author
 

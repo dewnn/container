@@ -4,12 +4,11 @@ CONTAINER uses open-source libraries listed in `package.json`, `pnpm-lock.yaml`,
 
 ## FFmpeg
 
-Release packages do not bundle FFmpeg or FFprobe. CONTAINER invokes the user's system-installed copies as separate programs. CI and release verification currently use FFmpeg 9.0.1 full build; that software is not relicensed by this project.
-
-Users and redistributors remain responsible for the license terms of the FFmpeg build they install separately.
+Windows release packages bundle FFmpeg and FFprobe 9.0.1 full build as separate programs. They are not relicensed by CONTAINER and remain under the GNU GPL version 3. The exact release build is produced by Gyan.dev; corresponding FFmpeg source and build information are available from the links below.
 
 - Project: https://ffmpeg.org/
 - License information: https://ffmpeg.org/legal.html
+- Source: https://ffmpeg.org/download.html#get-sources
 - Windows build links: https://ffmpeg.org/download.html#build-windows
 
 ## Geist and Geist Mono
@@ -28,8 +27,8 @@ SmartCut uses `voice_activity_detector` 0.2.1 and its embedded Silero V5 ONNX mo
 
 ## Autocut attribution
 
-The SmartCut workflow and interface were inspired by Mert Cobanov's Autocut project:
+The SmartCut interface and Silero-based voice-detection workflow were inspired by Mert Cobanov's Autocut project:
 
 - Repository: https://github.com/cobanov/autocut
 
-CONTAINER credits the project for inspiration. SmartCut is implemented within CONTAINER's own Rust and Svelte architecture; this attribution does not relicense third-party code or assets.
+SmartCut is implemented within CONTAINER's own Rust and Svelte architecture; this attribution credits the original inspiration and does not relicense third-party code or assets.

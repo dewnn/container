@@ -7,7 +7,7 @@
   import { armCompletionSound, playCompletionSound } from "./completionSound";
 
   interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
-  let { initialPath, language, availableEncoders, onhistorychange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void}=$props();
+  let { initialPath, language, availableEncoders, onhistorychange=()=>{}, onsessionchange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void}=$props();
   const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","dedupe","gif"];
   const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)).map(tool=>{
     const copy=localizedTool(tool,language);
@@ -33,8 +33,11 @@
   function applyHistory(value:HistorySnapshot){historyApplying=true;const restored=clone(value);selected=restored.selected;items=restored.items;recursive=restored.recursive;aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;currentIndex=-1;requestAnimationFrame(()=>historyApplying=false)}
   export function undo(){if(running)return;commit(snapshot());if(historyIndex<=0)return;historyIndex--;applyHistory(history[historyIndex])}
   export function redo(){if(running||historyIndex>=history.length-1)return;historyIndex++;applyHistory(history[historyIndex])}
+  export function exportSession(){return snapshot()}
+  export function restoreSession(value:HistorySnapshot){applyHistory(value);requestAnimationFrame(()=>{history=[snapshot()];historyIndex=0})}
   $effect(()=>{const value=snapshot();if(historyApplying||running)return;const key=signature(value);const timer=window.setTimeout(()=>{const current=snapshot();if(!historyApplying&&!running&&key===signature(current))commit(value)},280);return()=>window.clearTimeout(timer)});
   $effect(()=>onhistorychange(!running&&historyIndex>0,!running&&historyIndex>=0&&historyIndex<history.length-1));
+  $effect(()=>{const value=snapshot();if(historyApplying||running)return;const timer=window.setTimeout(()=>onsessionchange(value),350);return()=>window.clearTimeout(timer)});
   onMount(()=>{if(initialPath)addPaths([initialPath]);history=[snapshot()];historyIndex=0});
   const params=()=>Object.fromEntries(selected.fields.filter(field=>field.key!=="audio_track").map(field=>[field.key,String(field.value)]));
   function addPaths(paths:string[]){const known=new Set(items.map(item=>item.path.toLowerCase()));for(const path of paths)if(!known.has(path.toLowerCase())){items=[...items,{path,status:"waiting",progress:0}];known.add(path.toLowerCase())}}

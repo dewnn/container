@@ -4,6 +4,13 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-09-05
+
+- FFmpeg and FFprobe are now included with Windows downloads; no separate setup or PATH configuration is needed.
+- Added automatic work recovery for Toolbox, SmartCut and Batch sessions.
+- Added persistent tool favorites with a quick Favorites filter.
+- Improved compact-window and Windows display-scaling support.
+
 ## [0.8.0] - 2026-09-04
 
 ### Added

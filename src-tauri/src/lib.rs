@@ -31,10 +31,44 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 // console program from the GUI without this flag briefly opens a CMD window.
 // stdout/stderr remain available, so progress and error reporting are intact.
 fn hidden_command(program: &str) -> Command {
-    let mut command = Command::new(program);
+    let mut command = Command::new(resolve_program(program));
     #[cfg(target_os = "windows")]
     command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     command
+}
+
+fn resolve_program(program: &str) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let override_name = match program {
+            "ffmpeg" => Some("CONTAINER_FFMPEG"),
+            "ffprobe" => Some("CONTAINER_FFPROBE"),
+            _ => None,
+        };
+        if let Some(path) = override_name.and_then(std::env::var_os).map(PathBuf::from) {
+            if path.is_file() {
+                return path;
+            }
+        }
+        if override_name.is_some() {
+            if let Ok(directory) = std::env::current_exe().and_then(|path| {
+                path.parent()
+                    .map(Path::to_path_buf)
+                    .ok_or(std::io::ErrorKind::NotFound.into())
+            }) {
+                for filename in [
+                    format!("{program}.exe"),
+                    format!("{program}-x86_64-pc-windows-msvc.exe"),
+                ] {
+                    let candidate = directory.join(filename);
+                    if candidate.is_file() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+    PathBuf::from(program)
 }
 
 fn allow_asset_file(app: &AppHandle, path: &Path) -> Result<(), String> {

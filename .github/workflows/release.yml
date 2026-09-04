@@ -78,7 +78,17 @@ jobs:
             Select-Object -First 1
           if (-not $app) { throw 'Portable application executable was not found.' }
 
-          Copy-Item -LiteralPath $app.FullName -Destination (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.exe")
+          $portableDir = Join-Path $PWD 'portable-package'
+          New-Item -ItemType Directory -Force $portableDir | Out-Null
+          Copy-Item -LiteralPath $app.FullName -Destination (Join-Path $portableDir 'CONTAINER.exe')
+          $sidecarRoot = Join-Path $PWD 'src-tauri\binaries'
+          $ffmpegSidecar = Get-ChildItem $sidecarRoot -Filter 'ffmpeg-*-windows-msvc.exe' -File | Select-Object -First 1
+          $ffprobeSidecar = Get-ChildItem $sidecarRoot -Filter 'ffprobe-*-windows-msvc.exe' -File | Select-Object -First 1
+          if (-not $ffmpegSidecar -or -not $ffprobeSidecar) { throw 'Bundled FFmpeg sidecars were not prepared.' }
+          Copy-Item -LiteralPath $ffmpegSidecar.FullName -Destination (Join-Path $portableDir 'ffmpeg.exe')
+          Copy-Item -LiteralPath $ffprobeSidecar.FullName -Destination (Join-Path $portableDir 'ffprobe.exe')
+          Copy-Item -LiteralPath 'docs\THIRD_PARTY_NOTICES.md' -Destination (Join-Path $portableDir 'THIRD_PARTY_NOTICES.md')
+          Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip") -CompressionLevel Optimal
 
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
           if (-not $installer) { throw 'NSIS installer was not found.' }
