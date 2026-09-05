@@ -5362,8 +5362,12 @@ mod tests {
         let mut detector = load_embedded_vad(&directory).unwrap();
         assert!(detector.forward_chunk(&[0.0; 512], 16_000).unwrap()[[0, 0]].is_finite());
         drop(detector);
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_dir(directory).unwrap();
+        // ONNX Runtime can briefly retain the model file on Windows after the
+        // session is dropped. Cleanup is not part of this behavior test, and
+        // CI workspaces are ephemeral, so a transient sharing violation must
+        // not turn a successful load-and-repair assertion into a test failure.
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(directory);
     }
 
     #[test]
