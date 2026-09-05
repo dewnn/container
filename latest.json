@@ -1,11 +1,11 @@
 {
-  "pub_date": "2026-09-04T21:16:02.5164787Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVJ6ZExKZno1UnZLK2RvZWxpbUIzWGhSQkZCdHNwWVRPY1hOaVhORDM4QndkWGJZTkNZRXZSUEhHR3FEdlRvVjkxUDYydTRCcFRaUEUySS81NDd3NWdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NTU2NTUyCWZpbGU6Q09OVEFJTkVSXzAuOS4wX3g2NC1zZXR1cC5leGUKWjRnQnFha1Uxb3BmY3VTTEtrZDc0T1RpSVVaZElIVFA5ZDU0ak1tK2NHVjlING1Na1NOTzJKT1JVRkFnbWt3a08yd2RJcGJsNnJaNitwd0d5cjVTQnc9PQo=",
-      "url": "https://github.com/dewnn/container/releases/download/v0.9.0/CONTAINER-Setup-0.9.0-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWYvMUN1aHQyZFdEV3VNZ0o4eUI5YXhVKzQvM3BCWDM4bENoK3duQ1ZUQWVtSXhiR1FYbVZLVzhJSnc1S1grM0ZkVmM4M01LSVg4bm5mQnlZQW8zaGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjAwNjUyCWZpbGU6Q09OVEFJTkVSXzAuOS4xX3g2NC1zZXR1cC5leGUKejZKalBWVlVyZXhpUGhTQjBDT29vR1VIU2kxNytkcDVLd2NZajZYeVVVbmJQdkZMOVMvQ1F1NkNjblllMHBHM2RFcUpUdndPdFZjVXh1ZDRXYnFlRGc9PQo=",
+      "url": "https://github.com/dewnn/container/releases/download/v0.9.1/CONTAINER-Setup-0.9.1-x64.exe"
     }
   },
-  "version": "0.9.0",
-  "notes": "# Changes\n\n\n- FFmpeg and FFprobe are now included with Windows downloads; no separate setup or PATH configuration is needed.\n- Added automatic work recovery for Toolbox, SmartCut and Batch sessions.\n- Added persistent tool favorites with a quick Favorites filter.\n- Improved compact-window and Windows display-scaling support.\n"
+  "notes": "# Changes\n\n\n- Fixed the bundled Silero model so SmartCut detection works in installed and portable builds.\n- Work recovery now appears only after an unexpected shutdown and is readable in both themes.\n- Fixed Cut Video timeline handles jumping after a drag; added fine Shift-drag and keyboard adjustment.\n- Hidden browser-style scrollbars while keeping wheel, touchpad and keyboard scrolling.\n- Added safe one-click cleanup for `Downloads/CONTAINER Output` using the Windows Recycle Bin.\n- Improved compact project-header and SmartCut panel layouts.\n",
+  "pub_date": "2026-09-05T09:31:05.1142595Z",
+  "version": "0.9.1"
 }
