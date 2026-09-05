@@ -1,11 +1,11 @@
 {
-  "version": "0.9.5",
-  "pub_date": "2026-09-05T19:28:01.8823709Z",
+  "pub_date": "2026-09-05T23:46:07.6839370Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.9.5/CONTAINER-Setup-0.9.5-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWVYclRqdmNyY056K2paMnlWNG1ZK0YwMG9vaVErR2NvTFZJdndWUloveGkyYUttLzQwNnM5SlFtMjBYZU1vRlF6NGtDRzhVQUQxVkF0Z29RaHppM0FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjM2NDY3CWZpbGU6Q09OVEFJTkVSXzAuOS41X3g2NC1zZXR1cC5leGUKbVZtOTY5UU1DVmtEQjZLcHhXVDhaNzZsTFFucWIyS29WZjF1QnlwY0g0N0lrWE1TMVNUeGdsWHNkams5TzIrRC9LTFJLZGMzTEoraU9BeWdTdGNFQ2c9PQo="
+      "url": "https://github.com/dewnn/container/releases/download/v0.10.0/CONTAINER-Setup-0.10.0-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWJBQnFadjVhN2tvRWx0d3VCUmM4eFpmZWZHQ2Nma0NxaUVtUndudS9XMHZpRCtJelBxWE55a3Q4YXhiMm4wa01PMHpqY1FmZlpNd2RNeWpneTJaTndVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjUxOTUzCWZpbGU6Q09OVEFJTkVSXzAuMTAuMF94NjQtc2V0dXAuZXhlCkhDVjlnQnVJNjM4NUNBVnJnb0hFeFpPWEFjbFNmWHAwZERoM1BIYTBBcTUvN2g1ZEtPQWNqaFJVZ1JKQitIZU84WTdPYlFuOGRqZ2NzQzgzUUx2MUFRPT0K"
     }
   },
-  "notes": "# Changes\n\n\n- Removed the separate automatic-update executable from GitHub Releases; signed in-app updates now use the normal Setup package.\n- Downloader thumbnails now use a short-lived system temporary file that is removed as soon as the preview loads, and the former thumbnail cache is cleaned on startup.\n- Removed the scheduled FFmpeg/FFprobe and yt-dlp version watcher while retaining centrally pinned, checksum-verified build versions.\n"
+  "version": "0.10.0",
+  "notes": "# Changes\n\n\n- Added Merge Videos with reordering, MKV/MP4 output, lossless joining for compatible inputs, and automatic hardware-accelerated normalization for incompatible files.\n- Added Video Stabilizer with Light, Medium and Strong two-stage vidstab processing, automatic hardware H.264 encoding, cancellation and temporary-file cleanup.\n- Added unified subtitle tools for adding, burning, extracting and removing subtitle streams without unnecessary video/audio re-encoding.\n- Added Image / Logo Overlay with transparent-image support, timeline visibility, opacity control, and direct preview dragging and resizing.\n- Added static Blur / Pixelate regions with source-accurate preview coordinate mapping across scaling, aspect ratio and rotation differences.\n- Improved DWLNDR navigation with a safe Back action, and expanded the main component status to include FFmpeg, FFprobe and yt-dlp.\n- Removed Duplicate Frame Removal, Deep Fry and Video Corruption; moved bitrate control into the advanced Quality / Compression settings.\n- Added realistic media tests for the new tools, stream preservation, merge compatibility, subtitle handling, cancellation and temporary-file cleanup.\n"
 }
