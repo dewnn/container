@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use silero_vad_rust::silero_vad::model::OnnxModel;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     io::Read,
     path::{Path, PathBuf},
@@ -20,6 +20,7 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
 };
+use url::{Host, Url};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::{fs::MetadataExt, process::CommandExt};
@@ -54,6 +55,13 @@ fn load_embedded_vad(directory: &Path) -> Result<OnnxModel, String> {
 // stdout/stderr remain available, so progress and error reporting are intact.
 fn hidden_command(program: &str) -> Command {
     let mut command = Command::new(resolve_program(program));
+    #[cfg(target_os = "windows")]
+    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
+fn hidden_path_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
     #[cfg(target_os = "windows")]
     command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     command
@@ -186,7 +194,13 @@ fn allow_asset_file(app: &AppHandle, path: &Path) -> Result<(), String> {
 struct JobState {
     cancelled: AtomicBool,
     pid: Mutex<Option<u32>>,
+    download_cleanup: Mutex<Option<DownloadCleanup>>,
     vad_cache: Mutex<Option<VadCache>>,
+}
+
+struct DownloadCleanup {
+    output_dir: PathBuf,
+    existing_temporary_files: HashSet<PathBuf>,
 }
 
 #[derive(Default)]
@@ -203,6 +217,585 @@ struct SessionLifecycle {
 struct OutputCleanupResult {
     cleaned: bool,
     path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloaderStatus {
+    ready: bool,
+    version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloaderResult {
+    output_dir: String,
+    details: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloadAnalysis {
+    title: String,
+    uploader: Option<String>,
+    duration: Option<f64>,
+    thumbnail_path: Option<String>,
+    formats: Vec<DownloadFormat>,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloadFormat {
+    id: String,
+    label: String,
+    detail: String,
+    kind: String,
+    codec: String,
+    rank: u64,
+    height: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DownloaderProgress {
+    percent: f64,
+    downloaded: String,
+    speed: String,
+}
+
+fn parse_downloader_progress(line: &str) -> Option<DownloaderProgress> {
+    // A dedicated template avoids depending on yt-dlp's human-facing wording,
+    // which changes between releases and can otherwise leave the UI stuck on
+    // "connecting" while bytes are already being transferred.
+    let fields = line
+        .split_once("CONTAINER_PROGRESS:")?
+        .1
+        .split('|')
+        .collect::<Vec<_>>();
+    if fields.len() != 3 {
+        return None;
+    }
+    let percent = fields[0]
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    Some(DownloaderProgress {
+        percent: percent.clamp(0.0, 100.0),
+        downloaded: fields[1].trim().to_string(),
+        speed: fields[2].trim().to_string(),
+    })
+}
+
+fn stop_process_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        command.creation_flags(CREATE_NO_WINDOW);
+        let _ = command.status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+    }
+}
+
+fn is_downloader_temporary_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name.ends_with(".part")
+        || name.ends_with(".ytdl")
+        || name.ends_with(".temp")
+        || name.contains(".part-frag")
+}
+
+fn downloader_temporary_files(output_dir: &Path) -> HashSet<PathBuf> {
+    std::fs::read_dir(output_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_downloader_temporary_file(path))
+        .collect()
+}
+
+fn cleanup_current_download(state: &JobState) {
+    let cleanup = state
+        .download_cleanup
+        .lock()
+        .ok()
+        .and_then(|mut value| value.take());
+    if let Some(cleanup) = cleanup {
+        for path in downloader_temporary_files(&cleanup.output_dir) {
+            if !cleanup.existing_temporary_files.contains(&path) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+fn downloader_binary_path() -> Result<PathBuf, String> {
+    let root = dirs::data_local_dir()
+        .ok_or("Application data folder is unavailable.")?
+        .join("dev.dean.container")
+        .join("downloader");
+    Ok(root.join(if cfg!(target_os = "windows") {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    }))
+}
+
+fn downloader_output_dir() -> Result<PathBuf, String> {
+    let root = dirs::download_dir().ok_or("Downloads folder is unavailable.")?;
+    let folder = root.join("CONTAINER Downloads");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    Ok(folder)
+}
+
+async fn downloader_version() -> Option<String> {
+    let binary = downloader_binary_path().ok()?;
+    if !binary.is_file() {
+        return None;
+    }
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        hidden_path_command(&binary).arg("--version").output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+#[tauri::command]
+async fn downloader_status() -> DownloaderStatus {
+    let version = downloader_version().await;
+    DownloaderStatus {
+        ready: version.is_some(),
+        version,
+    }
+}
+
+#[tauri::command]
+async fn set_downloader_binary(path: String) -> Result<DownloaderStatus, String> {
+    let source = PathBuf::from(path);
+    let metadata =
+        std::fs::metadata(&source).map_err(|_| "The selected yt-dlp file was not found.")?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("The selected yt-dlp file is not valid.".into());
+    }
+    #[cfg(target_os = "windows")]
+    if source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("exe"))
+        != Some(true)
+    {
+        return Err("Select the official yt-dlp.exe file.".into());
+    }
+    let destination = downloader_binary_path()?;
+    let parent = destination
+        .parent()
+        .ok_or("Downloader folder is unavailable.")?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temporary = destination.with_extension("download");
+    std::fs::copy(&source, &temporary)
+        .map_err(|error| format!("yt-dlp could not be copied: {error}"))?;
+    std::fs::rename(&temporary, &destination)
+        .map_err(|error| format!("yt-dlp could not be installed: {error}"))?;
+    let version = downloader_version().await.ok_or(
+        "The selected file did not behave like yt-dlp. Choose the official yt-dlp executable.",
+    )?;
+    Ok(DownloaderStatus {
+        ready: true,
+        version: Some(version),
+    })
+}
+
+fn validated_download_url(value: &str) -> Result<String, String> {
+    if value.len() > 2048 || value.chars().any(char::is_control) {
+        return Err("Enter a valid HTTPS video link.".into());
+    }
+    let parsed = Url::parse(value.trim()).map_err(|_| "Enter a valid HTTPS video link.")?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || !is_public_url_host(&parsed)
+    {
+        return Err("Only regular HTTPS video links are accepted.".into());
+    }
+    Ok(parsed.into())
+}
+
+fn is_public_url_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(domain)) => {
+            let domain = domain.to_ascii_lowercase();
+            domain != "localhost" && !domain.ends_with(".localhost") && !domain.ends_with(".local")
+        }
+        Some(Host::Ipv4(ip)) => {
+            !ip.is_private()
+                && !ip.is_loopback()
+                && !ip.is_link_local()
+                && !ip.is_broadcast()
+                && !ip.is_unspecified()
+        }
+        Some(Host::Ipv6(ip)) => {
+            !ip.is_loopback()
+                && !ip.is_unique_local()
+                && !ip.is_unicast_link_local()
+                && !ip.is_unspecified()
+        }
+        None => false,
+    }
+}
+
+async fn cache_download_thumbnail(app: &AppHandle, url: Option<&str>) -> Option<String> {
+    let url = url?.trim();
+    let parsed = Url::parse(url).ok()?;
+    if parsed.scheme() != "https" || !is_public_url_host(&parsed) {
+        return None;
+    }
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 3 {
+                attempt.stop()
+            } else if attempt.url().scheme() == "https" && is_public_url_host(attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .ok()?
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    if !response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("image/"))
+    {
+        return None;
+    }
+    if response.content_length().unwrap_or(0) > 5 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = response.bytes().await.ok()?;
+    if bytes.len() > 5 * 1024 * 1024 {
+        return None;
+    }
+    let path = dirs::cache_dir()?
+        .join("CONTAINER")
+        .join("download-thumbnails")
+        .join(format!("{:x}.jpg", Sha256::digest(url.as_bytes())));
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::write(&path, bytes).ok()?;
+    allow_asset_file(app, &path).ok()?;
+    Some(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn analyze_download_url(app: AppHandle, url: String) -> Result<DownloadAnalysis, String> {
+    let url = validated_download_url(&url)?;
+    let binary = downloader_binary_path()?;
+    if !binary.is_file() || downloader_version().await.is_none() {
+        return Err("yt-dlp is not ready. Select the official yt-dlp executable first.".into());
+    }
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        hidden_path_command(&binary)
+            .args(["-J", "--no-playlist", "--no-warnings"])
+            .arg(&url)
+            .output(),
+    )
+    .await
+    .map_err(|_| "Link analysis timed out.")?
+    .map_err(|error| format!("yt-dlp could not start: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(if detail.is_empty() {
+            "Link analysis failed.".into()
+        } else {
+            detail
+        });
+    }
+    let metadata: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "yt-dlp returned invalid media information.")?;
+    let title = metadata
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("This link did not contain a downloadable title.")?
+        .trim()
+        .to_string();
+    let thumbnail = metadata
+        .get("thumbnail")
+        .and_then(Value::as_str)
+        .filter(|value| value.starts_with("https://"))
+        .map(str::to_string);
+    let mut formats = metadata
+        .get("formats")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("format_id")?.as_str()?.to_string();
+                    let audio = entry
+                        .get("acodec")
+                        .and_then(Value::as_str)
+                        .filter(|value| *value != "none")
+                        .is_some();
+                    let video = entry
+                        .get("vcodec")
+                        .and_then(Value::as_str)
+                        .filter(|value| *value != "none")
+                        .is_some();
+                    if !audio && !video {
+                        return None;
+                    }
+                    let label = if video {
+                        format!(
+                            "{}×{}",
+                            entry.get("width").and_then(Value::as_u64).unwrap_or(0),
+                            entry.get("height").and_then(Value::as_u64).unwrap_or(0)
+                        )
+                    } else {
+                        entry
+                            .get("ext")
+                            .and_then(Value::as_str)
+                            .unwrap_or("audio")
+                            .to_uppercase()
+                    };
+                    let codec = if video {
+                        entry
+                            .get("vcodec")
+                            .and_then(Value::as_str)
+                            .unwrap_or("video")
+                    } else {
+                        entry
+                            .get("acodec")
+                            .and_then(Value::as_str)
+                            .unwrap_or("audio")
+                    };
+                    let size = entry
+                        .get("filesize_approx")
+                        .or_else(|| entry.get("filesize"))
+                        .and_then(Value::as_f64)
+                        .map(|value| format!("{:.1} MB", value / 1_048_576.0))
+                        .unwrap_or_else(|| "size unknown".into());
+                    Some(DownloadFormat {
+                        id,
+                        label,
+                        detail: format!("{} · {}", codec, size),
+                        kind: if video {
+                            "video".into()
+                        } else {
+                            "audio".into()
+                        },
+                        codec: codec.to_string(),
+                        rank: if video {
+                            entry.get("height").and_then(Value::as_u64).unwrap_or(0) * 1_000
+                                + entry.get("fps").and_then(Value::as_u64).unwrap_or(0)
+                        } else {
+                            entry.get("abr").and_then(Value::as_u64).unwrap_or(0)
+                        },
+                        height: if video {
+                            entry.get("height").and_then(Value::as_u64)
+                        } else {
+                            None
+                        },
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    formats.sort_by_key(|item| std::cmp::Reverse(item.rank));
+    formats.truncate(40);
+    Ok(DownloadAnalysis {
+        title,
+        uploader: metadata
+            .get("uploader")
+            .or_else(|| metadata.get("channel"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        duration: metadata.get("duration").and_then(Value::as_f64),
+        thumbnail_path: cache_download_thumbnail(&app, thumbnail.as_deref()).await,
+        formats,
+    })
+}
+
+#[tauri::command]
+async fn download_media(
+    app: AppHandle,
+    state: State<'_, JobState>,
+    url: String,
+    format: String,
+) -> Result<DownloaderResult, String> {
+    let url = validated_download_url(&url)?;
+    let binary = downloader_binary_path()?;
+    if !binary.is_file() || downloader_version().await.is_none() {
+        return Err("yt-dlp is not ready. Select the official yt-dlp executable first.".into());
+    }
+    let output_dir = downloader_output_dir()?;
+    let format_args: Vec<String> = match format.as_str() {
+        "audio" => vec![
+            "-f".into(),
+            "bestaudio/best".into(),
+            "-x".into(),
+            "--audio-format".into(),
+            "m4a".into(),
+        ],
+        "1080" => vec![
+            "-f".into(),
+            "bv*[height<=1080]+ba/b[height<=1080]/best".into(),
+        ],
+        "best" => vec!["-f".into(), "bv*+ba/best".into()],
+        id if !id.is_empty()
+            && id.len() <= 40
+            && id
+                .chars()
+                .all(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '_' | '-')) =>
+        {
+            vec!["-f".into(), format!("{id}+bestaudio/{id}")]
+        }
+        _ => return Err("Unsupported download format.".into()),
+    };
+    state.cancelled.store(false, Ordering::Relaxed);
+    let existing_temporary_files = downloader_temporary_files(&output_dir);
+    let mut child = hidden_path_command(&binary)
+        .args([
+            "--no-playlist",
+            "--no-warnings",
+            "--restrict-filenames",
+            "--windows-filenames",
+            "--newline",
+            // --print enables quiet mode in yt-dlp. Explicitly restore progress
+            // output so the UI receives live transfer information.
+            "--progress",
+            "--progress-template",
+            "download:CONTAINER_PROGRESS:%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._speed_str)s",
+            "-P",
+        ])
+        .arg(&output_dir)
+        .args(&format_args)
+        .arg("--print")
+        .arg("after_move:filepath")
+        .arg(&url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("yt-dlp could not start: {error}"))?;
+    *state
+        .download_cleanup
+        .lock()
+        .map_err(|_| "Download cleanup state lock failed")? = Some(DownloadCleanup {
+        output_dir: output_dir.clone(),
+        existing_temporary_files,
+    });
+    *state.pid.lock().map_err(|_| "Job state lock failed")? = child.id();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("yt-dlp output stream is unavailable.")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("yt-dlp progress stream is unavailable.")?;
+    let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
+    let stdout_tx = stream_tx.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if stdout_tx.send((true, line)).is_err() {
+                break;
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if stream_tx.send((false, line)).is_err() {
+                break;
+            }
+        }
+    });
+    let mut output_lines = Vec::new();
+    let mut error_lines = Vec::new();
+    while let Some((is_stdout, line)) = stream_rx.recv().await {
+        if state.cancelled.load(Ordering::Relaxed) {
+            let _ = child.kill().await;
+            break;
+        }
+        if let Some(progress) = parse_downloader_progress(&line) {
+            let _ = app.emit("downloader-progress", progress);
+        } else if is_stdout {
+            output_lines.push(line);
+        } else if !line.trim().is_empty() {
+            error_lines.push(line);
+        }
+    }
+    let status = child.wait().await.map_err(|error| error.to_string())?;
+    *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
+    if state.cancelled.load(Ordering::Relaxed) {
+        cleanup_current_download(&state);
+        return Err("Download cancelled.".into());
+    }
+    if !status.success() {
+        cleanup_current_download(&state);
+        let detail = error_lines
+            .into_iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(if detail.is_empty() {
+            "Download failed.".into()
+        } else {
+            detail
+        });
+    }
+    if let Ok(mut cleanup) = state.download_cleanup.lock() {
+        cleanup.take();
+    }
+    let details = output_lines
+        .last()
+        .map(String::as_str)
+        .unwrap_or("Download finished.")
+        .to_string();
+    Ok(DownloaderResult {
+        output_dir: output_dir.to_string_lossy().to_string(),
+        details,
+    })
 }
 
 struct VadCache {
@@ -1038,7 +1631,9 @@ async fn waveform_for(input: &Path) -> Result<Vec<f32>, String> {
     }
     let samples: Vec<f32> = output
         .stdout
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs().min(1.0))
         .collect();
     if samples.len() <= 1200 {
@@ -1142,7 +1737,9 @@ async fn cached_vad_data(
     let samples = Arc::new(
         output
             .stdout
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| i16::from_le_bytes([b[0], b[1]]))
             .collect::<Vec<_>>(),
     );
@@ -1497,7 +2094,9 @@ async fn recommend_autocut_settings(path: String) -> Result<AutoCutRecommendatio
     }
     let samples: Vec<f32> = output
         .stdout
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     if samples.len() < 100 {
@@ -3209,12 +3808,10 @@ async fn build_command(
             }
             let height = check_range(parse_number(p, "height")?, 2.0, 2160.0, "Height")? as u64;
             let fps = check_range(parse_number(p, "fps")?, 1.0, 60.0, "FPS")?;
-            let width = ((height as f64 * info.width.unwrap_or(1920) as f64
+            let width = (height as f64 * info.width.unwrap_or(1920) as f64
                 / info.height.unwrap_or(1080) as f64)
-                .round() as u64
-                + 1)
-                / 2
-                * 2;
+                .round() as u64;
+            let width = width.div_ceil(2) * 2;
             let max_colors = p
                 .get("max_colors")
                 .map(String::as_str)
@@ -3613,6 +4210,7 @@ fn discord_video_filter(
     Ok((!filters.is_empty()).then(|| filters.join(",")))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_ffmpeg_stage(
     app: Option<&AppHandle>,
     state: &JobState,
@@ -4216,14 +4814,11 @@ async fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
     state.cancelled.store(true, Ordering::Relaxed);
     let pid = *state.pid.lock().map_err(|_| "Job state lock failed")?;
     if let Some(pid) = pid {
-        #[cfg(target_os = "windows")]
-        let _ = hidden_command("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output()
-            .await;
-        #[cfg(not(target_os = "windows"))]
-        let _ = hidden_command("kill").arg(pid.to_string()).output().await;
+        tokio::task::spawn_blocking(move || stop_process_tree(pid))
+            .await
+            .ok();
     }
+    cleanup_current_download(&state);
     Ok(())
 }
 
@@ -4329,6 +4924,10 @@ pub fn run() {
             ffmpeg_status,
             ffmpeg_runtime_error,
             repair_ffmpeg_runtime,
+            downloader_status,
+            set_downloader_binary,
+            analyze_download_url,
+            download_media,
             list_system_fonts,
             available_encoders,
             hash_file,
@@ -4366,6 +4965,17 @@ pub fn run() {
         .expect("error while building CONTAINER")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                // yt-dlp must be tied to this application session. Without
+                // explicitly ending its process tree, Windows can keep a
+                // download alive after the UI has been closed.
+                let state = app.state::<JobState>();
+                state.cancelled.store(true, Ordering::Relaxed);
+                if let Ok(mut active_pid) = state.pid.lock() {
+                    if let Some(pid) = active_pid.take() {
+                        stop_process_tree(pid);
+                    }
+                }
+                cleanup_current_download(&state);
                 let lifecycle = app.state::<SessionLifecycle>();
                 let _ = std::fs::remove_file(&lifecycle.marker_path);
             }
@@ -4375,6 +4985,57 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloader_only_accepts_regular_https_urls() {
+        assert_eq!(
+            validated_download_url("https://www.youtube.com/watch?v=example").unwrap(),
+            "https://www.youtube.com/watch?v=example"
+        );
+        assert!(validated_download_url("http://example.com/video").is_err());
+        assert!(validated_download_url("https://user:pass@example.com/video").is_err());
+        assert!(validated_download_url("https://example.com/line\nbreak").is_err());
+        assert!(validated_download_url("https://localhost/video").is_err());
+        assert!(validated_download_url("https://127.0.0.1/video").is_err());
+        assert!(validated_download_url("https://192.168.1.10/video").is_err());
+        assert!(validated_download_url("https://[::1]/video").is_err());
+    }
+
+    #[test]
+    fn downloader_progress_uses_the_machine_readable_template() {
+        let progress = parse_downloader_progress("CONTAINER_PROGRESS:42.7%|18.4MiB|3.2MiB/s")
+            .expect("valid progress line");
+        assert_eq!(progress.percent, 42.7);
+        assert_eq!(progress.downloaded, "18.4MiB");
+        assert_eq!(progress.speed, "3.2MiB/s");
+        assert!(parse_downloader_progress("[download] 42.7%").is_none());
+    }
+
+    #[test]
+    fn downloader_cleanup_only_removes_new_partial_files() {
+        let root = std::env::temp_dir().join(format!(
+            "container_downloader_cleanup_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let old_part = root.join("existing.mp4.part");
+        let new_part = root.join("current.mp4.part");
+        let finished = root.join("finished.mp4");
+        std::fs::write(&old_part, b"old").unwrap();
+        let state = JobState::default();
+        *state.download_cleanup.lock().unwrap() = Some(DownloadCleanup {
+            output_dir: root.clone(),
+            existing_temporary_files: downloader_temporary_files(&root),
+        });
+        std::fs::write(&new_part, b"new").unwrap();
+        std::fs::write(&finished, b"done").unwrap();
+        cleanup_current_download(&state);
+        assert!(old_part.is_file());
+        assert!(!new_part.exists());
+        assert!(finished.is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn bundled_ffmpeg_pair_is_materialized_outside_the_install_folder() {
@@ -5345,7 +6006,9 @@ mod tests {
         assert!(output.status.success());
         let samples = output
             .stdout
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect::<Vec<_>>();
         let crossings = samples

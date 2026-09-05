@@ -14,6 +14,8 @@
   import { localizedForSection, localizedTool, type Field, type MediaKind, type Tool } from "./lib/tools";
   import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
+  import DownloaderWorkspace from "./lib/DownloaderWorkspace.svelte";
+  import { reportProblem, type ToastDetail } from "./lib/toast";
 
   interface MediaInfo {
     path: string;
@@ -68,6 +70,7 @@
   let favoriteIds:string[]=$state([]);
   let favoritesOnly=$state(false);
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
+  let downloaderOpen = $state(false);
   let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
@@ -116,13 +119,16 @@
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
   let runtimeMigrationError = $state("");
-  let appVersion = $state("0.9.2");
+  let appVersion = $state("0.9.3");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let outputCleanupOpen = $state(false);
   let outputCleaning = $state(false);
   let outputCleanupMessage = $state("");
   let outputCleanupMessageTimer:number|undefined;
+  let toastMessage=$state("");
+  let toastKind:"error"|"info"=$state("error");
+  let toastTimer:number|undefined;
   let updateChecking = $state(false);
   let updateInstalling = $state(false);
   let updateStatus = $state("");
@@ -136,6 +142,39 @@
     en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one file. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to Downloads/CONTAINER Output. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
   };
   const t=(key:string)=>messages[language][key]??key;
+  function friendlyProblem(reason:unknown){
+    const raw=String(reason??"").trim();
+    if(language==="tr"){
+      if(/valid HTTPS|video link/i.test(raw))return "Geçerli bir HTTPS video bağlantısı girip tekrar dene.";
+      if(/yt-dlp.*not ready|yt-dlp gerekli/i.test(raw))return "İndirme bileşeni hazır değil. Önce resmî yt-dlp.exe dosyasını seç.";
+      if(/ffmpeg.*(?:not found|missing|could not start)/i.test(raw))return "FFmpeg bileşeni bulunamadı. Uygulamayı yeniden kurup tekrar dene.";
+      if(/network|connect|timed? out|internet/i.test(raw))return "Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.";
+      if(/permission|access denied/i.test(raw))return "Dosyaya erişilemedi. Klasör izinlerini kontrol edip tekrar dene.";
+      if(/download failed/i.test(raw))return "İndirme tamamlanamadı. Bağlantıyı veya seçilen formatı kontrol et.";
+      if(/sign in|login required|confirm you.?re not a bot/i.test(raw))return "Bu video giriş doğrulaması istiyor ve şu anda indirilemiyor.";
+      if(/HTTP Error 40[134]|forbidden/i.test(raw))return "Kaynak indirmeye izin vermedi. Biraz sonra veya başka bir formatla tekrar dene.";
+      if(/video unavailable|private video/i.test(raw))return "Bu video kullanılamıyor veya özel olarak ayarlanmış.";
+      if(/format.*(?:unavailable|not available|unsupported)/i.test(raw))return "Seçilen format bu video için kullanılamıyor. Başka bir kalite seç.";
+      return raw||"Beklenmeyen bir sorun oluştu. Lütfen tekrar dene.";
+    }
+    if(/valid HTTPS|video link/i.test(raw))return "Enter a valid HTTPS video link and try again.";
+    if(/yt-dlp.*not ready/i.test(raw))return "The download component is not ready. Select the official yt-dlp executable first.";
+    if(/ffmpeg.*(?:not found|missing|could not start)/i.test(raw))return "FFmpeg is unavailable. Reinstall the application and try again.";
+    if(/network|connect|timed? out|internet/i.test(raw))return "Could not connect. Check your internet connection and try again.";
+    if(/permission|access denied/i.test(raw))return "The file could not be accessed. Check the folder permissions and try again.";
+    if(/download failed/i.test(raw))return "The download could not be completed. Check the link or selected format.";
+    if(/sign in|login required|confirm you.?re not a bot/i.test(raw))return "This video requires sign-in verification and cannot currently be downloaded.";
+    if(/HTTP Error 40[134]|forbidden/i.test(raw))return "The source refused the download. Try again later or choose another format.";
+    if(/video unavailable|private video/i.test(raw))return "This video is unavailable or private.";
+    if(/format.*(?:unavailable|not available|unsupported)/i.test(raw))return "That format is unavailable for this video. Choose another quality.";
+    return raw||"An unexpected problem occurred. Please try again.";
+  }
+  function showToast(reason:unknown,kind:"error"|"info"="error"){
+    toastMessage=kind==="error"?friendlyProblem(reason):String(reason);
+    toastKind=kind;
+    window.clearTimeout(toastTimer);
+    toastTimer=window.setTimeout(()=>toastMessage="",3000);
+  }
   const kindTools=(kind:MediaKind)=>localizedForSection(kind,media?.kind??kind,language);
   const timelineTool = $derived.by(()=>selected ? ["cut","screenshot","gif"].includes(selected.id) : false);
   const canUndo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
@@ -169,7 +208,7 @@
       outputCleanupOpen=false;
       window.clearTimeout(outputCleanupMessageTimer);
       outputCleanupMessageTimer=window.setTimeout(()=>outputCleanupMessage="",2500);
-    }catch(reason){outputCleanupMessage=String(reason)}finally{outputCleaning=false}
+    }catch(reason){outputCleanupMessage="";reportProblem(reason)}finally{outputCleaning=false}
   }
   async function restorePreviousSession(){
     const saved=recoveryCandidate;if(!saved||restoringSession)return;
@@ -406,7 +445,7 @@
   async function ensureSystemFonts(){
     if(systemFonts.length||fontsLoading)return systemFonts;
     fontsLoading=true;
-    try{systemFonts=await invoke<FontOption[]>("list_system_fonts")}catch(reason){error=String(reason)}finally{fontsLoading=false}
+    try{systemFonts=await invoke<FontOption[]>("list_system_fonts")}catch(reason){error=String(reason);reportProblem(reason)}finally{fontsLoading=false}
     return systemFonts;
   }
   async function addTextLayer(){
@@ -548,7 +587,7 @@
   async function loadToolboxFilmstrip(){
     if(!media||media.kind!=="video"||toolboxFilmstripLoading||toolboxFilmstripUrl)return;
     toolboxFilmstripLoading=true;
-    try{toolboxFilmstripUrl=await invoke<string>("compute_video_filmstrip",{path:media.path})}catch(reason){error=String(reason)}finally{toolboxFilmstripLoading=false}
+    try{toolboxFilmstripUrl=await invoke<string>("compute_video_filmstrip",{path:media.path})}catch(reason){error=String(reason);reportProblem(reason)}finally{toolboxFilmstripLoading=false}
   }
   function timelineAt(clientX:number){if(!toolboxTimeline||!media?.duration)return 0;const rect=toolboxTimeline.getBoundingClientRect();return Math.max(0,Math.min(media.duration,(clientX-rect.left)/rect.width*media.duration))}
   function seekTimeline(event:MouseEvent){
@@ -600,6 +639,7 @@
     if(first)chooseTool(first);else selected=null;
   }
   function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
+    downloaderOpen=false;
     if(mode!==workspaceMode&&workspaceMode==="toolbox")resetSelectedTool();
     workspaceMode=mode;
   }
@@ -694,6 +734,7 @@
       editHistoryIndex = -1;
       error = String(reason);
       jobStatus = "error";
+      reportProblem(reason);
     }
   }
 
@@ -856,7 +897,7 @@
     try{
       const result=await invoke<QualityAnalysis>("analyze_quality",{request:{input:analyzedPath,goal:toolValue("goal")||"balanced",sample_duration:toolNumber("sample_duration")||2}});
       if(selected?.id==="compression"&&media?.path===analyzedPath){qualityAnalysis=result;elapsed=result.elapsed;progress=100;jobStatus=language==="tr"?"analiz tamamlandı":"analysis complete"}
-    }catch(reason){error=String(reason);jobStatus="failed"}finally{qualityAnalyzing=false}
+    }catch(reason){error=String(reason);jobStatus="failed";reportProblem(reason)}finally{qualityAnalyzing=false}
   }
   function applyQualityRecommendation(){if(qualityAnalysis)setToolNumber("crf",qualityAnalysis.recommended_crf)}
 
@@ -946,6 +987,7 @@
       error = String(reason);
       elapsed = (performance.now() - started) / 1000;
       jobStatus = String(reason).toLowerCase().includes("cancel") ? "cancelled" : "failed";
+      reportProblem(reason);
     } finally {
       busy = false;
     }
@@ -1007,6 +1049,7 @@
     } catch (reason) {
       runtimeMigrationError = String(reason);
       dependencyPanel = true;
+      reportProblem(reason);
     } finally {
       dependencyChecking = false;
     }
@@ -1028,6 +1071,7 @@
     } catch (reason) {
       updateStatus = language === "tr" ? "Güncelleme denetlenemedi. İnternet bağlantını kontrol et." : "Could not check for updates. Check your internet connection.";
       if (!manual) updatePanel = false;
+      if(manual)reportProblem(updateStatus);
       console.warn("Update check failed", reason);
     } finally {
       updateChecking = false;
@@ -1048,6 +1092,7 @@
       }, { timeout: 300000, restartAfterInstall: true });
     } catch (reason) {
       updateStatus = language === "tr" ? `Güncelleme kurulamadı: ${String(reason)}` : `Update could not be installed: ${String(reason)}`;
+      reportProblem(updateStatus);
       updateInstalling = false;
     }
   }
@@ -1080,6 +1125,19 @@
       }
     }).catch(() => { availableEncoders = null; });
     const playerKeys = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      // CONTAINER is a desktop editor, not a browser page. Keep the WebView
+      // find overlay and next/previous-find navigation out of the UI.
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && ["f", "g"].includes(key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (event.key === "F3") {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (!media) return;
       if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -1095,9 +1153,15 @@
       else if (event.key === "ArrowRight") seekToolbox(toolboxCurrent + 5);
     };
     const blockBrowserMenu = (event: MouseEvent) => event.preventDefault();
+    const toastEvent=(event:Event)=>{const detail=(event as CustomEvent<ToastDetail>).detail;if(detail?.message)showToast(detail.message,detail.kind??"error")};
+    const browserError=(event:ErrorEvent)=>showToast(event.error??event.message);
+    const rejected=(event:PromiseRejectionEvent)=>showToast(event.reason);
     window.addEventListener("keydown", playerKeys);
     window.addEventListener("contextmenu", blockBrowserMenu);
     window.addEventListener("beforeunload", persistRecovery);
+    window.addEventListener("container-toast",toastEvent);
+    window.addEventListener("error",browserError);
+    window.addEventListener("unhandledrejection",rejected);
     listen<ProgressEvent>("container-progress", (event) => {
       progress = Math.max(0, Math.min(100, event.payload.percent));
       speed = event.payload.speed || "—";
@@ -1116,7 +1180,7 @@
       }
     }).then((fn) => unlistenDrop = fn);
 
-    return () => { unlistenProgress?.(); unlistenDrop?.(); window.clearTimeout(outputCleanupMessageTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery); };
+    return () => { unlistenProgress?.(); unlistenDrop?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -1155,6 +1219,7 @@
         <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")}>{t("toolbox")}</button>
         {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")}>SMARTCUT</button>{/if}
         <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
+        <button class:active={downloaderOpen} onclick={() => downloaderOpen=true}>DWLNDR</button>
       </nav>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
     {:else}
@@ -1206,7 +1271,9 @@
     </div>
   {/if}
 
-  {#if !media}
+  {#if downloaderOpen}
+    <DownloaderWorkspace {language} />
+  {:else if !media}
     <section class="landing">
       {#if recoveryCandidate}
         <section class="recovery-card panel">
@@ -1242,6 +1309,9 @@
           <path d="M3 6h18" class="trash-fill trash-delay-3" />
           <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" class="trash-handle trash-delay-4" />
         </svg>
+      </button>
+      <button class="downloader-quick-trigger" onclick={()=>downloaderOpen=true} title={language==="tr"?"DWLNDR’ı aç":"Open DWLNDR"} aria-label={language==="tr"?"DWLNDR’ı aç":"Open DWLNDR"}>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v11M8 10l4 4 4-4M5 18v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2" /></svg>
       </button>
       {#if outputCleanupMessage}<div class="output-clean-toast" role="status">{outputCleanupMessage}</div>{/if}
     </section>
@@ -1631,4 +1701,5 @@
     {/if}
   {/if}
   {#if dragActive}<div class="drop-overlay"><span>{t("dropOpen")}</span></div>{/if}
+  {#if toastMessage}<aside class:error={toastKind==="error"} class="app-toast" role="alert"><span>{toastMessage}</span><button onclick={()=>{toastMessage="";window.clearTimeout(toastTimer)}} aria-label={language==="tr"?"Bildirimi kapat":"Close notification"}>×</button></aside>{/if}
 </main>

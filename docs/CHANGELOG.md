@@ -4,6 +4,14 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.3] - 2026-09-05
+
+- Added the secure DWLNDR workspace with link analysis, thumbnail previews, practical quality and codec choices, and live percentage, transferred-size and speed feedback.
+- Downloads now stop with the application, cancellation removes only newly created partial files, and the highest available quality is selected automatically.
+- Added short, dismissible and user-friendly error notifications across Toolbox, SmartCut, Batch and DWLNDR.
+- Hardened downloader URL and thumbnail validation, restored Windows SmartScreen protection, narrowed folder permissions and consolidated the HTTPS client dependency.
+- Improved progress-bar alignment and compact-window layout behavior.
+
 ## [0.9.2] - 2026-09-05
 
 - Separated the verified FFmpeg runtime from automatic app updates, reducing subsequent Windows update downloads from about 130 MB to about 11 MB while keeping full Setup and Portable packages self-contained.

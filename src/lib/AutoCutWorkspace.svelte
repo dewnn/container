@@ -5,6 +5,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { open } from "@tauri-apps/plugin-dialog";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
+  import { reportProblem } from "./toast";
 
   interface MediaInfo { path:string; name:string; duration:number|null; fps:number|null; audio_codec:string|null; start_timecode:string|null; kind?:string }
   interface Cut { start:number; end:number; enabled:boolean }
@@ -134,7 +135,7 @@
   async function analyze(){
     analyzing=true;error="";output="";
     try{const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=settingsKey;}
-    catch(reason){error=String(reason)}finally{analyzing=false}
+    catch(reason){error=String(reason);reportProblem(reason)}finally{analyzing=false}
   }
   async function autoTune(){
     autoTuning=true;error="";autoSummary="";
@@ -143,7 +144,7 @@
       threshold=result.threshold;minSilence=result.min_silence;minSpeech=result.min_speech;minimumPause=result.minimum_pause;keepBeforeSpeech=result.keep_before_speech;keepAfterSpeech=result.keep_after_speech;preset="auto";
       autoSummary=`${t("noise")} ${result.noise_floor_db.toFixed(1)} dB · ${t("voice")} ${result.speech_level_db.toFixed(1)} dB`;
       await tick(); await analyze();
-    }catch(reason){error=String(reason)}finally{autoTuning=false}
+    }catch(reason){error=String(reason);reportProblem(reason)}finally{autoTuning=false}
   }
   function applyPreset(id:"natural"|"balanced"|"tight"){
     const value=presets.find(item=>item.id===id);if(!value)return;
@@ -153,7 +154,7 @@
     armCompletionSound();
     exporting=true;progress=0;error="";output="";
     try{const result=await invoke<Result>("export_autocut",{request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;await playCompletionSound();}
-    catch(reason){error=String(reason)}finally{exporting=false}
+    catch(reason){error=String(reason);reportProblem(reason)}finally{exporting=false}
   }
   async function cancel(){await invoke("cancel_job")}
   async function fullscreen(){ if(!stage)return; if(document.fullscreenElement)await document.exitFullscreen();else await stage.requestFullscreen(); }
@@ -204,7 +205,7 @@
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
     resetHistory();
     invoke<Preset[]>("autocut_presets").then(result=>{presets=result;const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
-    invoke<number[]>("compute_autocut_waveform",{path:media.path}).then(result=>waveform=result).catch(reason=>error=String(reason)).finally(()=>waveformLoading=false);
+    invoke<number[]>("compute_autocut_waveform",{path:media.path}).then(result=>waveform=result).catch(reason=>{error=String(reason);reportProblem(reason)}).finally(()=>waveformLoading=false);
     return()=>{unlisten?.();window.removeEventListener("keydown",key)};
   });
 </script>

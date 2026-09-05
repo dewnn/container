@@ -5,6 +5,7 @@
   import { onMount } from "svelte";
   import { localizedTool, tools, type Field, type Tool } from "./tools";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
+  import { reportProblem } from "./toast";
 
   interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
   let { initialPath, language, availableEncoders, onhistorychange=()=>{}, onsessionchange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void}=$props();
@@ -52,7 +53,7 @@
     for(let index=0;index<items.length;index++){
       if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,error:undefined};items=[...items];
       try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation:selected.id,params:params()}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
-      catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)}}
+      catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)};reportProblem(reason)}
       aggregate=(index+1)/items.length*100;items=[...items];
     }
     unlisten?.();running=false;currentIndex=-1;if(!cancelAll&&completed>0)await playCompletionSound();
