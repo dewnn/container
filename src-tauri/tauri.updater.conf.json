@@ -1,5 +1,5 @@
 {
   "bundle": {
-    "externalBin": []
+    "externalBin": ["binaries/yt-dlp"]
   }
 }

@@ -41,6 +41,7 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 - Batch workspace for repeated jobs
 - Automatic work recovery after an unexpected shutdown
 - One-click Output cleanup that moves generated files to the Recycle Bin
+- Built-in DWLNDR workspace with bundled yt-dlp, link analysis and cancellable progress-aware downloads
 
 ### SmartCut
 
@@ -69,9 +70,13 @@ Installed builds preserve this verified FFmpeg runtime separately from the app. 
 
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
+## yt-dlp included
+
+Windows packages include a checksum-verified official yt-dlp build. DWLNDR works without a separate download and uses CONTAINER's bundled FFmpeg for video/audio merging. Because supported websites change frequently, the included build can still be replaced from the DWLNDR screen with a newer official executable.
+
 ## Updates
 
-Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Automatic update packages are app-only after the FFmpeg runtime transition; Portable builds should be replaced manually.
+Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Automatic update packages retain the installed FFmpeg runtime and carry only CONTAINER plus its verified downloader; Portable builds should be replaced manually.
 
 ## Privacy and safety
 

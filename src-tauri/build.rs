@@ -18,15 +18,26 @@ fn locate(name: &str, override_name: &str) -> PathBuf {
         .arg(format!("{name}.exe"))
         .output()
         .unwrap_or_else(|error| panic!("Could not search for {name}: {error}"));
-    let path = String::from_utf8_lossy(&output.stdout)
+    let mut candidates = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
         .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if name == "yt-dlp" {
+        if let Some(local_data) = env::var_os("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(local_data)
+                    .join("dev.dean.container")
+                    .join("downloader")
+                    .join("yt-dlp.exe"),
+            );
+        }
+    }
+    let path = candidates
+        .into_iter()
         .find(|path| path.is_file())
         .unwrap_or_else(|| {
-            panic!(
-                "{name}.exe was not found. Install the full FFmpeg build or set {override_name}."
-            )
+            panic!("{name}.exe was not found. Install it or set {override_name} to its full path.")
         });
     path.canonicalize().unwrap_or(path)
 }
@@ -58,6 +69,7 @@ fn prepare_windows_sidecars() {
     for (name, override_name) in [
         ("ffmpeg", "CONTAINER_FFMPEG"),
         ("ffprobe", "CONTAINER_FFPROBE"),
+        ("yt-dlp", "CONTAINER_YT_DLP"),
     ] {
         let source = locate(name, override_name);
         let destination = manifest

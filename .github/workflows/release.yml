@@ -42,6 +42,17 @@ jobs:
           if (-not $ffmpeg -or -not $ffprobe) { throw "Real FFmpeg binaries were not found under $tools." }
           $ffmpeg.DirectoryName >> $env:GITHUB_PATH
 
+      - name: Prepare verified yt-dlp
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe'
+          $path = Join-Path $env:RUNNER_TEMP 'yt-dlp.exe'
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $path
+          $expected = '66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a'
+          $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "yt-dlp checksum mismatch: $actual" }
+          "CONTAINER_YT_DLP=$path" >> $env:GITHUB_ENV
+
       - name: Verify release versions
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -74,7 +85,7 @@ jobs:
           New-Item -ItemType Directory -Force $updaterDir | Out-Null
 
           $app = Get-ChildItem src-tauri/target/release -Filter '*.exe' -File |
-            Where-Object Name -NotMatch '^(ffmpeg|ffprobe)' |
+            Where-Object Name -NotMatch '^(ffmpeg|ffprobe|yt-dlp)' |
             Select-Object -First 1
           if (-not $app) { throw 'Portable application executable was not found.' }
 
@@ -84,10 +95,14 @@ jobs:
           $sidecarRoot = Join-Path $PWD 'src-tauri\binaries'
           $ffmpegSidecar = Get-ChildItem $sidecarRoot -Filter 'ffmpeg-*-windows-msvc.exe' -File | Select-Object -First 1
           $ffprobeSidecar = Get-ChildItem $sidecarRoot -Filter 'ffprobe-*-windows-msvc.exe' -File | Select-Object -First 1
-          if (-not $ffmpegSidecar -or -not $ffprobeSidecar) { throw 'Bundled FFmpeg sidecars were not prepared.' }
+          $ytDlpSidecar = Get-ChildItem $sidecarRoot -Filter 'yt-dlp-*-windows-msvc.exe' -File | Select-Object -First 1
+          if (-not $ffmpegSidecar -or -not $ffprobeSidecar -or -not $ytDlpSidecar) { throw 'Bundled media sidecars were not prepared.' }
           Copy-Item -LiteralPath $ffmpegSidecar.FullName -Destination (Join-Path $portableDir 'ffmpeg.exe')
           Copy-Item -LiteralPath $ffprobeSidecar.FullName -Destination (Join-Path $portableDir 'ffprobe.exe')
+          Copy-Item -LiteralPath $ytDlpSidecar.FullName -Destination (Join-Path $portableDir 'yt-dlp.exe')
           Copy-Item -LiteralPath 'docs\THIRD_PARTY_NOTICES.md' -Destination (Join-Path $portableDir 'THIRD_PARTY_NOTICES.md')
+          Copy-Item -LiteralPath 'src-tauri\resources\yt-dlp-LICENSE.txt' -Destination (Join-Path $portableDir 'yt-dlp-LICENSE.txt')
+          Copy-Item -LiteralPath 'src-tauri\resources\yt-dlp-THIRD_PARTY_LICENSES.txt' -Destination (Join-Path $portableDir 'yt-dlp-THIRD_PARTY_LICENSES.txt')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip") -CompressionLevel Optimal
 
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1

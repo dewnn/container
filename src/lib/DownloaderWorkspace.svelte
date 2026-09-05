@@ -53,7 +53,7 @@
   function videoCodecs(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="video").map((item:DownloadFormat)=>codecName(item.codec)))].slice(0,4):[]}
   function audioCodecs(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="audio").map((item:DownloadFormat)=>codecName(item.codec)))].slice(0,4):[]}
   function chooseVideo(){const data=analysis as DownloadAnalysis|null;if(!data)return;const matches=data.formats.filter((item:DownloadFormat)=>item.kind==="video"&&(!preferredHeight||item.height===preferredHeight)&&(preferredCodec==="auto"||codecName(item.codec)===preferredCodec));const fallback=data.formats.find((item:DownloadFormat)=>item.kind==="video");format=(matches[0]??fallback)?.id??"best"}
-  function chooseAudio(codec:string){const data=analysis as DownloadAnalysis|null;preferredCodec=codec;format=data?.formats.find((item:DownloadFormat)=>item.kind==="audio"&&codecName(item.codec)===codec)?.id??"audio"}
+  function chooseAudio(codec:string){const data=analysis as DownloadAnalysis|null;preferredCodec=codec;const id=data?.formats.find((item:DownloadFormat)=>item.kind==="audio"&&codecName(item.codec)===codec)?.id;format=id?`audio:${id}`:"audio"}
   $effect(()=>{refresh();listen<DownloadProgress>("downloader-progress",event=>downloadProgress=event.payload).then(value=>unlisten=value);return()=>unlisten?.()});
 </script>
 
@@ -63,7 +63,7 @@
     <div class="downloader-engine">
       <b>{language==="tr"?"İNDİRME MOTORU":"DOWNLOAD ENGINE"}</b>
       <strong class:ready={!!status?.ready}>{status?.ready ? `yt-dlp ${status.version}` : (language==="tr"?"yt-dlp gerekli":"yt-dlp required")}</strong>
-      <p>{language==="tr"?"Resmî yt-dlp.exe dosyasını bir kez seç. CONTAINER otomatik indirme, script kurulumu veya çerez erişimi yapmaz.":"Choose the official yt-dlp.exe once. CONTAINER never auto-installs scripts or accesses cookies."}</p>
+      <p>{language==="tr"?"Doğrulanmış yt-dlp CONTAINER ile birlikte gelir. İstersen resmî bir sürümle değiştirebilirsin; çerezlere erişilmez.":"A verified yt-dlp build is included with CONTAINER. You can replace it with an official build; cookies are never accessed."}</p>
       <button class="ghost" onclick={chooseBinary} disabled={busy}>{status?.ready ? (language==="tr"?"YT-DLP’Yİ DEĞİŞTİR":"CHANGE YT-DLP") : (language==="tr"?"YT-DLP.EXE SEÇ":"CHOOSE YT-DLP.EXE")}</button>
       <a href="https://github.com/yt-dlp/yt-dlp/releases/latest" target="_blank" rel="noreferrer">{language==="tr"?"Resmî indirme sayfası ↗":"Official download page ↗"}</a>
     </div>

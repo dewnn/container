@@ -11,6 +11,14 @@ Windows release packages bundle FFmpeg and FFprobe 9.0.1 full build as separate 
 - Source: https://ffmpeg.org/download.html#get-sources
 - Windows build links: https://ffmpeg.org/download.html#build-windows
 
+## yt-dlp
+
+Windows release packages bundle the official yt-dlp 2026.08.19 executable. yt-dlp is released under the Unlicense; its PyInstaller executable also contains components under the licenses reproduced in `yt-dlp-THIRD_PARTY_LICENSES.txt`. The bundled `yt-dlp.exe` SHA-256 is `66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a`.
+
+- Project: https://github.com/yt-dlp/yt-dlp
+- Release: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+- Source: https://github.com/yt-dlp/yt-dlp/tree/2026.08.19
+
 ## Geist and Geist Mono
 
 The interface uses Geist and Geist Mono through Fontsource packages. The font families are distributed under the SIL Open Font License 1.1.

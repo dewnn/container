@@ -38,10 +38,13 @@
     "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/ffmpeg",
-      "binaries/ffprobe"
+      "binaries/ffprobe",
+      "binaries/yt-dlp"
     ],
     "resources": [
       "resources/FFmpeg-GPLv3.txt",
+      "resources/yt-dlp-LICENSE.txt",
+      "resources/yt-dlp-THIRD_PARTY_LICENSES.txt",
       "../docs/THIRD_PARTY_NOTICES.md"
     ],
     "icon": [

@@ -55,6 +55,9 @@ fn load_embedded_vad(directory: &Path) -> Result<OnnxModel, String> {
 // stdout/stderr remain available, so progress and error reporting are intact.
 fn hidden_command(program: &str) -> Command {
     let mut command = Command::new(resolve_program(program));
+    // Tokio otherwise lets a spawned child continue when the future owning it
+    // is dropped (for example on a timeout or application shutdown).
+    command.kill_on_drop(true);
     #[cfg(target_os = "windows")]
     command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     command
@@ -62,6 +65,7 @@ fn hidden_command(program: &str) -> Command {
 
 fn hidden_path_command(program: &Path) -> Command {
     let mut command = Command::new(program);
+    command.kill_on_drop(true);
     #[cfg(target_os = "windows")]
     command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     command
@@ -196,6 +200,28 @@ struct JobState {
     pid: Mutex<Option<u32>>,
     download_cleanup: Mutex<Option<DownloadCleanup>>,
     vad_cache: Mutex<Option<VadCache>>,
+}
+
+struct ActiveProcess<'a> {
+    state: &'a JobState,
+    pid: Option<u32>,
+}
+
+impl<'a> ActiveProcess<'a> {
+    fn register(state: &'a JobState, pid: Option<u32>) -> Result<Self, String> {
+        *state.pid.lock().map_err(|_| "Job state lock failed")? = pid;
+        Ok(Self { state, pid })
+    }
+}
+
+impl Drop for ActiveProcess<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active_pid) = self.state.pid.lock() {
+            if *active_pid == self.pid {
+                *active_pid = None;
+            }
+        }
+    }
 }
 
 struct DownloadCleanup {
@@ -336,16 +362,41 @@ fn cleanup_current_download(state: &JobState) {
     }
 }
 
+fn materialize_bundled_downloader(source: &Path, destination: &Path) -> Result<bool, String> {
+    if destination.is_file() || !source.is_file() {
+        return Ok(false);
+    }
+    materialize_runtime_file(source, destination)?;
+    Ok(true)
+}
+
 fn downloader_binary_path() -> Result<PathBuf, String> {
     let root = dirs::data_local_dir()
         .ok_or("Application data folder is unavailable.")?
         .join("dev.dean.container")
         .join("downloader");
-    Ok(root.join(if cfg!(target_os = "windows") {
+    let destination = root.join(if cfg!(target_os = "windows") {
         "yt-dlp.exe"
     } else {
         "yt-dlp"
-    }))
+    });
+    if !destination.is_file() {
+        let bundled = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .map(|directory| {
+                directory.join(if cfg!(target_os = "windows") {
+                    "yt-dlp.exe"
+                } else {
+                    "yt-dlp"
+                })
+            });
+        if let Some(source) = bundled.filter(|path| path.is_file()) {
+            materialize_bundled_downloader(&source, &destination)
+                .map_err(|error| format!("Bundled yt-dlp could not be prepared: {error}"))?;
+        }
+    }
+    Ok(destination)
 }
 
 fn downloader_output_dir() -> Result<PathBuf, String> {
@@ -355,14 +406,13 @@ fn downloader_output_dir() -> Result<PathBuf, String> {
     Ok(folder)
 }
 
-async fn downloader_version() -> Option<String> {
-    let binary = downloader_binary_path().ok()?;
+async fn downloader_version_at(binary: &Path) -> Option<String> {
     if !binary.is_file() {
         return None;
     }
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        hidden_path_command(&binary).arg("--version").output(),
+        hidden_path_command(binary).arg("--version").output(),
     )
     .await
     .ok()?
@@ -376,6 +426,11 @@ async fn downloader_version() -> Option<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
+}
+
+async fn downloader_version() -> Option<String> {
+    let binary = downloader_binary_path().ok()?;
+    downloader_version_at(&binary).await
 }
 
 #[tauri::command]
@@ -412,11 +467,31 @@ async fn set_downloader_binary(path: String) -> Result<DownloaderStatus, String>
     let temporary = destination.with_extension("download");
     std::fs::copy(&source, &temporary)
         .map_err(|error| format!("yt-dlp could not be copied: {error}"))?;
-    std::fs::rename(&temporary, &destination)
-        .map_err(|error| format!("yt-dlp could not be installed: {error}"))?;
-    let version = downloader_version().await.ok_or(
-        "The selected file did not behave like yt-dlp. Choose the official yt-dlp executable.",
-    )?;
+    let version = match downloader_version_at(&temporary).await {
+        Some(version) => version,
+        None => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(
+                "The selected file did not behave like yt-dlp. Choose the official yt-dlp executable."
+                    .into(),
+            );
+        }
+    };
+    let backup = destination.with_extension("backup");
+    let _ = std::fs::remove_file(&backup);
+    let had_existing = destination.is_file();
+    if had_existing {
+        std::fs::rename(&destination, &backup)
+            .map_err(|error| format!("The existing yt-dlp could not be replaced: {error}"))?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, &destination) {
+        if had_existing {
+            let _ = std::fs::rename(&backup, &destination);
+        }
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("yt-dlp could not be installed: {error}"));
+    }
+    let _ = std::fs::remove_file(backup);
     Ok(DownloaderStatus {
         ready: true,
         version: Some(version),
@@ -459,6 +534,46 @@ fn is_public_url_host(url: &Url) -> bool {
                 && !ip.is_unspecified()
         }
         None => false,
+    }
+}
+
+fn valid_download_format_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 40
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+fn downloader_format_args(format: &str) -> Result<Vec<String>, String> {
+    match format {
+        "audio" => Ok(vec![
+            "-f".into(),
+            "bestaudio/best".into(),
+            "-x".into(),
+            "--audio-format".into(),
+            "m4a".into(),
+        ]),
+        "1080" => Ok(vec![
+            "-f".into(),
+            "bv*[height<=1080]+ba/b[height<=1080]/best".into(),
+        ]),
+        "best" => Ok(vec!["-f".into(), "bv*+ba/best".into()]),
+        audio if audio.starts_with("audio:") => {
+            let id = audio.trim_start_matches("audio:");
+            if !valid_download_format_id(id) {
+                return Err("Unsupported download format.".into());
+            }
+            Ok(vec![
+                "-f".into(),
+                id.into(),
+                "-x".into(),
+                "--audio-format".into(),
+                "m4a".into(),
+            ])
+        }
+        id if valid_download_format_id(id) => Ok(vec!["-f".into(), format!("{id}+bestaudio/{id}")]),
+        _ => Err("Unsupported download format.".into()),
     }
 }
 
@@ -521,7 +636,13 @@ async fn analyze_download_url(app: AppHandle, url: String) -> Result<DownloadAna
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(45),
         hidden_path_command(&binary)
-            .args(["-J", "--no-playlist", "--no-warnings"])
+            .args([
+                "--ignore-config",
+                "--no-plugin-dirs",
+                "-J",
+                "--no-playlist",
+                "--no-warnings",
+            ])
             .arg(&url)
             .output(),
     )
@@ -663,33 +784,18 @@ async fn download_media(
         return Err("yt-dlp is not ready. Select the official yt-dlp executable first.".into());
     }
     let output_dir = downloader_output_dir()?;
-    let format_args: Vec<String> = match format.as_str() {
-        "audio" => vec![
-            "-f".into(),
-            "bestaudio/best".into(),
-            "-x".into(),
-            "--audio-format".into(),
-            "m4a".into(),
-        ],
-        "1080" => vec![
-            "-f".into(),
-            "bv*[height<=1080]+ba/b[height<=1080]/best".into(),
-        ],
-        "best" => vec!["-f".into(), "bv*+ba/best".into()],
-        id if !id.is_empty()
-            && id.len() <= 40
-            && id
-                .chars()
-                .all(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '_' | '-')) =>
-        {
-            vec!["-f".into(), format!("{id}+bestaudio/{id}")]
-        }
-        _ => return Err("Unsupported download format.".into()),
-    };
+    let ffmpeg = resolve_program("ffmpeg");
+    let ffmpeg_directory = ffmpeg
+        .parent()
+        .filter(|path| path.is_dir())
+        .ok_or("Bundled FFmpeg folder is unavailable.")?;
+    let format_args = downloader_format_args(&format)?;
     state.cancelled.store(false, Ordering::Relaxed);
     let existing_temporary_files = downloader_temporary_files(&output_dir);
     let mut child = hidden_path_command(&binary)
         .args([
+            "--ignore-config",
+            "--no-plugin-dirs",
             "--no-playlist",
             "--no-warnings",
             "--restrict-filenames",
@@ -703,6 +809,8 @@ async fn download_media(
             "-P",
         ])
         .arg(&output_dir)
+        .arg("--ffmpeg-location")
+        .arg(ffmpeg_directory)
         .args(&format_args)
         .arg("--print")
         .arg("after_move:filepath")
@@ -719,7 +827,7 @@ async fn download_media(
         output_dir: output_dir.clone(),
         existing_temporary_files,
     });
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = child.id();
+    let active_process = ActiveProcess::register(&state, child.id())?;
     let stdout = child
         .stdout
         .take()
@@ -761,8 +869,14 @@ async fn download_media(
             error_lines.push(line);
         }
     }
-    let status = child.wait().await.map_err(|error| error.to_string())?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(error) => {
+            cleanup_current_download(&state);
+            return Err(error.to_string());
+        }
+    };
+    drop(active_process);
     if state.cancelled.load(Ordering::Relaxed) {
         cleanup_current_download(&state);
         return Err("Download cancelled.".into());
@@ -1496,7 +1610,18 @@ fn collect_media_files(
     for entry in std::fs::read_dir(folder).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
-        if path.is_dir() && recursive {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        let linked_directory = metadata.file_type().is_symlink() || {
+            #[cfg(target_os = "windows")]
+            {
+                metadata.file_attributes() & 0x400 != 0
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                false
+            }
+        };
+        if path.is_dir() && recursive && !linked_directory {
             collect_media_files(&path, true, files)?;
         } else if path.is_file()
             && path
@@ -2519,7 +2644,7 @@ async fn export_autocut_inner(
     let mut child = command
         .spawn()
         .map_err(|e| format!("FFmpeg could not start: {e}"))?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = child.id();
+    let active_process = ActiveProcess::register(state, child.id())?;
     let stdout = child.stdout.take().ok_or("FFmpeg progress unavailable.")?;
     let stderr = child
         .stderr
@@ -2536,7 +2661,16 @@ async fn export_autocut_inner(
         all
     });
     let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = std::fs::remove_file(&output);
+                return Err(error.to_string());
+            }
+        };
         if state.cancelled.load(Ordering::Relaxed) {
             let _ = child.kill().await;
             break;
@@ -2557,8 +2691,14 @@ async fn export_autocut_inner(
             }
         }
     }
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = std::fs::remove_file(&output);
+            return Err(error.to_string());
+        }
+    };
+    drop(active_process);
     let errors = stderr_task.await.unwrap_or_default();
     if state.cancelled.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(&output);
@@ -4233,7 +4373,7 @@ async fn run_ffmpeg_stage(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("FFmpeg could not start: {e}"))?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = child.id();
+    let active_process = ActiveProcess::register(state, child.id())?;
     let stdout = child
         .stdout
         .take()
@@ -4256,7 +4396,15 @@ async fn run_ffmpeg_stage(
     let mut out_time = 0.0;
     let mut speed = "—".to_string();
     let mut frame = "—".to_string();
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error.to_string());
+            }
+        };
         if state.cancelled.load(Ordering::Relaxed) {
             let _ = child.kill().await;
             break;
@@ -4288,8 +4436,11 @@ async fn run_ffmpeg_stage(
             }
         }
     }
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(error) => return Err(error.to_string()),
+    };
+    drop(active_process);
     let errors = stderr_task.await.unwrap_or_default();
     if state.cancelled.load(Ordering::Relaxed) {
         return Err("Job cancelled.".into());
@@ -4541,9 +4692,9 @@ async fn run_quality_capture(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("FFmpeg could not start: {e}"))?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = child.id();
+    let active_process = ActiveProcess::register(state, child.id())?;
     let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
+    drop(active_process);
     if state.cancelled.load(Ordering::Relaxed) {
         return Err("Job cancelled.".into());
     }
@@ -4724,7 +4875,7 @@ async fn run_operation(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("FFmpeg could not start: {e}"))?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = child.id();
+    let active_process = ActiveProcess::register(&state, child.id())?;
     let stdout = child
         .stdout
         .take()
@@ -4748,7 +4899,16 @@ async fn run_operation(
     let mut speed = "—".to_string();
     let mut frame = "—".to_string();
     let duration = info.duration.unwrap_or(0.0);
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = std::fs::remove_file(&output);
+                return Err(error.to_string());
+            }
+        };
         if state.cancelled.load(Ordering::Relaxed) {
             let _ = child.kill().await;
             break;
@@ -4778,8 +4938,14 @@ async fn run_operation(
             );
         }
     }
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    *state.pid.lock().map_err(|_| "Job state lock failed")? = None;
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = std::fs::remove_file(&output);
+            return Err(error.to_string());
+        }
+    };
+    drop(active_process);
     let errors = stderr_task.await.unwrap_or_default();
     if state.cancelled.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(&output);
@@ -4987,6 +5153,99 @@ mod tests {
     use super::*;
 
     #[test]
+    fn active_process_registration_never_leaves_or_clears_an_unrelated_pid() {
+        let state = JobState::default();
+        {
+            let _active = ActiveProcess::register(&state, Some(41)).unwrap();
+            assert_eq!(*state.pid.lock().unwrap(), Some(41));
+        }
+        assert_eq!(*state.pid.lock().unwrap(), None);
+
+        let active = ActiveProcess::register(&state, Some(42)).unwrap();
+        *state.pid.lock().unwrap() = Some(43);
+        drop(active);
+        assert_eq!(*state.pid.lock().unwrap(), Some(43));
+    }
+
+    #[test]
+    fn bundled_downloader_is_materialized_once_without_overwriting_a_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "container_downloader_runtime_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bundled = root.join("bundled.exe");
+        let managed = root.join("managed").join("yt-dlp.exe");
+        std::fs::write(&bundled, b"official bundled build").unwrap();
+
+        assert!(materialize_bundled_downloader(&bundled, &managed).unwrap());
+        assert_eq!(std::fs::read(&managed).unwrap(), b"official bundled build");
+        std::fs::write(&managed, b"user replacement").unwrap();
+        assert!(!materialize_bundled_downloader(&bundled, &managed).unwrap());
+        assert_eq!(std::fs::read(&managed).unwrap(), b"user replacement");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn process_tree_cancellation_ends_a_real_worker() {
+        use std::os::windows::process::CommandExt;
+
+        let mut child = std::process::Command::new("ping.exe")
+            .args(["-t", "127.0.0.1"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        stop_process_tree(child.id());
+        let ended = (0..20).any(|_| {
+            if child.try_wait().ok().flatten().is_some() {
+                true
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                false
+            }
+        });
+        if !ended {
+            let _ = child.kill();
+        }
+        assert!(ended, "cancelled worker process remained alive");
+    }
+
+    #[test]
+    fn batch_folder_scan_handles_unicode_and_respects_recursion() {
+        let root =
+            std::env::temp_dir().join(format!("container_batch_unicode_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("Türkçe klasör");
+        std::fs::create_dir_all(&nested).unwrap();
+        let media = nested.join("görüntü.mp4");
+        std::fs::write(&media, b"test").unwrap();
+        std::fs::write(nested.join("atlanacak.txt"), b"test").unwrap();
+
+        let mut files = Vec::new();
+        collect_media_files(&root, false, &mut files).unwrap();
+        assert!(files.is_empty());
+        collect_media_files(&root, true, &mut files).unwrap();
+        assert_eq!(files, vec![media.to_string_lossy().to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn corrupt_unicode_media_is_rejected_without_panicking() {
+        let path = std::env::temp_dir().join(format!(
+            "container_bozuk_görüntü_{}.mp4",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"this is not a media container").unwrap();
+        let error = probe_media(path.to_string_lossy().to_string())
+            .await
+            .expect_err("corrupt media must be rejected");
+        assert!(!error.trim().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn downloader_only_accepts_regular_https_urls() {
         assert_eq!(
             validated_download_url("https://www.youtube.com/watch?v=example").unwrap(),
@@ -5009,6 +5268,19 @@ mod tests {
         assert_eq!(progress.downloaded, "18.4MiB");
         assert_eq!(progress.speed, "3.2MiB/s");
         assert!(parse_downloader_progress("[download] 42.7%").is_none());
+    }
+
+    #[test]
+    fn downloader_keeps_selected_audio_audio_only() {
+        assert_eq!(
+            downloader_format_args("audio:140-1").unwrap(),
+            ["-f", "140-1", "-x", "--audio-format", "m4a"]
+        );
+        assert_eq!(
+            downloader_format_args("299").unwrap(),
+            ["-f", "299+bestaudio/299"]
+        );
+        assert!(downloader_format_args("audio:bad+format").is_err());
     }
 
     #[test]
