@@ -1219,7 +1219,6 @@
         <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")}>{t("toolbox")}</button>
         {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")}>SMARTCUT</button>{/if}
         <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
-        <button class:active={downloaderOpen} onclick={() => downloaderOpen=true}>DWLNDR</button>
       </nav>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
     {:else}
