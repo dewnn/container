@@ -115,12 +115,14 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.9.1");
+  let runtimeMigrationError = $state("");
+  let appVersion = $state("0.9.2");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let outputCleanupOpen = $state(false);
   let outputCleaning = $state(false);
   let outputCleanupMessage = $state("");
+  let outputCleanupMessageTimer:number|undefined;
   let updateChecking = $state(false);
   let updateInstalling = $state(false);
   let updateStatus = $state("");
@@ -165,6 +167,8 @@
         ? (language==="tr"?"Çıktılar Geri Dönüşüm Kutusu’na taşındı.":"Output was moved to the Recycle Bin.")
         : (language==="tr"?"Temizlenecek çıktı bulunamadı.":"There was no output to clean.");
       outputCleanupOpen=false;
+      window.clearTimeout(outputCleanupMessageTimer);
+      outputCleanupMessageTimer=window.setTimeout(()=>outputCleanupMessage="",2500);
     }catch(reason){outputCleanupMessage=String(reason)}finally{outputCleaning=false}
   }
   async function restorePreviousSession(){
@@ -989,9 +993,23 @@
     } finally {
       dependencyChecking = false;
     }
-    if (ffmpegStatus?.ready) dependencyPanel = false;
+    if (ffmpegStatus?.ready && !runtimeMigrationError) dependencyPanel = false;
     else if (showWhenMissing) dependencyPanel = true;
     return ffmpegStatus;
+  }
+
+  async function repairFfmpegRuntime() {
+    dependencyChecking = true;
+    try {
+      await invoke<boolean>("repair_ffmpeg_runtime");
+      runtimeMigrationError = "";
+      await refreshFfmpegStatus(true);
+    } catch (reason) {
+      runtimeMigrationError = String(reason);
+      dependencyPanel = true;
+    } finally {
+      dependencyChecking = false;
+    }
   }
 
   async function checkForUpdates(manual = true) {
@@ -1050,6 +1068,7 @@
     // Run both checks on every launch. The UI stays quiet unless the user
     // needs FFmpeg or a newer signed release is available.
     void (async () => {
+      runtimeMigrationError = await invoke<string | null>("ffmpeg_runtime_error").catch(() => null) ?? "";
       await refreshFfmpegStatus(true);
       await checkForUpdates(false);
     })();
@@ -1097,7 +1116,7 @@
       }
     }).then((fn) => unlistenDrop = fn);
 
-    return () => { unlistenProgress?.(); unlistenDrop?.(); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery); };
+    return () => { unlistenProgress?.(); unlistenDrop?.(); window.clearTimeout(outputCleanupMessageTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -1168,9 +1187,9 @@
     <div class="update-layer dependency-layer">
       <button class="update-backdrop" aria-label={language === "tr" ? "FFmpeg bildirimini kapat" : "Close FFmpeg notice"} onclick={() => dependencyPanel = false}></button>
       <dialog class="update-dialog dependency-dialog panel" open aria-labelledby="dependency-title">
-        <header><div><span class="status-dot missing"></span><h2 id="dependency-title">{language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED"}</h2></div><button onclick={() => dependencyPanel = false} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
-        <div class="dependency-message"><span>!</span><div><h3>{language === "tr" ? "MEDYA ARAÇLARI HENÜZ KULLANILAMAZ" : "MEDIA TOOLS ARE NOT READY YET"}</h3><p>{language === "tr" ? "Kurulumla gelen FFmpeg bileşenleri bulunamadı veya çalıştırılamadı. CONTAINER’ı yeniden kurup tekrar dene." : "The FFmpeg components included with CONTAINER are missing or could not start. Reinstall CONTAINER and try again."}</p></div></div>
-        <footer><button class="ghost" onclick={() => dependencyPanel = false}>{language === "tr" ? "ŞİMDİ DEĞİL" : "NOT NOW"}</button><button class="dependency-check" onclick={() => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? "TEKRAR KONTROL ET" : "CHECK AGAIN")}</button></footer>
+        <header><div><span class="status-dot missing"></span><h2 id="dependency-title">{runtimeMigrationError ? (language === "tr" ? "FFMPEG GÜNCELLEMESİ TAMAMLANMADI" : "FFMPEG UPDATE DID NOT FINISH") : (language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED")}</h2></div><button onclick={() => dependencyPanel = false} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
+        <div class="dependency-message"><span>!</span><div><h3>{runtimeMigrationError ? (language === "tr" ? "SONRAKİ GÜNCELLEME İÇİN BİR ADIM GEREKİYOR" : "ONE STEP IS NEEDED FOR THE NEXT UPDATE") : (language === "tr" ? "MEDYA ARAÇLARI HENÜZ KULLANILAMAZ" : "MEDIA TOOLS ARE NOT READY YET")}</h3><p>{runtimeMigrationError ? (language === "tr" ? "CONTAINER, FFmpeg bileşenlerini güvenli güncelleme alanına hazırlayamadı. Bu sürüm çalışmaya devam eder; ancak sonraki küçük güncellemelerden önce aşağıdaki işlemi tekrar dene. Sorun sürerse bu sürümü yeniden kur." : "CONTAINER could not prepare its FFmpeg components for future lightweight updates. This version can still run; retry below before the next update. If it continues, reinstall this version.") : (language === "tr" ? "Kurulumla gelen FFmpeg bileşenleri bulunamadı veya çalıştırılamadı. CONTAINER’ı yeniden kurup tekrar dene." : "The FFmpeg components included with CONTAINER are missing or could not start. Reinstall CONTAINER and try again.")}</p>{#if runtimeMigrationError}<small class="runtime-migration-detail mono">{runtimeMigrationError}</small>{/if}</div></div>
+        <footer><button class="ghost" onclick={() => dependencyPanel = false}>{language === "tr" ? "ŞİMDİ DEĞİL" : "NOT NOW"}</button><button class="dependency-check" onclick={runtimeMigrationError ? repairFfmpegRuntime : () => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? (runtimeMigrationError ? "YENİDEN HAZIRLA" : "TEKRAR KONTROL ET") : (runtimeMigrationError ? "REPAIR RUNTIME" : "CHECK AGAIN"))}</button></footer>
       </dialog>
     </div>
   {/if}
@@ -1180,7 +1199,7 @@
       <button class="update-backdrop" aria-label={language==="tr"?"Çıktı temizleme penceresini kapat":"Close output cleanup dialog"} onclick={()=>{if(!outputCleaning)outputCleanupOpen=false}}></button>
       <dialog class="update-dialog output-clean-dialog panel" open aria-labelledby="output-clean-title">
         <header><div><span class="output-clean-dialog-icon">⌫</span><h2 id="output-clean-title">{language==="tr"?"CONTAINER OUTPUT TEMİZLE":"CLEAN CONTAINER OUTPUT"}</h2></div><button onclick={()=>outputCleanupOpen=false} disabled={outputCleaning} aria-label={language==="tr"?"Kapat":"Close"}>×</button></header>
-        <p>{language==="tr"?"Downloads/CONTAINER Output klasöründeki tüm çıktılar Geri Dönüşüm Kutusu’na taşınacak.":"All files in Downloads/CONTAINER Output will be moved to the Recycle Bin."}</p>
+        <p>{language==="tr"?"Downloads/CONTAINER Output içindeki tüm çıktılar Geri Dönüşüm Kutusu’na taşınacak; klasör yerinde kalacak.":"Everything inside Downloads/CONTAINER Output will be moved to the Recycle Bin; the folder itself will remain."}</p>
         {#if outputCleanupMessage}<small class="output-clean-error">{outputCleanupMessage}</small>{/if}
         <footer><button class="ghost" onclick={()=>outputCleanupOpen=false} disabled={outputCleaning}>{language==="tr"?"İPTAL":"CANCEL"}</button><button class="clean-confirm" onclick={cleanOutputFolder} disabled={outputCleaning}>{outputCleaning?"…":(language==="tr"?"ÇIKTILARI TEMİZLE":"CLEAN OUTPUT")}</button></footer>
       </dialog>
@@ -1223,7 +1242,6 @@
           <path d="M3 6h18" class="trash-fill trash-delay-3" />
           <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" class="trash-handle trash-delay-4" />
         </svg>
-        <span>{language==="tr"?"OUTPUT TEMİZLE":"CLEAN OUTPUT"}</span>
       </button>
       {#if outputCleanupMessage}<div class="output-clean-toast" role="status">{outputCleanupMessage}</div>{/if}
     </section>
@@ -1347,7 +1365,6 @@
                 <span class="image-view-hint mono">{language === "tr" ? "TEKERLEK: YAKINLAŞTIR · SÜRÜKLE: TAŞI" : "SCROLL: ZOOM · DRAG: PAN"}</span>
               </div>
             {/if}
-            {#if busy}<div class="busy-mask"><span></span><b>{jobStatus}</b><small>{progress.toFixed(1)}%</small></div>{/if}
           </div>
         </div>
 
@@ -1373,16 +1390,13 @@
         <div class="job panel">
           <div class="job-head">
             <div><h3>{t("process")}</h3><p class="mono">{jobStatus}</p></div>
-            <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
-          </div>
-          <div class="progress-track"><div style:width={`${progress}%`}></div></div>
-          <div class="job-foot">
-            <span class="mono">{output ? basename(output) : selected ? `${selected.title} ready to run` : "select a tool"}</span>
-            <div>
-              {#if output}<button class="ghost" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
-              {#if busy}<button class="danger" onclick={cancelJob}>{t("cancelJob")}</button>{/if}
+            <div class="job-meta">
+              <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
+              {#if output}<button class="ghost job-action" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
+              {#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}
             </div>
           </div>
+          <div class="progress-track"><div style:width={`${progress}%`}></div></div>
           {#if error}<div class="error-box">{error}</div>{/if}
         </div>
       </section>
@@ -1608,7 +1622,6 @@
           </div>
           <div class="run-box">
             <button class="run" onclick={runTool} disabled={busy||qualityAnalyzing}>▶ {selected.id === "file_hash" ? (language === "tr" ? "SHA-256 hesapla" : "calculate SHA-256") : `${t("render")} ${selected.title.toLocaleLowerCase(language)}`}</button>
-            <p>{selected.id === "file_hash" ? (language === "tr" ? "Yalnızca dosya okunur; yeni dosya oluşturulmaz." : "The file is only read; no output file is created.") : t("outputNote")}</p>
           </div>
         {:else}
           <div class="empty-settings"><span>←</span><p>{t("selectTool")}</p></div>

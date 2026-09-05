@@ -4,6 +4,12 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] - 2026-09-05
+
+- Separated the verified FFmpeg runtime from automatic app updates, reducing subsequent Windows update downloads from about 130 MB to about 11 MB while keeping full Setup and Portable packages self-contained.
+- Improved the editor’s dark theme, typography and compact process display.
+- Output cleanup now clears generated contents while retaining the `CONTAINER Output` folder.
+
 ## [0.9.1] - 2026-09-05
 
 - Fixed the bundled Silero model so SmartCut detection works in installed and portable builds.

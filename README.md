@@ -65,11 +65,13 @@ The Setup build also adds **Send to → CONTAINER** to Windows Explorer. Right-c
 
 Windows packages include the tested FFmpeg 9.0.1 full build and FFprobe. Users do not need to install FFmpeg, edit `PATH`, or run a package-manager command. The installer is the recommended download; the portable ZIP must be extracted with all files kept together.
 
+Installed builds preserve this verified FFmpeg runtime separately from the app. After the one-time runtime transition, automatic updates contain only CONTAINER itself instead of downloading FFmpeg again. Full Setup and Portable downloads continue to include FFmpeg for reliable first use.
+
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
 ## Updates
 
-Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Portable builds should be replaced manually.
+Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Automatic update packages are app-only after the FFmpeg runtime transition; Portable builds should be replaced manually.
 
 ## Privacy and safety
 

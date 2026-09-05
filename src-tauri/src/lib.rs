@@ -27,6 +27,8 @@ use std::os::windows::{fs::MetadataExt, process::CommandExt};
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+const FFMPEG_RUNTIME_VERSION: &str = "9.0.1";
+
 // Embed the exact model used by the dependency, so released builds never
 // depend on the build machine's Cargo registry directory.
 fn load_silero_vad() -> Result<OnnxModel, String> {
@@ -86,9 +88,89 @@ fn resolve_program(program: &str) -> PathBuf {
                     }
                 }
             }
+            if let Some(candidate) =
+                managed_runtime_dir().map(|path| path.join(format!("{program}.exe")))
+            {
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
         }
     }
     PathBuf::from(program)
+}
+
+fn managed_runtime_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|directory| {
+        directory
+            .join("dev.dean.container")
+            .join("runtime")
+            .join(format!("ffmpeg-{FFMPEG_RUNTIME_VERSION}"))
+    })
+}
+
+fn materialize_runtime_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let source_length = std::fs::metadata(source)
+        .map_err(|error| error.to_string())?
+        .len();
+    if let Ok(metadata) = std::fs::metadata(destination) {
+        if metadata.is_file() && metadata.len() == source_length && source_length > 0 {
+            return Ok(());
+        }
+        std::fs::remove_file(destination).map_err(|error| error.to_string())?;
+    }
+    let parent = destination
+        .parent()
+        .ok_or("Runtime destination folder could not be resolved.")?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("component"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&temporary);
+    if std::fs::hard_link(source, &temporary).is_err() {
+        std::fs::copy(source, &temporary).map_err(|error| error.to_string())?;
+    }
+    match std::fs::rename(&temporary, destination) {
+        Ok(()) => Ok(()),
+        Err(_) if destination.is_file() => {
+            let _ = std::fs::remove_file(temporary);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(temporary);
+            Err(error.to_string())
+        }
+    }
+}
+
+fn migrate_runtime_pair(source_directory: &Path, runtime_directory: &Path) -> Result<bool, String> {
+    let ffmpeg = source_directory.join("ffmpeg.exe");
+    let ffprobe = source_directory.join("ffprobe.exe");
+    if !ffmpeg.is_file() || !ffprobe.is_file() {
+        return Ok(false);
+    }
+    materialize_runtime_file(&ffmpeg, &runtime_directory.join("ffmpeg.exe"))?;
+    materialize_runtime_file(&ffprobe, &runtime_directory.join("ffprobe.exe"))?;
+    Ok(true)
+}
+
+fn migrate_installed_ffmpeg_runtime() -> Result<bool, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let source = executable
+        .parent()
+        .ok_or("Application folder could not be resolved.")?;
+    // Portable packages keep their sidecars beside the executable. Only an
+    // installed build has an uninstaller and needs a runtime outside $INSTDIR.
+    if !source.join("uninstall.exe").is_file() {
+        return Ok(false);
+    }
+    let runtime = managed_runtime_dir().ok_or("Local application data folder is unavailable.")?;
+    migrate_runtime_pair(source, &runtime)
 }
 
 fn allow_asset_file(app: &AppHandle, path: &Path) -> Result<(), String> {
@@ -105,6 +187,11 @@ struct JobState {
     cancelled: AtomicBool,
     pid: Mutex<Option<u32>>,
     vad_cache: Mutex<Option<VadCache>>,
+}
+
+#[derive(Default)]
+struct RuntimeMigrationState {
+    error: Mutex<Option<String>>,
 }
 
 struct SessionLifecycle {
@@ -192,6 +279,39 @@ async fn ffmpeg_status() -> FfmpegStatus {
         ffmpeg_version,
         ffprobe_version,
     }
+}
+
+fn record_runtime_migration(state: &RuntimeMigrationState) -> Result<bool, String> {
+    match migrate_installed_ffmpeg_runtime() {
+        Ok(migrated) => {
+            *state
+                .error
+                .lock()
+                .map_err(|_| "FFmpeg runtime state is unavailable.".to_string())? = None;
+            Ok(migrated)
+        }
+        Err(error) => {
+            *state
+                .error
+                .lock()
+                .map_err(|_| "FFmpeg runtime state is unavailable.".to_string())? = Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn ffmpeg_runtime_error(state: State<'_, RuntimeMigrationState>) -> Result<Option<String>, String> {
+    state
+        .error
+        .lock()
+        .map(|error| error.clone())
+        .map_err(|_| "FFmpeg runtime state is unavailable.".to_string())
+}
+
+#[tauri::command]
+fn repair_ffmpeg_runtime(state: State<'_, RuntimeMigrationState>) -> Result<bool, String> {
+    record_runtime_migration(&state)
 }
 
 #[derive(Debug, Deserialize)]
@@ -4166,10 +4286,30 @@ async fn clean_output_folder(state: State<'_, JobState>) -> Result<OutputCleanup
         return Err("Output path is a Windows reparse point and was not cleaned.".into());
     }
 
-    tokio::task::spawn_blocking(move || trash::delete(&root))
-        .await
-        .map_err(|error| format!("Output cleanup task failed: {error}"))?
-        .map_err(|error| format!("Output folder could not be moved to the Recycle Bin: {error}"))?;
+    let entries = std::fs::read_dir(&root)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            entry
+                .map(|value| value.path())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if entries.is_empty() {
+        return Ok(OutputCleanupResult {
+            cleaned: false,
+            path: display,
+        });
+    }
+
+    tokio::task::spawn_blocking(move || {
+        for entry in entries {
+            trash::delete(entry)?;
+        }
+        Ok::<(), trash::Error>(())
+    })
+    .await
+    .map_err(|error| format!("Output cleanup task failed: {error}"))?
+    .map_err(|error| format!("Output contents could not be moved to the Recycle Bin: {error}"))?;
     Ok(OutputCleanupResult {
         cleaned: true,
         path: display,
@@ -4180,11 +4320,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(JobState::default())
+        .manage(RuntimeMigrationState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             probe_media,
             ffmpeg_status,
+            ffmpeg_runtime_error,
+            repair_ffmpeg_runtime,
             list_system_fonts,
             available_encoders,
             hash_file,
@@ -4203,6 +4346,8 @@ pub fn run() {
             clean_output_folder
         ])
         .setup(|app| {
+            let migration = app.state::<RuntimeMigrationState>();
+            let _ = record_runtime_migration(&migration);
             app.manage(prepare_session_lifecycle());
             if let Some(path) = std::env::args_os()
                 .skip(1)
@@ -4229,6 +4374,35 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_ffmpeg_pair_is_materialized_outside_the_install_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "container-runtime-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("install");
+        let runtime = root.join("runtime");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("ffmpeg.exe"), b"ffmpeg").unwrap();
+        std::fs::write(source.join("ffprobe.exe"), b"ffprobe").unwrap();
+
+        assert!(migrate_runtime_pair(&source, &runtime).unwrap());
+        std::fs::remove_dir_all(&source).unwrap();
+        assert_eq!(
+            std::fs::read(runtime.join("ffmpeg.exe")).unwrap(),
+            b"ffmpeg"
+        );
+        assert_eq!(
+            std::fs::read(runtime.join("ffprobe.exe")).unwrap(),
+            b"ffprobe"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn embedded_vad_loads_from_empty_cache_and_repairs_corruption() {

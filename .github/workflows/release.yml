@@ -57,7 +57,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Build signed updater package
+      - name: Build application and full Windows setup
         run: pnpm tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -96,6 +96,7 @@ jobs:
           Copy-Item -LiteralPath $installer.FullName -Destination $setupPath
           $signaturePath = "$($installer.FullName).sig"
           if (-not (Test-Path -LiteralPath $signaturePath)) { throw 'Signed updater manifest was not created.' }
+          Copy-Item -LiteralPath $signaturePath -Destination (Join-Path $updaterDir 'full-setup.sig')
 
           $changelog = Get-Content docs/CHANGELOG.md
           $start = -1
@@ -119,20 +120,62 @@ jobs:
           }
           Set-Content -Path release-notes.md -Value $releaseNotes
 
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build signed lightweight automatic updater
+        run: pnpm tauri bundle --bundles nsis --config src-tauri/tauri.updater.conf.json --ci
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Assemble automatic updater
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $releaseDir = Join-Path $PWD 'release-assets'
+          $updaterDir = Join-Path $PWD 'updater-manifest'
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'Lightweight NSIS updater was not found.' }
+          $slimSignature = "$($installer.FullName).sig"
+          if (-not (Test-Path -LiteralPath $slimSignature)) { throw 'Lightweight updater signature was not created.' }
+          $updateName = "CONTAINER-Automatic-Update-$version-x64.exe"
+          Copy-Item -LiteralPath $installer.FullName -Destination (Join-Path $releaseDir $updateName)
+
+          $changelog = Get-Content docs/CHANGELOG.md
+          $start = -1
+          $end = $changelog.Count
+          for ($i = 0; $i -lt $changelog.Count; $i++) {
+            if ($changelog[$i] -match "^## \[$([regex]::Escape($version))\]") { $start = $i; break }
+          }
+          if ($start -lt 0) { throw "No changelog entry was found for version $version." }
+          for ($i = $start + 1; $i -lt $changelog.Count; $i++) {
+            if ($changelog[$i] -match '^## \[') { $end = $i; break }
+          }
+          $releaseNotes = @('# Changes', '')
+          if ($end -gt ($start + 1)) { $releaseNotes += $changelog[($start + 1)..($end - 1)] }
+
+          # v0.9.2 is the one-time bridge: its full installer places FFmpeg in
+          # the managed runtime. Every later update can safely use the slim package.
+          $useLightweightUpdater = [version]$version -ge [version]'0.9.3'
+          if ($useLightweightUpdater) {
+            $signature = (Get-Content -LiteralPath $slimSignature -Raw).Trim()
+            $downloadName = $updateName
+          } else {
+            $signature = (Get-Content -LiteralPath (Join-Path $updaterDir 'full-setup.sig') -Raw).Trim()
+            $downloadName = "CONTAINER-Setup-$version-x64.exe"
+          }
           $manifest = @{
             version = $version
             notes = ($releaseNotes -join "`n")
             pub_date = (Get-Date).ToUniversalTime().ToString('o')
             platforms = @{
               'windows-x86_64' = @{
-                signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
-                url = "https://github.com/dewnn/container/releases/download/v$version/CONTAINER-Setup-$version-x64.exe"
+                signature = $signature
+                url = "https://github.com/dewnn/container/releases/download/v$version/$downloadName"
               }
             }
           }
           $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $updaterDir 'latest.json')
-
-          "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

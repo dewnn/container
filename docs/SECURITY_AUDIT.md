@@ -1,13 +1,13 @@
 # Security audit
 
-Review date: 2026-09-02
+Review date: 2026-09-05
 
 This document records security checks performed for CONTAINER. It is not a guarantee that software can never contain a vulnerability.
 
 ## Runtime behavior
 
 - No telemetry, analytics or media-upload endpoint is implemented. The only application network request checks the public GitHub Release updater manifest.
-- Media processing is local through the system-installed `ffmpeg.exe` and `ffprobe.exe` programs.
+- Media processing is local through the verified FFmpeg and FFprobe programs included with Windows packages. Installed builds retain them in a versioned Local AppData runtime; Portable builds retain them beside the application executable.
 - External programs are launched directly with argument arrays; CONTAINER does not construct commands through `cmd.exe`, PowerShell or a shell interpreter.
 - Windows worker processes use `CREATE_NO_WINDOW`, preventing FFmpeg/FFprobe console flashes without hiding their captured error/progress output.
 - Opener permissions reveal completed output files and permit only the exact official FFmpeg download URL used by the interface.
@@ -26,7 +26,7 @@ This document records security checks performed for CONTAINER. It is not a guara
 
 - pnpm lifecycle builds are limited to `esbuild`; unrestricted dependency build scripts are disabled.
 - GitHub Actions are pinned to full commit hashes.
-- CI uses the tested FFmpeg 9.0.1 full build. Release packages do not redistribute FFmpeg.
+- CI and Windows packages use the tested FFmpeg 9.0.1 full build. FFmpeg and FFprobe are distributed as separate GPLv3 programs with their notices and source links included.
 - Update packages are signed with a dedicated Tauri updater key; only its public verification key is committed.
 - Lockfiles are committed for pnpm and Cargo.
 - The production npm dependency audit reported no known vulnerabilities on the review date.
@@ -37,7 +37,7 @@ This document records security checks performed for CONTAINER. It is not a guara
 - Common API-token/private-key patterns: none found.
 - Unignored files larger than 10 MB: none found.
 - Frontend type/diagnostic check: 0 errors and 0 warnings.
-- Rust tests: 15 passed, 0 failed.
+- Rust tests: 32 passed, 0 failed; the opt-in real-media VAD parity report is intentionally ignored unless its media path is supplied.
 - Clean Windows release build and NSIS packaging: passed.
 
 Security reports should use GitHub's private vulnerability reporting and avoid attaching private media or personal paths.
