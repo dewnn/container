@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n- Added a weekly supply-chain check for newer FFmpeg/FFprobe and yt-dlp releases without silently replacing unverified binaries.\n- Centralized the tested media-tool versions and yt-dlp checksum so CI, release packaging and the Windows runtime remain aligned.\n",
-  "pub_date": "2026-09-05T18:27:55.0501011Z",
-  "version": "0.9.4",
+  "version": "0.9.5",
+  "pub_date": "2026-09-05T19:28:01.8823709Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.9.4/CONTAINER-Automatic-Update-0.9.4-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVVxb3hucExXNXI0VE80MUNjMVp0VnRaVWRoTFVMWGNuY3IwZGRqN2RwUEtMTkxHVFVycUg3WXJxN29RT292b2x1d1o2dWw4WW1aTjltMy9rVXVxS2c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjMyODc0CWZpbGU6Q09OVEFJTkVSXzAuOS40X3g2NC1zZXR1cC5leGUKNkwvMC8zRS93eS81SURyQWVrZ1RiSEgwdSt2VEV2emV1SFFreGRFQzdlSUtzdXp1amNkMjlaRkxCcTNsYTVlTUxVUDBwVzZCRXlBVG02VVNDa0h0RHc9PQo="
+      "url": "https://github.com/dewnn/container/releases/download/v0.9.5/CONTAINER-Setup-0.9.5-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWVYclRqdmNyY056K2paMnlWNG1ZK0YwMG9vaVErR2NvTFZJdndWUloveGkyYUttLzQwNnM5SlFtMjBYZU1vRlF6NGtDRzhVQUQxVkF0Z29RaHppM0FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjM2NDY3CWZpbGU6Q09OVEFJTkVSXzAuOS41X3g2NC1zZXR1cC5leGUKbVZtOTY5UU1DVmtEQjZLcHhXVDhaNzZsTFFucWIyS29WZjF1QnlwY0g0N0lrWE1TMVNUeGdsWHNkams5TzIrRC9LTFJLZGMzTEoraU9BeWdTdGNFQ2c9PQo="
     }
-  }
+  },
+  "notes": "# Changes\n\n\n- Removed the separate automatic-update executable from GitHub Releases; signed in-app updates now use the normal Setup package.\n- Downloader thumbnails now use a short-lived system temporary file that is removed as soon as the preview loads, and the former thumbnail cache is cleaned on startup.\n- Removed the scheduled FFmpeg/FFprobe and yt-dlp version watcher while retaining centrally pinned, checksum-verified build versions.\n"
 }
