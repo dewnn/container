@@ -18,11 +18,24 @@ The interface uses Geist and Geist Mono through Fontsource packages. The font fa
 - Project: https://github.com/vercel/geist-font
 - Packaging: https://fontsource.org/fonts/geist
 
+## Animated Icons / Lucide
+
+The landing-page output cleanup control adapts the animated Lucide `trash-2` SVG from Animated Icons. Animated Icons is ISC licensed and Lucide icons are ISC licensed.
+
+- Animated Icons: https://github.com/gorkem-bwl/animated-icons
+- Lucide: https://github.com/lucide-icons/lucide
+
+## trash
+
+CONTAINER uses the MIT-licensed Rust `trash` crate to move cleaned output to the operating system Recycle Bin instead of permanently deleting it.
+
+- Project: https://github.com/Byron/trash-rs
+
 ## Silero VAD
 
-SmartCut uses `voice_activity_detector` 0.2.1 and its embedded Silero V5 ONNX model for local speech detection. The crate ships with the MIT License and attributes Nicholas Keenan (2024). Its runtime dependencies retain their respective licenses.
+SmartCut uses `silero-vad-rust` 6.2.2 and embeds its Silero V6 ONNX model for local speech detection. The crate and model retain their MIT licenses. The bundled model SHA-256 is `1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3`.
 
-- Crate repository: https://github.com/nkeenan38/voice_activity_detector
+- Crate repository: https://github.com/sheldonix/silero-vad-rust
 - Model project: https://github.com/snakers4/silero-vad
 
 ## Autocut attribution

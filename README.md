@@ -33,13 +33,14 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 - Duplicate-frame removal, speed control and bitrate/quality controls
 - Discord size-targeted compression and smart quality analysis
 - Text overlays, color controls, noise, distortion and creative effects
-- Cut, screenshot and GIF tools with visual timeline selection
+- Cut, screenshot and GIF tools with precise visual timeline selection
 - Audio extraction, replacement, removal and processing
 - Social-media image crops (1:1, 4:5, 9:16, 16:9, 1.91:1, 2:3 and more) with lossless PNG or high-quality JPEG output
 - Image conversion, scaling, quality reduction and before/after preview
 - Hardware encoder detection with safe CPU fallback
 - Batch workspace for repeated jobs
-- Automatic recovery after a crash or closing the app
+- Automatic work recovery after an unexpected shutdown
+- One-click Output cleanup that moves generated files to the Recycle Bin
 
 ### SmartCut
 

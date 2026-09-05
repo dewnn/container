@@ -4,6 +4,15 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] - 2026-09-05
+
+- Fixed the bundled Silero model so SmartCut detection works in installed and portable builds.
+- Work recovery now appears only after an unexpected shutdown and is readable in both themes.
+- Fixed Cut Video timeline handles jumping after a drag; added fine Shift-drag and keyboard adjustment.
+- Hidden browser-style scrollbars while keeping wheel, touchpad and keyboard scrolling.
+- Added safe one-click cleanup for `Downloads/CONTAINER Output` using the Windows Recycle Bin.
+- Improved compact project-header and SmartCut panel layouts.
+
 ## [0.9.0] - 2026-09-05
 
 - FFmpeg and FFprobe are now included with Windows downloads; no separate setup or PATH configuration is needed.

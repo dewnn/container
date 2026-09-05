@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use silero_vad_rust::load_silero_vad;
+use silero_vad_rust::silero_vad::model::OnnxModel;
 use std::{
     collections::HashMap,
     fmt::Write as _,
@@ -22,10 +22,30 @@ use tokio::{
 };
 
 #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::os::windows::{fs::MetadataExt, process::CommandExt};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+// Embed the exact model used by the dependency, so released builds never
+// depend on the build machine's Cargo registry directory.
+fn load_silero_vad() -> Result<OnnxModel, String> {
+    let directory = dirs::cache_dir()
+        .ok_or("User cache directory unavailable")?
+        .join("CONTAINER")
+        .join("models");
+    load_embedded_vad(&directory)
+}
+
+fn load_embedded_vad(directory: &Path) -> Result<OnnxModel, String> {
+    let bytes = include_bytes!("../resources/silero_vad.onnx");
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("silero-{:x}.onnx", Sha256::digest(bytes)));
+    if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    }
+    OnnxModel::from_path(path, true).map_err(|e| e.to_string())
+}
 
 // FFmpeg, FFprobe and taskkill are background workers. On Windows, spawning a
 // console program from the GUI without this flag briefly opens a CMD window.
@@ -85,6 +105,17 @@ struct JobState {
     cancelled: AtomicBool,
     pid: Mutex<Option<u32>>,
     vad_cache: Mutex<Option<VadCache>>,
+}
+
+struct SessionLifecycle {
+    previous_interrupted: bool,
+    marker_path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct OutputCleanupResult {
+    cleaned: bool,
+    path: String,
 }
 
 struct VadCache {
@@ -4084,6 +4115,67 @@ fn startup_media_path() -> Option<String> {
         .map(|path| path.to_string_lossy().to_string())
 }
 
+fn prepare_session_lifecycle() -> SessionLifecycle {
+    let directory = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("CONTAINER");
+    let _ = std::fs::create_dir_all(&directory);
+    let marker_path = directory.join("running.lock");
+    let previous_interrupted = marker_path.is_file();
+    let _ = std::fs::write(&marker_path, std::process::id().to_string());
+    SessionLifecycle {
+        previous_interrupted,
+        marker_path,
+    }
+}
+
+#[tauri::command]
+fn previous_session_interrupted(lifecycle: State<'_, SessionLifecycle>) -> bool {
+    lifecycle.previous_interrupted
+}
+
+#[tauri::command]
+async fn clean_output_folder(state: State<'_, JobState>) -> Result<OutputCleanupResult, String> {
+    if state
+        .pid
+        .lock()
+        .map_err(|_| "Job state is unavailable.".to_string())?
+        .is_some()
+    {
+        return Err("Wait for the current media job to finish before cleaning output.".into());
+    }
+
+    let downloads = dirs::download_dir().ok_or("Downloads folder is unavailable.")?;
+    let root = downloads.join("CONTAINER Output");
+    let display = root.to_string_lossy().to_string();
+    if !root.exists() {
+        return Ok(OutputCleanupResult {
+            cleaned: false,
+            path: display,
+        });
+    }
+    if root.parent() != Some(downloads.as_path()) {
+        return Err("Output folder could not be validated.".into());
+    }
+    let metadata = std::fs::symlink_metadata(&root).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Output path is not a regular folder.".into());
+    }
+    #[cfg(target_os = "windows")]
+    if metadata.file_attributes() & 0x400 != 0 {
+        return Err("Output path is a Windows reparse point and was not cleaned.".into());
+    }
+
+    tokio::task::spawn_blocking(move || trash::delete(&root))
+        .await
+        .map_err(|error| format!("Output cleanup task failed: {error}"))?
+        .map_err(|error| format!("Output folder could not be moved to the Recycle Bin: {error}"))?;
+    Ok(OutputCleanupResult {
+        cleaned: true,
+        path: display,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -4106,9 +4198,12 @@ pub fn run() {
             analyze_quality,
             run_operation,
             cancel_job,
-            startup_media_path
+            startup_media_path,
+            previous_session_interrupted,
+            clean_output_folder
         ])
         .setup(|app| {
+            app.manage(prepare_session_lifecycle());
             if let Some(path) = std::env::args_os()
                 .skip(1)
                 .map(PathBuf::from)
@@ -4121,13 +4216,47 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running CONTAINER");
+        .build(tauri::generate_context!())
+        .expect("error while building CONTAINER")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                let lifecycle = app.state::<SessionLifecycle>();
+                let _ = std::fs::remove_file(&lifecycle.marker_path);
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_vad_loads_from_empty_cache_and_repairs_corruption() {
+        let directory = std::env::temp_dir().join(format!(
+            "container-vad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut detector = load_embedded_vad(&directory).unwrap();
+        let score = detector.forward_chunk(&[0.0; 512], 16_000).unwrap();
+        assert!(score[[0, 0]].is_finite());
+        drop(detector);
+        let path = std::fs::read_dir(&directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::write(&path, b"corrupt model").unwrap();
+        let mut detector = load_embedded_vad(&directory).unwrap();
+        assert!(detector.forward_chunk(&[0.0; 512], 16_000).unwrap()[[0, 0]].is_finite());
+        drop(detector);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn export_uses_only_enabled_valid_cuts() {

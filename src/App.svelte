@@ -40,6 +40,7 @@
   interface QualityCandidate { crf: number; vmaf: number; estimated_size_mb: number; rating: string }
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
   interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
+  interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
   interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean> }
@@ -114,9 +115,12 @@
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
-  let appVersion = $state("0.5.2");
+  let appVersion = $state("0.9.1");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
+  let outputCleanupOpen = $state(false);
+  let outputCleaning = $state(false);
+  let outputCleanupMessage = $state("");
   let updateChecking = $state(false);
   let updateInstalling = $state(false);
   let updateStatus = $state("");
@@ -136,6 +140,7 @@
   const canRedo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenDrop: UnlistenFn | null = null;
+  let timelineIgnoreClickUntil = 0;
 
   function cloneEditorValue<T>(value:T):T{return JSON.parse(JSON.stringify(value)) as T}
 
@@ -151,6 +156,17 @@
     localStorage.setItem(recoveryKey,JSON.stringify(value));
   }
   function discardRecovery(){localStorage.removeItem(recoveryKey);recoveryCandidate=null}
+  async function cleanOutputFolder(){
+    if(outputCleaning)return;
+    outputCleaning=true;outputCleanupMessage="";
+    try{
+      const result=await invoke<OutputCleanupResult>("clean_output_folder");
+      outputCleanupMessage=result.cleaned
+        ? (language==="tr"?"Çıktılar Geri Dönüşüm Kutusu’na taşındı.":"Output was moved to the Recycle Bin.")
+        : (language==="tr"?"Temizlenecek çıktı bulunamadı.":"There was no output to clean.");
+      outputCleanupOpen=false;
+    }catch(reason){outputCleanupMessage=String(reason)}finally{outputCleaning=false}
+  }
   async function restorePreviousSession(){
     const saved=recoveryCandidate;if(!saved||restoringSession)return;
     restoringSession=true;error="";
@@ -532,6 +548,7 @@
   }
   function timelineAt(clientX:number){if(!toolboxTimeline||!media?.duration)return 0;const rect=toolboxTimeline.getBoundingClientRect();return Math.max(0,Math.min(media.duration,(clientX-rect.left)/rect.width*media.duration))}
   function seekTimeline(event:MouseEvent){
+    if(performance.now()<timelineIgnoreClickUntil||(event.target as HTMLElement).closest(".timeline-selection,.timeline-point"))return;
     const at=timelineAt(event.clientX);seekToolbox(at);
     if(selected?.id==="screenshot"){setToolNumber("timestamp",at);return}
     if(!media?.duration||!selected||!["cut","gif"].includes(selected.id))return;
@@ -542,8 +559,10 @@
   function startToolTimelineDrag(event:PointerEvent,mode:"start"|"end"|"point"|"range"){
     event.preventDefault();event.stopPropagation();if(!selected||!media?.duration)return;
     const initial=timelineBounds(),pointerStart=timelineAt(event.clientX),span=initial.end-initial.start;
-    const update=(clientX:number)=>{
-      const at=timelineAt(clientX),duration=media?.duration??0;
+    const update=(moveEvent:PointerEvent)=>{
+      const raw=timelineAt(moveEvent.clientX),duration=media?.duration??0;
+      const anchor=mode==="end"?initial.end:initial.start;
+      const at=moveEvent.shiftKey?Math.max(0,Math.min(duration,anchor+(raw-pointerStart)*.1)):raw;
       if(mode==="point"){setToolNumber("timestamp",at);seekToolbox(at);return}
       let start=initial.start,end=initial.end;
       if(mode==="start")start=Math.min(end-.01,at);
@@ -553,11 +572,14 @@
       else{setToolNumber("start",start);setToolNumber("end",end)}
       seekToolbox(mode==="end"?end:start);
     };
-    update(event.clientX);const move=(moveEvent:PointerEvent)=>update(moveEvent.clientX);const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop)
+    update(event);
+    const move=(moveEvent:PointerEvent)=>update(moveEvent);
+    const stop=()=>{timelineIgnoreClickUntil=performance.now()+250;window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);window.addEventListener("pointercancel",stop)
   }
   function timelineHandleKey(event:KeyboardEvent,mode:"start"|"end"|"point"){
     if(event.key!=="ArrowLeft"&&event.key!=="ArrowRight"||!media?.duration)return;
-    event.preventDefault();const delta=(event.shiftKey?.01:.1)*(event.key==="ArrowRight"?1:-1),bounds=timelineBounds();
+    event.preventDefault();event.stopPropagation();const delta=(event.shiftKey?.01:.1)*(event.key==="ArrowRight"?1:-1),bounds=timelineBounds();
     if(mode==="point"){const value=Math.max(0,Math.min(media.duration,bounds.start+delta));setToolNumber("timestamp",value);seekToolbox(value);return}
     const start=mode==="start"?Math.max(0,Math.min(bounds.end-.01,bounds.start+delta)):bounds.start;
     const end=mode==="end"?Math.min(media.duration,Math.max(start+.01,bounds.end+delta)):bounds.end;
@@ -1018,7 +1040,10 @@
     document.documentElement.lang=language;
     theme=document.documentElement.dataset.theme==="light"?"light":"dark";
     try{const savedFavorites=JSON.parse(localStorage.getItem("container-favorites")??"[]");if(Array.isArray(savedFavorites))favoriteIds=savedFavorites.filter(value=>typeof value==="string")}catch{favoriteIds=[]}
-    try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession}catch{discardRecovery()}
+    void invoke<boolean>("previous_session_interrupted").then((interrupted)=>{
+      if(!interrupted){discardRecovery();return}
+      try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession;else discardRecovery()}catch{discardRecovery()}
+    }).catch(()=>discardRecovery());
     void updateWindowIcon(theme);
     void getVersion().then((version) => appVersion = version).catch(() => {});
     void invoke<string | null>("startup_media_path").then((path) => { if (path){recoveryCandidate=null;void loadMedia(path);} }).catch(() => {});
@@ -1107,9 +1132,11 @@
         {#if media.fps}<span><b>fps</b>{media.fps.toFixed(3)}</span><em>·</em>{/if}
         <span><b>codec</b>{media.codec}</span><em>·</em><span><b>size</b>{formatBytes(media.size)}</span>
       </div>
-      <div class="history-actions"><button onclick={undoEditor} disabled={!canUndo} title={language==="tr"?"Geri al · Ctrl+Z":"Undo · Ctrl+Z"} aria-label={language==="tr"?"Geri al":"Undo"}>↶</button><button onclick={redoEditor} disabled={!canRedo} title={language==="tr"?"İleri al · Ctrl+Shift+Z":"Redo · Ctrl+Shift+Z"} aria-label={language==="tr"?"İleri al":"Redo"}>↷</button></div>
-      <div class="language-switch theme-only"><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
-      <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
+      <nav class="mode-tabs" aria-label="Workspace">
+        <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")}>{t("toolbox")}</button>
+        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")}>SMARTCUT</button>{/if}
+        <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
+      </nav>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
     {:else}
       <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
@@ -1148,6 +1175,18 @@
     </div>
   {/if}
 
+  {#if !media && outputCleanupOpen}
+    <div class="update-layer output-clean-layer">
+      <button class="update-backdrop" aria-label={language==="tr"?"Çıktı temizleme penceresini kapat":"Close output cleanup dialog"} onclick={()=>{if(!outputCleaning)outputCleanupOpen=false}}></button>
+      <dialog class="update-dialog output-clean-dialog panel" open aria-labelledby="output-clean-title">
+        <header><div><span class="output-clean-dialog-icon">⌫</span><h2 id="output-clean-title">{language==="tr"?"CONTAINER OUTPUT TEMİZLE":"CLEAN CONTAINER OUTPUT"}</h2></div><button onclick={()=>outputCleanupOpen=false} disabled={outputCleaning} aria-label={language==="tr"?"Kapat":"Close"}>×</button></header>
+        <p>{language==="tr"?"Downloads/CONTAINER Output klasöründeki tüm çıktılar Geri Dönüşüm Kutusu’na taşınacak.":"All files in Downloads/CONTAINER Output will be moved to the Recycle Bin."}</p>
+        {#if outputCleanupMessage}<small class="output-clean-error">{outputCleanupMessage}</small>{/if}
+        <footer><button class="ghost" onclick={()=>outputCleanupOpen=false} disabled={outputCleaning}>{language==="tr"?"İPTAL":"CANCEL"}</button><button class="clean-confirm" onclick={cleanOutputFolder} disabled={outputCleaning}>{outputCleaning?"…":(language==="tr"?"ÇIKTILARI TEMİZLE":"CLEAN OUTPUT")}</button></footer>
+      </dialog>
+    </div>
+  {/if}
+
   {#if !media}
     <section class="landing">
       {#if recoveryCandidate}
@@ -1176,13 +1215,19 @@
         <h2>{t("landingTitle")}</h2>
       </div>
       <footer><span class="status-dot" class:missing={ffmpegStatus !== null && !ffmpegStatus.ready}></span> ffmpeg {ffmpegStatus?.ready ? t("ready") : (dependencyChecking ? "checking" : "required")}</footer>
+      <button class="output-clean-trigger al-icon-wrapper" onclick={()=>{outputCleanupMessage="";outputCleanupOpen=true}} title={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"} aria-label={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"}>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M10 11v6" class="trash-handle trash-delay-0" />
+          <path d="M14 11v6" class="trash-fill trash-delay-1" />
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" class="trash-fill trash-delay-2" />
+          <path d="M3 6h18" class="trash-fill trash-delay-3" />
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" class="trash-handle trash-delay-4" />
+        </svg>
+        <span>{language==="tr"?"OUTPUT TEMİZLE":"CLEAN OUTPUT"}</span>
+      </button>
+      {#if outputCleanupMessage}<div class="output-clean-toast" role="status">{outputCleanupMessage}</div>{/if}
     </section>
   {:else}
-    <nav class="mode-tabs">
-        <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")}>{t("toolbox")}</button>
-        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")}>SMARTCUT</button>{/if}
-        <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
-    </nav>
     {#if workspaceMode === "autocut" && media.kind === "video"}
       <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} />
     {:else if workspaceMode === "batch"}
