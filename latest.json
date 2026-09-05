@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n- Separated the verified FFmpeg runtime from automatic app updates, reducing subsequent Windows update downloads from about 130 MB to about 11 MB while keeping full Setup and Portable packages self-contained.\n- Improved the editor’s dark theme, typography and compact process display.\n- Output cleanup now clears generated contents while retaining the `CONTAINER Output` folder.\n",
-  "pub_date": "2026-09-05T12:24:58.8749580Z",
-  "version": "0.9.2",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWJCRjZ5a3pKQThSa1ZGanRMOGRrWTZsYmVnTXRiZ0tCSlVMSVBRZXhrREdLdmN4UXZEYXg3ZHdaVXhBNzdMN1pLTGg2Qk9OZGJkWDhGQ2hxM1JSRXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjExMDYzCWZpbGU6Q09OVEFJTkVSXzAuOS4yX3g2NC1zZXR1cC5leGUKRG93R0lkaEJVVVBCaWU1SWNVeUhOL1A0cUc5WFYzU21TNjdwRG5PWlJtWktVNzl0UGtHQVd6NVZQWTliUDF5YTdmZG5XamFNSzF2V2ovUi80UGhVQ3c9PQo=",
-      "url": "https://github.com/dewnn/container/releases/download/v0.9.2/CONTAINER-Setup-0.9.2-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.9.3/CONTAINER-Automatic-Update-0.9.3-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWRzZ3hPVm5KVjM4aml6TVpEZnRHVGgyRGhyNjdXc0owMUVTWE9sR1ZWdHk5em40S01zN2xrUmRrUHNoR1hKMUpuU1FTSEFMUzVXRnpBRXBDaGU1N1FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjI4ODE2CWZpbGU6Q09OVEFJTkVSXzAuOS4zX3g2NC1zZXR1cC5leGUKakw2eUpsK3o0MVVVVW1HU1BoVThRUkNnS2o0RE9zSmhDa0dQNFppZ3ZTaTJQeVhaOThRL1pSM1Q3N2I2YWpLOGF0V2JpcktNbk5Hd1YzSnBMcmNTQXc9PQo="
     }
-  }
+  },
+  "notes": "# Changes\n\n\n- Added the secure DWLNDR workspace with link analysis, thumbnail previews, practical quality and codec choices, and live percentage, transferred-size and speed feedback.\n- Bundled a checksum-verified official yt-dlp build so DWLNDR works without a separate executable download, while retaining manual replacement for future compatibility.\n- Downloads now stop with the application, cancellation removes only newly created partial files, and the highest available quality is selected automatically.\n- Added short, dismissible and user-friendly error notifications across Toolbox, SmartCut, Batch and DWLNDR.\n- Hardened downloader URL and thumbnail validation, restored Windows SmartScreen protection, narrowed folder permissions and consolidated the HTTPS client dependency.\n- Improved progress-bar alignment and compact-window layout behavior.\n",
+  "pub_date": "2026-09-05T17:20:16.7337056Z",
+  "version": "0.9.3"
 }
