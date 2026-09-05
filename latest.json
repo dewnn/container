@@ -1,11 +1,11 @@
 {
+  "notes": "# Changes\n\n\n- Separated the verified FFmpeg runtime from automatic app updates, reducing subsequent Windows update downloads from about 130 MB to about 11 MB while keeping full Setup and Portable packages self-contained.\n- Improved the editor’s dark theme, typography and compact process display.\n- Output cleanup now clears generated contents while retaining the `CONTAINER Output` folder.\n",
+  "pub_date": "2026-09-05T12:24:58.8749580Z",
+  "version": "0.9.2",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWYvMUN1aHQyZFdEV3VNZ0o4eUI5YXhVKzQvM3BCWDM4bENoK3duQ1ZUQWVtSXhiR1FYbVZLVzhJSnc1S1grM0ZkVmM4M01LSVg4bm5mQnlZQW8zaGdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjAwNjUyCWZpbGU6Q09OVEFJTkVSXzAuOS4xX3g2NC1zZXR1cC5leGUKejZKalBWVlVyZXhpUGhTQjBDT29vR1VIU2kxNytkcDVLd2NZajZYeVVVbmJQdkZMOVMvQ1F1NkNjblllMHBHM2RFcUpUdndPdFZjVXh1ZDRXYnFlRGc9PQo=",
-      "url": "https://github.com/dewnn/container/releases/download/v0.9.1/CONTAINER-Setup-0.9.1-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWJCRjZ5a3pKQThSa1ZGanRMOGRrWTZsYmVnTXRiZ0tCSlVMSVBRZXhrREdLdmN4UXZEYXg3ZHdaVXhBNzdMN1pLTGg2Qk9OZGJkWDhGQ2hxM1JSRXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjExMDYzCWZpbGU6Q09OVEFJTkVSXzAuOS4yX3g2NC1zZXR1cC5leGUKRG93R0lkaEJVVVBCaWU1SWNVeUhOL1A0cUc5WFYzU21TNjdwRG5PWlJtWktVNzl0UGtHQVd6NVZQWTliUDF5YTdmZG5XamFNSzF2V2ovUi80UGhVQ3c9PQo=",
+      "url": "https://github.com/dewnn/container/releases/download/v0.9.2/CONTAINER-Setup-0.9.2-x64.exe"
     }
-  },
-  "notes": "# Changes\n\n\n- Fixed the bundled Silero model so SmartCut detection works in installed and portable builds.\n- Work recovery now appears only after an unexpected shutdown and is readable in both themes.\n- Fixed Cut Video timeline handles jumping after a drag; added fine Shift-drag and keyboard adjustment.\n- Hidden browser-style scrollbars while keeping wheel, touchpad and keyboard scrolling.\n- Added safe one-click cleanup for `Downloads/CONTAINER Output` using the Windows Recycle Bin.\n- Improved compact project-header and SmartCut panel layouts.\n",
-  "pub_date": "2026-09-05T09:31:05.1142595Z",
-  "version": "0.9.1"
+  }
 }
