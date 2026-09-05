@@ -1,11 +1,11 @@
 {
+  "notes": "# Changes\n\n\n- Added a weekly supply-chain check for newer FFmpeg/FFprobe and yt-dlp releases without silently replacing unverified binaries.\n- Centralized the tested media-tool versions and yt-dlp checksum so CI, release packaging and the Windows runtime remain aligned.\n",
+  "pub_date": "2026-09-05T18:27:55.0501011Z",
+  "version": "0.9.4",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.9.3/CONTAINER-Automatic-Update-0.9.3-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWRzZ3hPVm5KVjM4aml6TVpEZnRHVGgyRGhyNjdXc0owMUVTWE9sR1ZWdHk5em40S01zN2xrUmRrUHNoR1hKMUpuU1FTSEFMUzVXRnpBRXBDaGU1N1FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjI4ODE2CWZpbGU6Q09OVEFJTkVSXzAuOS4zX3g2NC1zZXR1cC5leGUKakw2eUpsK3o0MVVVVW1HU1BoVThRUkNnS2o0RE9zSmhDa0dQNFppZ3ZTaTJQeVhaOThRL1pSM1Q3N2I2YWpLOGF0V2JpcktNbk5Hd1YzSnBMcmNTQXc9PQo="
+      "url": "https://github.com/dewnn/container/releases/download/v0.9.4/CONTAINER-Automatic-Update-0.9.4-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVVxb3hucExXNXI0VE80MUNjMVp0VnRaVWRoTFVMWGNuY3IwZGRqN2RwUEtMTkxHVFVycUg3WXJxN29RT292b2x1d1o2dWw4WW1aTjltMy9rVXVxS2c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjMyODc0CWZpbGU6Q09OVEFJTkVSXzAuOS40X3g2NC1zZXR1cC5leGUKNkwvMC8zRS93eS81SURyQWVrZ1RiSEgwdSt2VEV2emV1SFFreGRFQzdlSUtzdXp1amNkMjlaRkxCcTNsYTVlTUxVUDBwVzZCRXlBVG02VVNDa0h0RHc9PQo="
     }
-  },
-  "notes": "# Changes\n\n\n- Added the secure DWLNDR workspace with link analysis, thumbnail previews, practical quality and codec choices, and live percentage, transferred-size and speed feedback.\n- Bundled a checksum-verified official yt-dlp build so DWLNDR works without a separate executable download, while retaining manual replacement for future compatibility.\n- Downloads now stop with the application, cancellation removes only newly created partial files, and the highest available quality is selected automatically.\n- Added short, dismissible and user-friendly error notifications across Toolbox, SmartCut, Batch and DWLNDR.\n- Hardened downloader URL and thumbnail validation, restored Windows SmartScreen protection, narrowed folder permissions and consolidated the HTTPS client dependency.\n- Improved progress-bar alignment and compact-window layout behavior.\n",
-  "pub_date": "2026-09-05T17:20:16.7337056Z",
-  "version": "0.9.3"
+  }
 }
