@@ -28,7 +28,7 @@ use std::os::windows::{fs::MetadataExt, process::CommandExt};
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-const FFMPEG_RUNTIME_VERSION: &str = "9.0.1";
+const FFMPEG_RUNTIME_VERSION: &str = env!("CONTAINER_FFMPEG_RUNTIME_VERSION");
 
 // Embed the exact model used by the dependency, so released builds never
 // depend on the build machine's Cargo registry directory.

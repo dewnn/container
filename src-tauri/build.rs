@@ -4,6 +4,20 @@ use std::{
     process::Command,
 };
 
+fn configured_tool_version(key: &str) -> String {
+    let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let path = manifest.join("..").join("config").join("bundled-tools.env");
+    let contents = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("Could not read {}: {error}", path.display()));
+    let prefix = format!("{key}=");
+    contents
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| panic!("{key} is missing from {}", path.display()))
+        .to_owned()
+}
+
 fn locate(name: &str, override_name: &str) -> PathBuf {
     if let Some(path) = env::var_os(override_name).map(PathBuf::from) {
         if path.is_file() {
@@ -82,6 +96,15 @@ fn prepare_windows_sidecars() {
 }
 
 fn main() {
+    let versions = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("config")
+        .join("bundled-tools.env");
+    println!("cargo:rerun-if-changed={}", versions.display());
+    println!(
+        "cargo:rustc-env=CONTAINER_FFMPEG_RUNTIME_VERSION={}",
+        configured_tool_version("FFMPEG_VERSION")
+    );
     println!("cargo:rerun-if-changed=tauri.conf.json");
     prepare_windows_sidecars();
     tauri_build::build()

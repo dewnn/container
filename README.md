@@ -74,6 +74,8 @@ The app is currently not Authenticode-signed. Windows SmartScreen may therefore 
 
 Windows packages include a checksum-verified official yt-dlp build. DWLNDR works without a separate download and uses CONTAINER's bundled FFmpeg for video/audio merging. Because supported websites change frequently, the included build can still be replaced from the DWLNDR screen with a newer official executable.
 
+The repository checks the official yt-dlp release and the Chocolatey `ffmpeg-full` package once a week. When a newer version appears, it opens or updates one maintenance issue; it never replaces user binaries or publishes an untested update. FFmpeg, FFprobe and yt-dlp versions used by builds are pinned together in `config/bundled-tools.env`.
+
 ## Updates
 
 Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Automatic update packages retain the installed FFmpeg runtime and carry only CONTAINER plus its verified downloader; Portable builds should be replaced manually.

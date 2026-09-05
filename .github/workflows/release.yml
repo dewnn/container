@@ -29,7 +29,12 @@ jobs:
       - name: Install FFmpeg
         shell: pwsh
         run: |
-          choco install ffmpeg-full --version 9.0.1 --yes --no-progress
+          $config = @{}
+          Get-Content config/bundled-tools.env | ForEach-Object {
+            $key, $value = $_ -split '=', 2
+            $config[$key] = $value
+          }
+          choco install ffmpeg-full --version $config.FFMPEG_VERSION --yes --no-progress
           $tools = Join-Path $env:ChocolateyInstall 'lib\ffmpeg-full\tools'
           $ffmpeg = Get-ChildItem -Path $tools -Recurse -Filter 'ffmpeg.exe' -File |
             Where-Object Length -GT 1MB |
@@ -45,10 +50,15 @@ jobs:
       - name: Prepare verified yt-dlp
         shell: pwsh
         run: |
-          $url = 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe'
+          $config = @{}
+          Get-Content config/bundled-tools.env | ForEach-Object {
+            $key, $value = $_ -split '=', 2
+            $config[$key] = $value
+          }
+          $url = "https://github.com/yt-dlp/yt-dlp/releases/download/$($config.YT_DLP_VERSION)/yt-dlp.exe"
           $path = Join-Path $env:RUNNER_TEMP 'yt-dlp.exe'
           Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $path
-          $expected = '66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a'
+          $expected = $config.YT_DLP_SHA256
           $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "yt-dlp checksum mismatch: $actual" }
           "CONTAINER_YT_DLP=$path" >> $env:GITHUB_ENV
