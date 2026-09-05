@@ -66,7 +66,7 @@ The Setup build also adds **Send to → CONTAINER** to Windows Explorer. Right-c
 
 Windows packages include the tested FFmpeg 9.0.1 full build and FFprobe. Users do not need to install FFmpeg, edit `PATH`, or run a package-manager command. The installer is the recommended download; the portable ZIP must be extracted with all files kept together.
 
-Installed builds preserve this verified FFmpeg runtime separately from the app. After the one-time runtime transition, automatic updates contain only CONTAINER itself instead of downloading FFmpeg again. Full Setup and Portable downloads continue to include FFmpeg for reliable first use.
+Installed builds preserve this verified FFmpeg runtime separately from the app. Setup, in-app updates and Portable downloads include the tested media tools so every installation remains self-contained.
 
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
@@ -74,11 +74,11 @@ The app is currently not Authenticode-signed. Windows SmartScreen may therefore 
 
 Windows packages include a checksum-verified official yt-dlp build. DWLNDR works without a separate download and uses CONTAINER's bundled FFmpeg for video/audio merging. Because supported websites change frequently, the included build can still be replaced from the DWLNDR screen with a newer official executable.
 
-The repository checks the official yt-dlp release and the Chocolatey `ffmpeg-full` package once a week. When a newer version appears, it opens or updates one maintenance issue; it never replaces user binaries or publishes an untested update. FFmpeg, FFprobe and yt-dlp versions used by builds are pinned together in `config/bundled-tools.env`.
+FFmpeg, FFprobe and yt-dlp versions used by builds are pinned together in `config/bundled-tools.env`, preventing CI and release packages from silently drifting to untested binaries.
 
 ## Updates
 
-Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. Automatic update packages retain the installed FFmpeg runtime and carry only CONTAINER plus its verified downloader; Portable builds should be replaced manually.
+Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. The signed Setup package is used for in-app updates, so GitHub Releases do not expose a separate automatic-update executable. Portable builds should be replaced manually.
 
 ## Privacy and safety
 

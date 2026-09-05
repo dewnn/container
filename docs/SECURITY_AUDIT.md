@@ -20,6 +20,7 @@ This document records security checks performed for CONTAINER. It is not a guara
 - The user chooses input files through the system picker or drag and drop.
 - Asset-protocol access starts empty and is granted at runtime only to user-selected, drag-and-dropped, Send To, and newly rendered files.
 - Processing creates a unique output under `Downloads/CONTAINER Output/<category>`.
+- Downloader thumbnails are held only in a single system-temporary file and removed immediately after the preview loads; the former thumbnail cache is cleaned on startup.
 - Source media is not overwritten.
 - Repository rules exclude build output, environment files, logs, FFmpeg executables and temporary files.
 
@@ -29,7 +30,6 @@ This document records security checks performed for CONTAINER. It is not a guara
 - GitHub Actions are pinned to full commit hashes.
 - CI and Windows packages use the tested FFmpeg 9.0.1 full build. FFmpeg and FFprobe are distributed as separate GPLv3 programs with their notices and source links included.
 - CI downloads the official yt-dlp 2026.08.19 Windows executable from its immutable GitHub release and rejects it unless its SHA-256 is `66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a`. Its own and bundled third-party license texts ship with Windows packages.
-- A weekly read-only upstream check compares the pinned yt-dlp and `ffmpeg-full` versions with their official release/package sources. It only synchronizes a maintenance issue; binary downloads, hash changes and releases remain deliberate, tested actions.
 - Update packages are signed with a dedicated Tauri updater key; only its public verification key is committed.
 - Lockfiles are committed for pnpm and Cargo.
 - The production npm dependency audit reported no known vulnerabilities on the review date.

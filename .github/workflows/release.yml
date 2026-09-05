@@ -147,24 +147,13 @@ jobs:
 
           "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Build signed lightweight automatic updater
-        run: pnpm tauri bundle --bundles nsis --config src-tauri/tauri.updater.conf.json --ci
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-
-      - name: Assemble automatic updater
+      - name: Assemble updater manifest
         shell: pwsh
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          $releaseDir = Join-Path $PWD 'release-assets'
           $updaterDir = Join-Path $PWD 'updater-manifest'
-          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
-          if (-not $installer) { throw 'Lightweight NSIS updater was not found.' }
-          $slimSignature = "$($installer.FullName).sig"
-          if (-not (Test-Path -LiteralPath $slimSignature)) { throw 'Lightweight updater signature was not created.' }
-          $updateName = "CONTAINER-Automatic-Update-$version-x64.exe"
-          Copy-Item -LiteralPath $installer.FullName -Destination (Join-Path $releaseDir $updateName)
+          $signaturePath = Join-Path $updaterDir 'full-setup.sig'
+          if (-not (Test-Path -LiteralPath $signaturePath)) { throw 'Setup updater signature was not created.' }
 
           $changelog = Get-Content docs/CHANGELOG.md
           $start = -1
@@ -179,16 +168,8 @@ jobs:
           $releaseNotes = @('# Changes', '')
           if ($end -gt ($start + 1)) { $releaseNotes += $changelog[($start + 1)..($end - 1)] }
 
-          # v0.9.2 is the one-time bridge: its full installer places FFmpeg in
-          # the managed runtime. Every later update can safely use the slim package.
-          $useLightweightUpdater = [version]$version -ge [version]'0.9.3'
-          if ($useLightweightUpdater) {
-            $signature = (Get-Content -LiteralPath $slimSignature -Raw).Trim()
-            $downloadName = $updateName
-          } else {
-            $signature = (Get-Content -LiteralPath (Join-Path $updaterDir 'full-setup.sig') -Raw).Trim()
-            $downloadName = "CONTAINER-Setup-$version-x64.exe"
-          }
+          $signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+          $downloadName = "CONTAINER-Setup-$version-x64.exe"
           $manifest = @{
             version = $version
             notes = ($releaseNotes -join "`n")

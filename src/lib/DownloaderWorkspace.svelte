@@ -24,6 +24,13 @@
   let preferredCodec=$state("auto");
   let preferredHeight=$state<number|null>(null);
   let unlisten:UnlistenFn|undefined;
+  let temporaryThumbnail:string|null=null;
+
+  function releaseThumbnail(path:string|null|undefined){
+    if(!path||path!==temporaryThumbnail)return;
+    temporaryThumbnail=null;
+    void invoke("remove_download_thumbnail",{path}).catch(()=>{});
+  }
 
   async function refresh(){status=await invoke<DownloaderStatus>("downloader_status").catch(()=>({ready:false,version:null}))}
   async function chooseBinary(){
@@ -39,9 +46,10 @@
   async function cancelDownload(){if(!busy)return;await invoke("cancel_job").catch(()=>{});message=language==="tr"?"İndirme iptal ediliyor…":"Cancelling download…"}
   async function analyze(){
     if(!url.trim()||busy||analyzing)return;
-    analyzing=true;message="";analysis=null;
+    releaseThumbnail(analysis?.thumbnail_path);analyzing=true;message="";analysis=null;
     try{
       analysis=await invoke<DownloadAnalysis>("analyze_download_url",{url});
+      temporaryThumbnail=analysis.thumbnail_path;
       formatKind="video";preferredCodec="auto";
       preferredHeight=videoHeights()[0]??null;
       chooseVideo();
@@ -54,7 +62,7 @@
   function audioCodecs(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="audio").map((item:DownloadFormat)=>codecName(item.codec)))].slice(0,4):[]}
   function chooseVideo(){const data=analysis as DownloadAnalysis|null;if(!data)return;const matches=data.formats.filter((item:DownloadFormat)=>item.kind==="video"&&(!preferredHeight||item.height===preferredHeight)&&(preferredCodec==="auto"||codecName(item.codec)===preferredCodec));const fallback=data.formats.find((item:DownloadFormat)=>item.kind==="video");format=(matches[0]??fallback)?.id??"best"}
   function chooseAudio(codec:string){const data=analysis as DownloadAnalysis|null;preferredCodec=codec;const id=data?.formats.find((item:DownloadFormat)=>item.kind==="audio"&&codecName(item.codec)===codec)?.id;format=id?`audio:${id}`:"audio"}
-  $effect(()=>{refresh();listen<DownloadProgress>("downloader-progress",event=>downloadProgress=event.payload).then(value=>unlisten=value);return()=>unlisten?.()});
+  $effect(()=>{refresh();listen<DownloadProgress>("downloader-progress",event=>downloadProgress=event.payload).then(value=>unlisten=value);return()=>{unlisten?.();releaseThumbnail(temporaryThumbnail)}});
 </script>
 
 <section class="downloader-workspace">
@@ -70,10 +78,10 @@
   </aside>
   <main class="downloader-main panel">
     <header><div><h2>{language==="tr"?"VİDEO BAĞLANTISI":"VIDEO LINK"}</h2><p>{language==="tr"?"YouTube ve yt-dlp’nin desteklediği HTTPS kaynakları":"YouTube and HTTPS sources supported by yt-dlp"}</p></div><span>HTTPS ONLY</span></header>
-    <label><span>{language==="tr"?"Bağlantıyı yapıştır":"Paste a link"}</span><div class="downloader-url"><input value={url} oninput={(event)=>{url=event.currentTarget.value;analysis=null}} onkeydown={(event)=>{if(event.key==="Enter")analyze()}} placeholder="https://…" disabled={!status?.ready||busy||analyzing}><button onclick={analyze} disabled={!status?.ready||!url.trim()||busy||analyzing}>{analyzing?(language==="tr"?"ANALİZ…":"ANALYZING…"):(language==="tr"?"BAĞLANTIYI ANALİZ ET":"ANALYZE LINK")}</button></div></label>
+    <label><span>{language==="tr"?"Bağlantıyı yapıştır":"Paste a link"}</span><div class="downloader-url"><input value={url} oninput={(event)=>{releaseThumbnail(analysis?.thumbnail_path);url=event.currentTarget.value;analysis=null}} onkeydown={(event)=>{if(event.key==="Enter")analyze()}} placeholder="https://…" disabled={!status?.ready||busy||analyzing}><button onclick={analyze} disabled={!status?.ready||!url.trim()||busy||analyzing}>{analyzing?(language==="tr"?"ANALİZ…":"ANALYZING…"):(language==="tr"?"BAĞLANTIYI ANALİZ ET":"ANALYZE LINK")}</button></div></label>
     {#if analysis}
       <section class="download-analysis">
-        {#if analysis.thumbnail_path}<img src={convertFileSrc(analysis.thumbnail_path)} alt="">{/if}
+        {#if analysis.thumbnail_path}<img src={convertFileSrc(analysis.thumbnail_path)} alt="" onload={()=>releaseThumbnail(analysis?.thumbnail_path)} onerror={()=>releaseThumbnail(analysis?.thumbnail_path)}>{/if}
         <div><b>{analysis.title}</b><p>{analysis.uploader ?? (language==="tr"?"Kaynak bilgisi yok":"No source details")} <i>·</i> {duration(analysis.duration)} <i>·</i> {analysis.formats.length} {language==="tr"?"format":"formats"}</p><span>{language==="tr"?"Bağlantı doğrulandı; indirme seçeneklerini seçebilirsin.":"Link verified; choose a download option."}</span></div>
       </section>
     {/if}

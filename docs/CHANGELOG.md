@@ -4,6 +4,12 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.5] - 2026-09-05
+
+- Removed the separate automatic-update executable from GitHub Releases; signed in-app updates now use the normal Setup package.
+- Downloader thumbnails now use a short-lived system temporary file that is removed as soon as the preview loads, and the former thumbnail cache is cleaned on startup.
+- Removed the scheduled FFmpeg/FFprobe and yt-dlp version watcher while retaining centrally pinned, checksum-verified build versions.
+
 ## [0.9.4] - 2026-09-05
 
 - Added a weekly supply-chain check for newer FFmpeg/FFprobe and yt-dlp releases without silently replacing unverified binaries.

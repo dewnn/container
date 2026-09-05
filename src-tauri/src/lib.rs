@@ -577,6 +577,54 @@ fn downloader_format_args(format: &str) -> Result<Vec<String>, String> {
     }
 }
 
+fn download_thumbnail_path(url: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "container-download-thumbnail-{}-{:x}.jpg",
+        std::process::id(),
+        Sha256::digest(url.as_bytes())
+    ))
+}
+
+fn remove_download_thumbnail_file(path: &Path) -> Result<bool, String> {
+    let expected_parent = std::env::temp_dir();
+    let valid_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with("container-download-thumbnail-") && name.ends_with(".jpg")
+        });
+    if path.parent() != Some(expected_parent.as_path()) || !valid_name {
+        return Err("Invalid temporary thumbnail path.".into());
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Temporary thumbnail could not be removed: {error}")),
+    }
+}
+
+fn cleanup_legacy_download_thumbnail_cache() {
+    let Some(directory) =
+        dirs::cache_dir().map(|path| path.join("CONTAINER").join("download-thumbnails"))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let _ = std::fs::remove_dir(directory);
+}
+
+#[tauri::command]
+fn remove_download_thumbnail(path: String) -> Result<bool, String> {
+    remove_download_thumbnail_file(Path::new(&path))
+}
+
 async fn cache_download_thumbnail(app: &AppHandle, url: Option<&str>) -> Option<String> {
     let url = url?.trim();
     let parsed = Url::parse(url).ok()?;
@@ -616,11 +664,7 @@ async fn cache_download_thumbnail(app: &AppHandle, url: Option<&str>) -> Option<
     if bytes.len() > 5 * 1024 * 1024 {
         return None;
     }
-    let path = dirs::cache_dir()?
-        .join("CONTAINER")
-        .join("download-thumbnails")
-        .join(format!("{:x}.jpg", Sha256::digest(url.as_bytes())));
-    std::fs::create_dir_all(path.parent()?).ok()?;
+    let path = download_thumbnail_path(url);
     std::fs::write(&path, bytes).ok()?;
     allow_asset_file(app, &path).ok()?;
     Some(path.to_string_lossy().to_string())
@@ -5093,6 +5137,7 @@ pub fn run() {
             downloader_status,
             set_downloader_binary,
             analyze_download_url,
+            remove_download_thumbnail,
             download_media,
             list_system_fonts,
             available_encoders,
@@ -5112,6 +5157,7 @@ pub fn run() {
             clean_output_folder
         ])
         .setup(|app| {
+            cleanup_legacy_download_thumbnail_cache();
             let migration = app.state::<RuntimeMigrationState>();
             let _ = record_runtime_migration(&migration);
             app.manage(prepare_session_lifecycle());
@@ -5307,6 +5353,24 @@ mod tests {
         assert!(!new_part.exists());
         assert!(finished.is_file());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn downloader_thumbnail_cleanup_is_limited_to_its_temp_file() {
+        let thumbnail = download_thumbnail_path("https://example.com/thumbnail.jpg");
+        std::fs::write(&thumbnail, b"preview").unwrap();
+        assert!(remove_download_thumbnail_file(&thumbnail).unwrap());
+        assert!(!thumbnail.exists());
+        assert!(!remove_download_thumbnail_file(&thumbnail).unwrap());
+
+        let unrelated = std::env::temp_dir().join(format!(
+            "container-unrelated-thumbnail-{}.jpg",
+            std::process::id()
+        ));
+        std::fs::write(&unrelated, b"keep").unwrap();
+        assert!(remove_download_thumbnail_file(&unrelated).is_err());
+        assert!(unrelated.is_file());
+        std::fs::remove_file(unrelated).unwrap();
     }
 
     #[test]
