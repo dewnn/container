@@ -294,7 +294,8 @@ fn record_runtime_migration(state: &RuntimeMigrationState) -> Result<bool, Strin
             *state
                 .error
                 .lock()
-                .map_err(|_| "FFmpeg runtime state is unavailable.".to_string())? = Some(error.clone());
+                .map_err(|_| "FFmpeg runtime state is unavailable.".to_string())? =
+                Some(error.clone());
             Err(error)
         }
     }
