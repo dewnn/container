@@ -42,6 +42,9 @@
   interface QualityCandidate { crf: number; vmaf: number; estimated_size_mb: number; rating: string }
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
   interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
+  interface FfmpegCapabilities { vidstab:boolean; subtitles:boolean; overlay:boolean; blur:boolean; concat:boolean }
+  interface DownloaderStatus { ready:boolean; version:string|null }
+  interface SubtitleTrack { index:number; codec:string; language:string|null; title:string|null }
   interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
@@ -71,6 +74,7 @@
   let favoritesOnly=$state(false);
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
   let downloaderOpen = $state(false);
+  let downloaderBusy = $state(false);
   let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
@@ -116,6 +120,11 @@
   let theme: "dark" | "light" = $state(document.documentElement.dataset.theme === "light" ? "light" : "dark");
   let availableEncoders: string[] | null = $state(null);
   let ffmpegStatus: FfmpegStatus | null = $state(null);
+  let ffmpegCapabilities:FfmpegCapabilities|null=$state(null);
+  let downloaderStatus:DownloaderStatus|null=$state(null);
+  let overlayPreviewImage:HTMLImageElement|null=$state(null);
+  let mergeInputs:string[]=$state([]);
+  let subtitleTracks:SubtitleTrack[]=$state([]);
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
   let runtimeMigrationError = $state("");
@@ -175,8 +184,15 @@
     window.clearTimeout(toastTimer);
     toastTimer=window.setTimeout(()=>toastMessage="",3000);
   }
-  const kindTools=(kind:MediaKind)=>localizedForSection(kind,media?.kind??kind,language);
-  const timelineTool = $derived.by(()=>selected ? ["cut","screenshot","gif"].includes(selected.id) : false);
+  const kindTools=(kind:MediaKind)=>localizedForSection(kind,media?.kind??kind,language).filter(tool=>{
+    if(!ffmpegCapabilities)return true;
+    if(tool.id==="stabilizer")return ffmpegCapabilities.vidstab;
+    if(tool.id==="image_overlay")return ffmpegCapabilities.overlay;
+    if(tool.id==="blur_pixelate")return ffmpegCapabilities.blur&&ffmpegCapabilities.overlay;
+    if(tool.id==="merge_videos")return ffmpegCapabilities.concat;
+    return true;
+  });
+  const timelineTool = $derived.by(()=>selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
   const canUndo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
   const canRedo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
   let unlistenProgress: UnlistenFn | null = null;
@@ -240,7 +256,9 @@
   function applyEditorSnapshot(snapshot:EditorSnapshot,direction:"undo"|"redo"){
     historyApplying=true;
     toolboxVideo?.pause();
-    media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl;selected=cloneEditorValue(snapshot.selected);activeKind=snapshot.activeKind;output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
+    media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl;activeKind=snapshot.activeKind;
+    selected=kindTools(activeKind).some(tool=>tool.id===snapshot.selected?.id)?cloneEditorValue(snapshot.selected):kindTools(activeKind)[0]??null;
+    output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
     requestAnimationFrame(()=>historyApplying=false);
   }
   function undoEditor(){if(busy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
@@ -330,6 +348,8 @@
       activeTextId=null;
     }
     selected = localizedTool(tool,language);
+    if(selected.id==="merge_videos"&&media)mergeInputs=[media.path];
+    if(selected.id==="subtitles"&&media)void loadSubtitleTracks();
     if(selected.id==="text")void ensureSystemFonts();
     configureUpscale(selected);
     if (selected.id === "encode" && availableEncoders) {
@@ -372,7 +392,7 @@
       });
       if (audioTrackField.options.length) audioTrackField.value = audioTrackField.options[0].value;
     }
-    if (["cut","screenshot","gif"].includes(selected.id)) void loadToolboxFilmstrip();
+    if (["cut","screenshot","gif","image_overlay"].includes(selected.id)) void loadToolboxFilmstrip();
   }
   function resetSelectedTool(){
     if(!selected)return;
@@ -382,11 +402,24 @@
   }
 
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
-  function fieldLivesOnTimeline(key:string){return selected?.id==="cut"?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":selected?.id==="gif"?["start","duration"].includes(key):false}
+  function fieldLivesOnTimeline(key:string){return ["cut","image_overlay"].includes(selected?.id??"")?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":selected?.id==="gif"?["start","duration"].includes(key):false}
   function fieldVisible(key:string){
     if(selected?.id==="transform" && key!=="crf") return false;
     if(selected?.id==="color" || selected?.id==="text") return false;
-    if(selected?.id==="compression"&&!qualityAdvanced)return false;
+    if(selected?.id==="compression"){
+      if(!qualityAdvanced)return false;
+      if(toolValue("mode")==="bitrate")return ["mode","mbps"].includes(key);
+      return key!=="mbps";
+    }
+    if(selected?.id==="merge_videos")return ["container","mode"].includes(key);
+    if(selected?.id==="blur_pixelate"&&key.startsWith("region_"))return false;
+    if(selected?.id==="image_overlay")return ["image_path","opacity","start","end"].includes(key);
+    if(selected?.id==="subtitles"){
+      const action=toolValue("action");
+      if(key==="subtitle_path")return ["add","burn"].includes(action);
+      if(key==="container")return action==="add";
+      if(key==="subtitle_track")return action==="extract";
+    }
     if(key==="audio_track") return String(toolField("audio_mode")?.value)==="selected";
     if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
@@ -398,6 +431,20 @@
   function setToolNumber(key:string,value:number){const field=toolField(key);if(field)field.value=Math.round(value*1000)/1000}
   function toolValue(key:string){return String(toolField(key)?.value??"")}
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
+  async function loadSubtitleTracks(){
+    if(!media)return;
+    try{
+      subtitleTracks=await invoke<SubtitleTrack[]>("probe_subtitles",{path:media.path});
+      const field=toolField("subtitle_track");
+      if(field){field.options=subtitleTracks.map((track,index)=>({value:String(track.index),label:`${language==="tr"?"Parça":"Track"} ${index+1} · ${track.codec.toUpperCase()}${track.language?` · ${track.language.toUpperCase()}`:""}${track.title?` · ${track.title}`:""}`}));field.value=field.options[0]?.value??""}
+    }catch(reason){subtitleTracks=[];reportProblem(reason)}
+  }
+  async function addMergeVideos(){
+    const paths=await open({multiple:true,filters:[{name:"Video",extensions:["mp4","mkv","mov","avi","webm","m4v"]}]});
+    if(Array.isArray(paths))mergeInputs=[...mergeInputs,...paths.filter(path=>!mergeInputs.includes(path))];
+  }
+  function moveMergeVideo(index:number,delta:number){const target=index+delta;if(target<0||target>=mergeInputs.length)return;const copy=[...mergeInputs];[copy[index],copy[target]]=[copy[target],copy[index]];mergeInputs=copy}
+  function removeMergeVideo(index:number){mergeInputs=mergeInputs.filter((_,position)=>position!==index)}
   function resetColorFilters(){
     if(selected?.id!=="color")return;
     const source=kindTools(activeKind).find(tool=>tool.id==="color");
@@ -503,7 +550,8 @@
   const colorLabels:Record<string,string>={brightness:"Brightness",contrast:"Contrast",saturation:"Saturation",gamma:"Gamma",hue:"Hue",temperature:"Temperature",sharpen:"Sharpen",blur:"Gaussian Blur",deband:"Deband",vignette:"Vignette"};
   function mediaDisplayBox(){
     if(!toolboxCanvas||!media?.width||!media?.height)return null;
-    const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,ratio=media.width/media.height;
+    const videoWidth=toolboxVideo?.videoWidth||media.width,videoHeight=toolboxVideo?.videoHeight||media.height;
+    const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,ratio=videoWidth/videoHeight;
     const availableWidth=Math.max(1,stageWidth-16),availableHeight=Math.max(1,stageHeight-16);
     let width=availableWidth,height=width/ratio;if(height>availableHeight){height=availableHeight;width=height*ratio}
     return {stageWidth,stageHeight,width,height,swapped:false};
@@ -574,6 +622,45 @@
         if(mode.includes("n")){y=Math.max(0,Math.min(initial.y+initial.h-min,initial.y+dy));h=initial.h+(initial.y-y)}
       }
       setToolNumber("crop_x",x);setToolNumber("crop_y",y);setToolNumber("crop_w",w);setToolNumber("crop_h",h);
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
+  function startEffectRegion(event:PointerEvent,mode:"move"|"n"|"s"|"e"|"w"|"nw"|"ne"|"sw"|"se"){
+    if(!transformSourceBox||selected?.id!=="blur_pixelate")return;
+    event.preventDefault();event.stopPropagation();
+    const bounds=transformSourceBox.getBoundingClientRect(),startX=event.clientX,startY=event.clientY;
+    const initial={x:toolNumber("region_x"),y:toolNumber("region_y"),w:toolNumber("region_w"),h:toolNumber("region_h")};
+    const move=(moveEvent:PointerEvent)=>{
+      const dx=(moveEvent.clientX-startX)/bounds.width*100,dy=(moveEvent.clientY-startY)/bounds.height*100,min=3;
+      let {x,y,w,h}=initial;
+      if(mode==="move"){x=Math.max(0,Math.min(100-w,x+dx));y=Math.max(0,Math.min(100-h,y+dy))}
+      else{
+        if(mode.includes("e"))w=Math.max(min,Math.min(100-x,initial.w+dx));
+        if(mode.includes("s"))h=Math.max(min,Math.min(100-y,initial.h+dy));
+        if(mode.includes("w")){x=Math.max(0,Math.min(initial.x+initial.w-min,initial.x+dx));w=initial.w+(initial.x-x)}
+        if(mode.includes("n")){y=Math.max(0,Math.min(initial.y+initial.h-min,initial.y+dy));h=initial.h+(initial.y-y)}
+      }
+      setToolNumber("region_x",x);setToolNumber("region_y",y);setToolNumber("region_w",w);setToolNumber("region_h",h);
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
+  function overlayPreviewStyle(){
+    const box=mediaDisplayBox();if(!box||selected?.id!=="image_overlay")return "display:none";
+    const width=box.width*toolNumber("size")/100;
+    const x=(box.stageWidth-box.width)/2+box.width*toolNumber("x")/100,y=(box.stageHeight-box.height)/2+box.height*toolNumber("y")/100;
+    return `position:absolute;z-index:4;left:${x}px;top:${y}px;width:${width}px;transform:translate(-50%,-50%)`;
+  }
+  function startOverlayDrag(event:PointerEvent,resizeDirection:-1|0|1=0){
+    if(!toolboxCanvas||selected?.id!=="image_overlay")return;event.preventDefault();event.stopPropagation();
+    const box=mediaDisplayBox();if(!box)return;const startX=event.clientX,startY=event.clientY,origin={x:toolNumber("x"),y:toolNumber("y"),size:toolNumber("size")};
+    const aspect=(overlayPreviewImage?.naturalWidth||1)/(overlayPreviewImage?.naturalHeight||1);
+    const move=(moveEvent:PointerEvent)=>{
+      if(resizeDirection){setToolNumber("size",Math.max(1,Math.min(100,origin.size+(moveEvent.clientX-startX)/box.width*100*resizeDirection)));return}
+      const size=toolNumber("size"),halfW=size/2,halfH=(box.width*size/100/aspect)/box.height*50;
+      setToolNumber("x",Math.max(halfW,Math.min(100-halfW,origin.x+(moveEvent.clientX-startX)/box.width*100)));
+      setToolNumber("y",Math.max(halfH,Math.min(100-halfH,origin.y+(moveEvent.clientY-startY)/box.height*100)));
     };
     const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
@@ -885,6 +972,7 @@
 
   function paramsFrom(tool: Tool) {
     const params=Object.fromEntries(tool.fields.map((field) => [field.key, String(field.value)]));
+    if(tool.id==="merge_videos")params.inputs=JSON.stringify(mergeInputs);
     if(tool.id==="color")for(const key of ["brightness","contrast","saturation","gamma","hue","temperature","sharpen","blur","deband","vignette"])params[`${key}_enabled`]=String(colorOn(key));
     if(tool.id==="text")params.layers=JSON.stringify(textLayers);
     return params;
@@ -928,6 +1016,11 @@
       if (tool.id === "cut") return "Bitiş zamanı başlangıçtan büyük olmalı.";
     }
     if (tool.id === "replace_audio" && !params.audio_path) return "Önce replacement audio dosyasını seç.";
+    if(tool.id==="merge_videos"&&mergeInputs.length<2)return language==="tr"?"Birleştirmek için en az iki video seç.":"Choose at least two videos to merge.";
+    if(tool.id==="image_overlay"&&!params.image_path)return language==="tr"?"Önce bir kaplama görseli seç.":"Choose an overlay image first.";
+    if(tool.id==="image_overlay"&&Number(params.end)<=Number(params.start))return language==="tr"?"Bitiş zamanı başlangıçtan sonra olmalı.":"End time must be later than start time.";
+    if(tool.id==="subtitles"&&["add","burn"].includes(params.action)&&!params.subtitle_path)return language==="tr"?"Önce bir altyazı dosyası seç.":"Choose a subtitle file first.";
+    if(tool.id==="subtitles"&&params.action==="extract"&&!params.subtitle_track)return language==="tr"?"Bu videoda çıkarılabilir altyazı parçası yok.":"This video has no subtitle track to extract.";
     if (tool.id === "text" && (!textLayers.length || textLayers.some(layer=>!layer.text.trim()))) return language==="tr"?"En az bir dolu yazı katmanı ekle.":"Add at least one non-empty text layer.";
     if(tool.id==="color"&&!Object.values(colorEnabled).some(Boolean)&&toolValue("denoise")==="off"&&toolValue("grayscale")!=="on"&&toolValue("deinterlace")==="off")return language==="tr"?"Önce en az bir video filtresini etkinleştir.":"Enable at least one video filter.";
     if (tool.id === "discord_compressor") {
@@ -1000,16 +1093,14 @@
   }
 
   async function selectFieldFile(field: Field) {
-    const path = await open({ multiple: false, filters: [{ name: "Audio", extensions: field.accept ?? [] }] });
+    const path = await open({ multiple: false, filters: [{ name: field.key==="image_path"?"Image":field.key==="subtitle_path"?"Subtitle":"Audio", extensions: field.accept ?? [] }] });
     if (typeof path === "string") field.value = path;
   }
 
   function recommendation(): string {
     if (!selected || !media) return "";
     if (selected.id === "noise") return media.height && media.height <= 720 ? "Safe 3 · Recommended 6" : "Safe 4 · Recommended 8";
-    if (selected.id === "deep_fry") return "Safe 2 · Recommended 4";
     if (selected.id === "distortion") return "Safe 1 · Recommended 3";
-    if (selected.id === "corruption") return "Safe 1 · Recommended 2";
     if (selected.id === "discord_compressor" && media.duration) {
       const budget=discordBudget();if(!budget)return "";
       const {audioKbps,videoKbps,autoHeight,autoFps,screenLike}=budget;
@@ -1115,6 +1206,8 @@
     void (async () => {
       runtimeMigrationError = await invoke<string | null>("ffmpeg_runtime_error").catch(() => null) ?? "";
       await refreshFfmpegStatus(true);
+      ffmpegCapabilities=await invoke<FfmpegCapabilities>("ffmpeg_capabilities").catch(()=>null);
+      downloaderStatus=await invoke<DownloaderStatus>("downloader_status").catch(()=>({ready:false,version:null}));
       await checkForUpdates(false);
     })();
     void invoke<string[]>("available_encoders").then((encoders) => {
@@ -1223,6 +1316,7 @@
       <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
     {:else}
       <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
+      {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
       <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
     {/if}
   </header>
@@ -1271,7 +1365,7 @@
   {/if}
 
   {#if downloaderOpen}
-    <DownloaderWorkspace {language} />
+    <DownloaderWorkspace {language} onbusychange={(value:boolean)=>downloaderBusy=value} />
   {:else if !media}
     <section class="landing">
       {#if recoveryCandidate}
@@ -1299,7 +1393,7 @@
       <div class="landing-copy motto-only">
         <h2>{t("landingTitle")}</h2>
       </div>
-      <footer><span class="status-dot" class:missing={ffmpegStatus !== null && !ffmpegStatus.ready}></span> ffmpeg {ffmpegStatus?.ready ? t("ready") : (dependencyChecking ? "checking" : "required")}</footer>
+      <footer><span class="status-dot" class:missing={(ffmpegStatus !== null && !ffmpegStatus.ready)||(downloaderStatus!==null&&!downloaderStatus.ready)}></span> {ffmpegStatus?.ready&&downloaderStatus?.ready ? `FFMPEG · FFPROBE · YT-DLP ${t("ready").toUpperCase()}` : (dependencyChecking||downloaderStatus===null ? "CHECKING COMPONENTS" : "MEDIA COMPONENTS REQUIRED")}</footer>
       <button class="output-clean-trigger al-icon-wrapper" onclick={()=>{outputCleanupMessage="";outputCleanupOpen=true}} title={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"} aria-label={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"}>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M10 11v6" class="trash-handle trash-delay-0" />
@@ -1381,6 +1475,20 @@
                       <i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
                     </button>
                   {/each}
+                </div>
+              {/if}
+              {#if selected?.id === "image_overlay" && toolValue("image_path") && toolboxCurrent >= toolNumber("start") && toolboxCurrent <= toolNumber("end")}
+                <button class="overlay-preview-box" style={overlayPreviewStyle()} onpointerdown={(event)=>startOverlayDrag(event)} aria-label="Move overlay">
+                  <img bind:this={overlayPreviewImage} src={convertFileSrc(toolValue("image_path"))} alt="Overlay preview" draggable="false" style:opacity={toolNumber("opacity")/100} />
+                  <i class="text-size-handle left" role="presentation" aria-label="Resize overlay from left" onpointerdown={(event)=>startOverlayDrag(event,-1)}></i>
+                  <i class="text-size-handle right" role="presentation" aria-label="Resize overlay from right" onpointerdown={(event)=>startOverlayDrag(event,1)}></i>
+                </button>
+              {/if}
+              {#if selected?.id === "blur_pixelate"}
+                <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
+                  <div class="effect-region" class:pixelated={toolValue("effect")==="pixelate"} style:left={`${toolNumber("region_x")}%`} style:top={`${toolNumber("region_y")}%`} style:width={`${toolNumber("region_w")}%`} style:height={`${toolNumber("region_h")}%`} style={`--effect-strength:${Math.max(1,toolNumber("strength")/3)}px`} onpointerdown={(event)=>startEffectRegion(event,"move")} role="presentation">
+                    {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize effect ${handle}`} onpointerdown={(event)=>startEffectRegion(event,handle)}></button>{/each}
+                  </div>
                 </div>
               {/if}
               </div>
@@ -1470,11 +1578,22 @@
         </div>
       </section>
 
-      <aside class="settings panel">
+      <aside class="settings panel" class:merge-compact={selected?.id==="merge_videos"}>
         {#if selected}
           <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={resetSelectedTool}>{t("defaults")}</button></div>
           <div class="selected-title"><span class="index mono">{String(kindTools(activeKind).findIndex((tool) => tool.id === selected?.id) + 1).padStart(2,"0")}</span><div><h2>{selected.title}</h2><p>{selected.description}</p></div></div>
-          {#if !["transform","text","color"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
+          {#if !["transform","text","color","merge_videos"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
+          {#if selected.id === "merge_videos"}
+            <div class="merge-list">
+              <button class="merge-add" onclick={addMergeVideos}>＋ {language==="tr"?"VİDEO EKLE":"ADD VIDEOS"}</button>
+              {#each mergeInputs as path,index}
+                <article><b class="mono">{index+1}</b><span title={path}>{basename(path)}</span><aside><button onclick={()=>moveMergeVideo(index,-1)} disabled={index===0} aria-label="Move up">↑</button><button onclick={()=>moveMergeVideo(index,1)} disabled={index===mergeInputs.length-1} aria-label="Move down">↓</button><button onclick={()=>removeMergeVideo(index)} aria-label="Remove">×</button></aside></article>
+              {/each}
+            </div>
+          {/if}
+          {#if selected.id === "subtitles" && toolValue("action")==="extract" && !subtitleTracks.length}
+            <div class="codec-note"><b>{language==="tr"?"ALTYAZI YOK":"NO SUBTITLES"}</b><span>{language==="tr"?"Bu dosyada çıkarılabilir gömülü altyazı bulunamadı.":"No extractable embedded subtitle track was found in this file."}</span></div>
+          {/if}
           {#if recommendation()}<div class="recommend"><b>{t("forVideo")}</b><span>{recommendation()}</span></div>{/if}
           <div class="field-list">
           {#if selected.id === "color"}
@@ -1652,7 +1771,7 @@
               </label>
               {/if}
             {/each}
-            {#if selected.id === "compression"}
+            {#if selected.id === "compression" && toolValue("mode") !== "bitrate"}
               <div class="quality-guide">
                 <h4>{language === "tr" ? "CRF VE AKILLI ANALİZ" : "CRF & SMART ANALYSIS"}</h4>
                 <p>{language === "tr" ? "CRF 0 gerçek kayıpsızdır fakat çok büyük dosya üretir. CRF 16 çok yüksek kalitedir; 17 de kayıpsız değildir. Değer yükseldikçe dosya küçülür ve kalite kademeli azalır. VMAF analizi kaynak videoya uygun değeri ölçer." : "CRF 0 is truly lossless but creates a very large file. CRF 16 is very high quality; 17 is not lossless either. Higher values reduce size and gradually reduce quality. VMAF can measure a suitable value for this source."}</p>

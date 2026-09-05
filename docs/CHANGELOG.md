@@ -4,6 +4,17 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-09-06
+
+- Added Merge Videos with reordering, MKV/MP4 output, lossless joining for compatible inputs, and automatic hardware-accelerated normalization for incompatible files.
+- Added Video Stabilizer with Light, Medium and Strong two-stage vidstab processing, automatic hardware H.264 encoding, cancellation and temporary-file cleanup.
+- Added unified subtitle tools for adding, burning, extracting and removing subtitle streams without unnecessary video/audio re-encoding.
+- Added Image / Logo Overlay with transparent-image support, timeline visibility, opacity control, and direct preview dragging and resizing.
+- Added static Blur / Pixelate regions with source-accurate preview coordinate mapping across scaling, aspect ratio and rotation differences.
+- Improved DWLNDR navigation with a safe Back action, and expanded the main component status to include FFmpeg, FFprobe and yt-dlp.
+- Removed Duplicate Frame Removal, Deep Fry and Video Corruption; moved bitrate control into the advanced Quality / Compression settings.
+- Added realistic media tests for the new tools, stream preservation, merge compatibility, subtitle handling, cancellation and temporary-file cleanup.
+
 ## [0.9.5] - 2026-09-05
 
 - Removed the separate automatic-update executable from GitHub Releases; signed in-app updates now use the normal Setup package.

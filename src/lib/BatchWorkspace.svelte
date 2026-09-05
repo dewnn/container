@@ -9,7 +9,7 @@
 
   interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
   let { initialPath, language, availableEncoders, onhistorychange=()=>{}, onsessionchange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void}=$props();
-  const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","dedupe","gif"];
+  const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","gif"];
   const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)).map(tool=>{
     const copy=localizedTool(tool,language);
     if(copy.id==="encode"){
@@ -31,7 +31,7 @@
   const snapshot=():HistorySnapshot=>clone({selected,items,recursive});
   const signature=(value:HistorySnapshot)=>JSON.stringify(value);
   function commit(value:HistorySnapshot){if(historyApplying||running)return;if(historyIndex>=0&&signature(history[historyIndex])===signature(value))return;history=[...history.slice(0,historyIndex+1),value].slice(-80);historyIndex=history.length-1}
-  function applyHistory(value:HistorySnapshot){historyApplying=true;const restored=clone(value);selected=restored.selected;items=restored.items;recursive=restored.recursive;aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;currentIndex=-1;requestAnimationFrame(()=>historyApplying=false)}
+  function applyHistory(value:HistorySnapshot){historyApplying=true;const restored=clone(value);selected=batchTools().some(tool=>tool.id===restored.selected?.id)?restored.selected:batchTools()[0];items=restored.items;recursive=restored.recursive;aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;currentIndex=-1;requestAnimationFrame(()=>historyApplying=false)}
   export function undo(){if(running)return;commit(snapshot());if(historyIndex<=0)return;historyIndex--;applyHistory(history[historyIndex])}
   export function redo(){if(running||historyIndex>=history.length-1)return;historyIndex++;applyHistory(history[historyIndex])}
   export function exportSession(){return snapshot()}

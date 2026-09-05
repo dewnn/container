@@ -1004,6 +1004,23 @@ struct FfmpegStatus {
     ffprobe_version: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct FfmpegCapabilities {
+    vidstab: bool,
+    subtitles: bool,
+    overlay: bool,
+    blur: bool,
+    concat: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SubtitleTrackInfo {
+    index: u64,
+    codec: String,
+    language: Option<String>,
+    title: Option<String>,
+}
+
 async fn component_version(program: &str) -> Option<String> {
     let output = hidden_command(program)
         .arg("-version")
@@ -1030,6 +1047,37 @@ async fn ffmpeg_status() -> FfmpegStatus {
         ffmpeg_version,
         ffprobe_version,
     }
+}
+
+async fn ffmpeg_filter_names() -> Result<String, String> {
+    let output = hidden_command("ffmpeg")
+        .args(["-hide_banner", "-filters"])
+        .output()
+        .await
+        .map_err(|error| format!("FFmpeg capability check could not start: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn filter_list_has(filters: &str, name: &str) -> bool {
+    filters
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some(name))
+}
+
+#[tauri::command]
+async fn ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
+    let filters = ffmpeg_filter_names().await?;
+    Ok(FfmpegCapabilities {
+        vidstab: filter_list_has(&filters, "vidstabdetect")
+            && filter_list_has(&filters, "vidstabtransform"),
+        subtitles: filter_list_has(&filters, "subtitles") && filter_list_has(&filters, "ass"),
+        overlay: filter_list_has(&filters, "overlay"),
+        blur: filter_list_has(&filters, "boxblur") || filter_list_has(&filters, "gblur"),
+        concat: filter_list_has(&filters, "concat"),
+    })
 }
 
 fn record_runtime_migration(state: &RuntimeMigrationState) -> Result<bool, String> {
@@ -1562,6 +1610,86 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
 }
 
 #[tauri::command]
+async fn probe_subtitles(path: String) -> Result<Vec<SubtitleTrackInfo>, String> {
+    let input = PathBuf::from(&path);
+    if !input.is_file() {
+        return Err("Input file was not found.".into());
+    }
+    let output = hidden_command("ffprobe")
+        .args(["-v", "error", "-print_format", "json", "-show_streams"])
+        .arg(&input)
+        .output()
+        .await
+        .map_err(|error| format!("ffprobe could not start: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let data: Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    Ok(data["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|stream| stream["codec_type"] == "subtitle")
+        .map(|stream| SubtitleTrackInfo {
+            index: stream["index"].as_u64().unwrap_or(0),
+            codec: stream["codec_name"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            language: stream["tags"]["language"].as_str().map(str::to_string),
+            title: stream["tags"]["title"].as_str().map(str::to_string),
+        })
+        .collect())
+}
+
+async fn display_dimensions(path: &Path, fallback: &MediaInfo) -> Result<(u64, u64), String> {
+    let output = hidden_command("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-print_format",
+            "json",
+            "-show_streams",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .map_err(|error| format!("ffprobe could not start: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let data: Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let stream = data["streams"]
+        .as_array()
+        .and_then(|items| items.first())
+        .ok_or("Video geometry is unavailable.")?;
+    let mut width = stream["width"]
+        .as_u64()
+        .or(fallback.width)
+        .ok_or("Video width is unavailable.")?;
+    let mut height = stream["height"]
+        .as_u64()
+        .or(fallback.height)
+        .ok_or("Video height is unavailable.")?;
+    let rotation = stream["side_data_list"]
+        .as_array()
+        .and_then(|items| items.iter().find_map(|item| item["rotation"].as_i64()))
+        .or_else(|| {
+            stream["tags"]["rotate"]
+                .as_str()
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(0)
+        .rem_euclid(360);
+    if matches!(rotation, 90 | 270) {
+        std::mem::swap(&mut width, &mut height);
+    }
+    Ok((width, height))
+}
+
+#[tauri::command]
 async fn available_encoders() -> Vec<String> {
     let candidates = [
         "libx264",
@@ -1738,12 +1866,10 @@ fn category(operation: &str) -> &str {
     match operation {
         "transform" | "ratio" | "resize" => "transform",
         "upscale" => "upscale",
-        "fps" | "interpolation" | "frame_blend" | "dedupe" | "speed" | "cfr" => "motion",
-        "compression" | "smart_quality" | "bitrate" | "discord_compressor" | "potatoify" => {
-            "quality"
-        }
-        "text" => "text",
-        "color" | "noise" | "negate" | "deep_fry" | "corruption" => "effects",
+        "fps" | "interpolation" | "frame_blend" | "speed" | "cfr" | "stabilizer" => "motion",
+        "compression" | "smart_quality" | "discord_compressor" | "potatoify" => "quality",
+        "text" | "image_overlay" => "text",
+        "color" | "noise" | "negate" | "blur_pixelate" => "effects",
         "remove_audio" | "extract_audio" | "replace_audio" | "distortion" | "audio_convert" => {
             "audio"
         }
@@ -1752,6 +1878,16 @@ fn category(operation: &str) -> &str {
         "autocut" | "smartcut" => "smartcut",
         _ => "export",
     }
+}
+
+fn ffmpeg_filter_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+        .replace(',', "\\,")
 }
 
 fn scaled_height(info: &MediaInfo, requested_height: u64) -> (u64, u64) {
@@ -3201,35 +3337,6 @@ async fn build_command(
             ]);
             extension = "mp4".into();
         }
-        "dedupe" => {
-            let profile = param(p, "profile")?;
-            let filter = match profile {
-                "safe" => "mpdecimate",
-                "strong" => "mpdecimate=hi=8000:lo=4000:frac=0.50",
-                _ => return Err("Invalid duplicate-frame detection profile.".into()),
-            };
-            args.extend([
-                "-map".into(),
-                "0:v:0".into(),
-                "-map".into(),
-                "0:a?".into(),
-                "-vf".into(),
-                filter.into(),
-                "-fps_mode".into(),
-                "vfr".into(),
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-crf".into(),
-                "18".into(),
-                "-c:a".into(),
-                "aac".into(),
-                "-b:a".into(),
-                "192k".into(),
-            ]);
-            extension = "mp4".into();
-        }
         "speed" => {
             let speed = check_range(parse_number(p, "speed")?, 0.05, 100.0, "Speed")?;
             let mode = p.get("speed_mode").map(String::as_str).unwrap_or("synced");
@@ -3277,44 +3384,47 @@ async fn build_command(
             }
         }
         "compression" => {
-            let crf = check_range(parse_number(p, "crf")?, 0.0, 30.0, "CRF")?;
-            let preset = param(p, "preset")?;
-            if !["ultrafast", "veryfast", "medium", "slow"].contains(&preset) {
-                return Err("Invalid preset.".into());
+            let mode = p.get("mode").map(String::as_str).unwrap_or("crf");
+            if mode == "bitrate" {
+                let mbps = check_range(parse_number(p, "mbps")?, 0.05, 500.0, "Bitrate")?;
+                let kbps = (mbps * 1000.0).round() as u64;
+                args.extend([
+                    "-c:v".into(),
+                    "libx264".into(),
+                    "-preset".into(),
+                    "veryfast".into(),
+                    "-b:v".into(),
+                    format!("{kbps}k"),
+                    "-maxrate".into(),
+                    format!("{}k", (kbps as f64 * 1.35) as u64),
+                    "-bufsize".into(),
+                    format!("{}k", kbps * 2),
+                    "-c:a".into(),
+                    "aac".into(),
+                    "-b:a".into(),
+                    "192k".into(),
+                ]);
+            } else if mode == "crf" {
+                let crf = check_range(parse_number(p, "crf")?, 0.0, 30.0, "CRF")?;
+                let preset = param(p, "preset")?;
+                if !["ultrafast", "veryfast", "medium", "slow"].contains(&preset) {
+                    return Err("Invalid preset.".into());
+                }
+                args.extend([
+                    "-c:v".into(),
+                    "libx264".into(),
+                    "-crf".into(),
+                    crf.to_string(),
+                    "-preset".into(),
+                    preset.into(),
+                    "-c:a".into(),
+                    "aac".into(),
+                    "-b:a".into(),
+                    "192k".into(),
+                ]);
+            } else {
+                return Err("Invalid compression mode.".into());
             }
-            args.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-crf".into(),
-                crf.to_string(),
-                "-preset".into(),
-                preset.into(),
-                "-c:a".into(),
-                "aac".into(),
-                "-b:a".into(),
-                "192k".into(),
-            ]);
-            extension = "mp4".into();
-        }
-        "bitrate" => {
-            let mbps = check_range(parse_number(p, "mbps")?, 0.05, 500.0, "Bitrate")?;
-            let kbps = (mbps * 1000.0).round() as u64;
-            args.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-b:v".into(),
-                format!("{kbps}k"),
-                "-maxrate".into(),
-                format!("{}k", (kbps as f64 * 1.35) as u64),
-                "-bufsize".into(),
-                format!("{}k", kbps * 2),
-                "-c:a".into(),
-                "aac".into(),
-                "-b:a".into(),
-                "192k".into(),
-            ]);
             extension = "mp4".into();
         }
         "potatoify" => {
@@ -3376,6 +3486,218 @@ async fn build_command(
                 format!("{}k", (256.0 / ab).clamp(16.0, 192.0) as u64),
             ]);
             extension = "mp4".into();
+        }
+        "image_overlay" => {
+            require_filters(&["overlay"], "Image / Logo Overlay").await?;
+            if info.kind != "video" {
+                return Err("Image / Logo Overlay requires a video file.".into());
+            }
+            let overlay = PathBuf::from(param(p, "image_path")?);
+            if !overlay.is_file() {
+                return Err("Choose a valid PNG, JPG or WebP overlay image.".into());
+            }
+            let image_extension = overlay
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !["png", "jpg", "jpeg", "webp"].contains(&image_extension.as_str()) {
+                return Err("Overlay image must be PNG, JPG or WebP.".into());
+            }
+            let size = check_range(parse_number(p, "size")?, 1.0, 100.0, "Overlay size")?;
+            let x = check_range(parse_number(p, "x")?, 0.0, 100.0, "Overlay X")?;
+            let y = check_range(parse_number(p, "y")?, 0.0, 100.0, "Overlay Y")?;
+            let opacity =
+                check_range(parse_number(p, "opacity")?, 1.0, 100.0, "Overlay opacity")? / 100.0;
+            let start = check_range(parse_number(p, "start")?, 0.0, 86400.0, "Start")?;
+            let end = check_range(parse_number(p, "end")?, 0.0, 86400.0, "End")?;
+            if end <= start {
+                return Err("Overlay end time must be later than its start time.".into());
+            }
+            let (display_w, _) = display_dimensions(&input, info).await?;
+            let target_width = ((display_w as f64 * size / 100.0).round() as u64).max(2);
+            args = vec![
+                "-hide_banner".into(), "-loglevel".into(), "error".into(), "-y".into(),
+                "-i".into(), request.input.clone(), "-loop".into(), "1".into(), "-i".into(),
+                overlay.to_string_lossy().to_string(),
+                "-filter_complex".into(),
+                format!("[1:v]format=rgba,scale={target_width}:-2,colorchannelmixer=aa={opacity:.4}[logo];[0:v][logo]overlay=main_w*{x}/100-overlay_w/2:main_h*{y}/100-overlay_h/2:enable='between(t,{start},{end})'[v]"),
+                "-map".into(), "[v]".into(), "-map".into(), "0:a?".into(),
+                "-c:v".into(), "libx264".into(), "-crf".into(), "16".into(), "-preset".into(), "veryfast".into(),
+                "-c:a".into(), "aac".into(), "-b:a".into(), "192k".into(), "-shortest".into(),
+            ];
+            extension = "mp4".into();
+        }
+        "blur_pixelate" => {
+            require_filters(&["overlay", "boxblur"], "Blur / Pixelate").await?;
+            if info.kind != "video" {
+                return Err("Blur / Pixelate requires a video file.".into());
+            }
+            let x = check_range(parse_number(p, "region_x")?, 0.0, 99.0, "Region X")?;
+            let y = check_range(parse_number(p, "region_y")?, 0.0, 99.0, "Region Y")?;
+            let w = check_range(parse_number(p, "region_w")?, 1.0, 100.0, "Region width")?;
+            let h = check_range(parse_number(p, "region_h")?, 1.0, 100.0, "Region height")?;
+            if x + w > 100.001 || y + h > 100.001 {
+                return Err("Effect rectangle must stay inside the video.".into());
+            }
+            let strength = check_range(parse_number(p, "strength")?, 2.0, 60.0, "Strength")?;
+            let (source_w, source_h) = display_dimensions(&input, info).await?;
+            let region_w = (((source_w as f64 * w / 100.0).floor() as u64) / 2 * 2).max(2);
+            let region_h = (((source_h as f64 * h / 100.0).floor() as u64) / 2 * 2).max(2);
+            let region_x = ((((source_w as f64 * x / 100.0).floor() as u64) / 2 * 2)
+                .min(source_w.saturating_sub(region_w)))
+                / 2
+                * 2;
+            let region_y = ((((source_h as f64 * y / 100.0).floor() as u64) / 2 * 2)
+                .min(source_h.saturating_sub(region_h)))
+                / 2
+                * 2;
+            let crop = format!("crop={region_w}:{region_h}:{region_x}:{region_y}");
+            let effect = match param(p, "effect")? {
+                "blur" => format!(
+                    "boxblur=luma_radius={}:luma_power=2",
+                    (strength / 2.0)
+                        .max(1.0)
+                        .min(region_w.min(region_h) as f64 / 2.0)
+                ),
+                "pixelate" => {
+                    let divisor = (strength / 2.0).round().max(2.0);
+                    let pixel_w = ((region_w as f64 / divisor).floor() as u64).max(1);
+                    let pixel_h = ((region_h as f64 / divisor).floor() as u64).max(1);
+                    format!("scale={pixel_w}:{pixel_h}:flags=neighbor,scale={region_w}:{region_h}:flags=neighbor")
+                }
+                _ => return Err("Invalid effect mode.".into()),
+            };
+            args.extend([
+                "-filter_complex".into(),
+                format!("[0:v]split[base][area];[area]{crop},{effect}[fx];[base][fx]overlay={region_x}:{region_y}[v]"),
+                "-map".into(), "[v]".into(), "-map".into(), "0:a?".into(),
+                "-c:v".into(), "libx264".into(), "-crf".into(), "16".into(), "-preset".into(), "veryfast".into(),
+                "-c:a".into(), "aac".into(), "-b:a".into(), "192k".into(),
+            ]);
+            extension = "mp4".into();
+        }
+        "subtitles" => {
+            if info.kind != "video" {
+                return Err("Subtitles requires a video file.".into());
+            }
+            match param(p, "action")? {
+                "add" => {
+                    let subtitle = PathBuf::from(param(p, "subtitle_path")?);
+                    if !subtitle.is_file() {
+                        return Err("Choose a valid subtitle file.".into());
+                    }
+                    let container = param(p, "container")?;
+                    args = vec![
+                        "-hide_banner".into(),
+                        "-loglevel".into(),
+                        "error".into(),
+                        "-y".into(),
+                        "-i".into(),
+                        request.input.clone(),
+                        "-i".into(),
+                        subtitle.to_string_lossy().to_string(),
+                        "-map".into(),
+                        "0".into(),
+                        "-map".into(),
+                        "1:0".into(),
+                        "-c:v".into(),
+                        "copy".into(),
+                        "-c:a".into(),
+                        "copy".into(),
+                    ];
+                    match container {
+                        "mkv" => {
+                            args.extend(["-c:s".into(), "copy".into()]);
+                            extension = "mkv".into();
+                        }
+                        "mp4" => {
+                            args.extend(["-c:s".into(), "mov_text".into()]);
+                            extension = "mp4".into();
+                        }
+                        _ => return Err("Invalid subtitle output container.".into()),
+                    }
+                }
+                "burn" => {
+                    require_filters(&["subtitles", "ass"], "Subtitle Burn").await?;
+                    let subtitle = PathBuf::from(param(p, "subtitle_path")?);
+                    if !subtitle.is_file() {
+                        return Err("Choose a valid subtitle file.".into());
+                    }
+                    let ext = subtitle
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    let filter = if matches!(ext.as_str(), "ass" | "ssa") {
+                        format!("ass=filename='{}'", ffmpeg_filter_path(&subtitle))
+                    } else {
+                        format!("subtitles=filename='{}'", ffmpeg_filter_path(&subtitle))
+                    };
+                    args.extend([
+                        "-map".into(),
+                        "0:v:0".into(),
+                        "-map".into(),
+                        "0:a?".into(),
+                        "-vf".into(),
+                        filter,
+                        "-c:v".into(),
+                        "libx264".into(),
+                        "-crf".into(),
+                        "16".into(),
+                        "-preset".into(),
+                        "veryfast".into(),
+                        "-c:a".into(),
+                        "aac".into(),
+                        "-b:a".into(),
+                        "192k".into(),
+                    ]);
+                    extension = "mp4".into();
+                }
+                "extract" => {
+                    let index = param(p, "subtitle_track")?
+                        .parse::<u64>()
+                        .map_err(|_| "Choose a subtitle track.".to_string())?;
+                    let tracks = probe_subtitles(request.input.clone()).await?;
+                    let track = tracks
+                        .iter()
+                        .find(|track| track.index == index)
+                        .ok_or("The selected subtitle track is no longer available.")?;
+                    let (codec, ext) = match track.codec.as_str() {
+                        "subrip" | "srt" => ("copy", "srt"),
+                        "ass" => ("copy", "ass"),
+                        "ssa" => ("copy", "ssa"),
+                        "webvtt" => ("copy", "vtt"),
+                        "mov_text" => ("srt", "srt"),
+                        "hdmv_pgs_subtitle" => ("copy", "sup"),
+                        _ => return Err(format!("The {} subtitle format cannot be safely extracted as a standalone file.", track.codec)),
+                    };
+                    args.extend([
+                        "-map".into(),
+                        format!("0:{index}"),
+                        "-c:s".into(),
+                        codec.into(),
+                    ]);
+                    extension = ext.into();
+                }
+                "remove" => {
+                    args.extend([
+                        "-map".into(),
+                        "0".into(),
+                        "-map".into(),
+                        "-0:s".into(),
+                        "-c".into(),
+                        "copy".into(),
+                    ]);
+                    extension = input
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("mkv")
+                        .into();
+                }
+                _ => return Err("Invalid subtitle action.".into()),
+            }
         }
         "text" => {
             let layers: Vec<TextLayer> = serde_json::from_str(param(p, "layers")?)
@@ -3578,47 +3900,6 @@ async fn build_command(
                 "veryfast".into(),
                 "-c:a".into(),
                 "aac".into(),
-            ]);
-            extension = "mp4".into();
-        }
-        "deep_fry" => {
-            let level = check_range(parse_number(p, "level")?, 1.0, 10.0, "Level")?;
-            let c = 1.0 + level * 0.24;
-            let s = 1.0 + level * 0.20;
-            let b = (level * 0.018).min(0.22);
-            let n = (level * 5.0).min(100.0);
-            let sharp = (0.5 + level * 0.42).min(5.0);
-            let shift = (level * 1.5).round().max(1.0);
-            let filter=format!("eq=contrast={c:.3}:saturation={s:.3}:brightness={b:.3},unsharp=5:5:{sharp:.2}:5:5:0,noise=alls={n}:allf=t+u,chromashift=cbh={shift}:crh=-{shift}");
-            args.extend([
-                "-vf".into(),
-                filter,
-                "-c:v".into(),
-                "libx264".into(),
-                "-crf".into(),
-                "16".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-c:a".into(),
-                "aac".into(),
-            ]);
-            extension = "mp4".into();
-        }
-        "corruption" => {
-            let level = check_range(parse_number(p, "level")?, 1.0, 10.0, "Severity")?.round();
-            args.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-crf".into(),
-                "20".into(),
-                "-bsf:v".into(),
-                format!("noise=amount={level}"),
-                "-c:a".into(),
-                "aac".into(),
-                "-b:a".into(),
-                "192k".into(),
             ]);
             extension = "mp4".into();
         }
@@ -4891,6 +5172,307 @@ async fn analyze_quality(
     analyze_quality_inner(Some(&app), &state, request).await
 }
 
+fn operation_temp_dir(name: &str) -> Result<PathBuf, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("container_{name}_{}_{stamp}", std::process::id()));
+    std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+async fn require_filters(names: &[&str], feature: &str) -> Result<(), String> {
+    let filters = ffmpeg_filter_names().await?;
+    let missing = names
+        .iter()
+        .filter(|name| !filter_list_has(&filters, name))
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{feature} is unavailable because this FFmpeg build is missing: {}.",
+            missing.join(", ")
+        ))
+    }
+}
+
+async fn fastest_h264_encoder() -> (&'static str, Vec<String>) {
+    let available = available_encoders().await;
+    if available.iter().any(|encoder| encoder == "h264_nvenc") {
+        return (
+            "NVIDIA",
+            vec![
+                "-c:v".into(),
+                "h264_nvenc".into(),
+                "-preset".into(),
+                "p3".into(),
+                "-tune".into(),
+                "hq".into(),
+                "-rc".into(),
+                "vbr".into(),
+                "-cq".into(),
+                "18".into(),
+                "-b:v".into(),
+                "0".into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+            ],
+        );
+    }
+    if available.iter().any(|encoder| encoder == "h264_qsv") {
+        return (
+            "Intel",
+            vec![
+                "-c:v".into(),
+                "h264_qsv".into(),
+                "-preset".into(),
+                "veryfast".into(),
+                "-global_quality".into(),
+                "18".into(),
+                "-pix_fmt".into(),
+                "nv12".into(),
+            ],
+        );
+    }
+    if available.iter().any(|encoder| encoder == "h264_amf") {
+        return (
+            "AMD",
+            vec![
+                "-c:v".into(),
+                "h264_amf".into(),
+                "-quality".into(),
+                "speed".into(),
+                "-rc".into(),
+                "cqp".into(),
+                "-qp_i".into(),
+                "18".into(),
+                "-qp_p".into(),
+                "18".into(),
+                "-pix_fmt".into(),
+                "nv12".into(),
+            ],
+        );
+    }
+    (
+        "CPU",
+        vec![
+            "-c:v".into(),
+            "libx264".into(),
+            "-crf".into(),
+            "16".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+        ],
+    )
+}
+
+async fn run_stabilizer(
+    app: Option<&AppHandle>,
+    state: &JobState,
+    request: &OperationRequest,
+    info: &MediaInfo,
+) -> Result<JobResult, String> {
+    require_filters(&["vidstabdetect", "vidstabtransform"], "Video Stabilizer").await?;
+    let (shakiness, accuracy, smoothing) = match param(&request.params, "strength")? {
+        "light" => (4, 9, 10),
+        "medium" => (6, 12, 20),
+        "strong" => (8, 15, 30),
+        _ => return Err("Invalid stabilization strength.".into()),
+    };
+    let input = PathBuf::from(&request.input);
+    let output = unique_output(&input, "stabilizer", "mp4")?;
+    let temp = operation_temp_dir("stabilizer")?;
+    let transforms = temp.join("motion.trf");
+    let null_output = if cfg!(target_os = "windows") {
+        "NUL"
+    } else {
+        "/dev/null"
+    };
+    let duration = info.duration.unwrap_or(0.0);
+    let started = Instant::now();
+    let (encoder_name, encoder_args) = fastest_h264_encoder().await;
+    let result = async {
+        run_ffmpeg_stage(app, state, vec![
+            "-hide_banner".into(), "-loglevel".into(), "error".into(), "-y".into(), "-i".into(), request.input.clone(),
+            "-vf".into(), format!("vidstabdetect=shakiness={shakiness}:accuracy={accuracy}:result='{}'", ffmpeg_filter_path(&transforms)),
+            "-an".into(), "-f".into(), "null".into(), null_output.into(),
+        ], duration, &started, 0.0, 35.0, "analyzing motion").await?;
+        let mut transform_args = vec![
+            "-hide_banner".into(), "-loglevel".into(), "error".into(), "-y".into(), "-i".into(), request.input.clone(),
+            "-map".into(), "0:v:0".into(), "-map".into(), "0:a?".into(), "-vf".into(),
+            format!("vidstabtransform=input='{}':smoothing={smoothing}:optzoom=2:interpol=bilinear,setsar=1", ffmpeg_filter_path(&transforms)),
+        ];
+        transform_args.extend(encoder_args);
+        transform_args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into(), output.to_string_lossy().to_string()]);
+        let status = format!("stabilizing video · {encoder_name}");
+        run_ffmpeg_stage(app, state, transform_args, duration, &started, 35.0, 64.0, &status).await?;
+        if let Some(app) = app { allow_asset_file(app, &output)?; }
+        Ok(JobResult { output: output.to_string_lossy().to_string(), elapsed: started.elapsed().as_secs_f64() })
+    }.await;
+    let _ = std::fs::remove_dir_all(&temp);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&output);
+    }
+    result
+}
+
+async fn stream_signature(path: &Path) -> Result<(String, bool, f64), String> {
+    let output = hidden_command("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-show_format",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .map_err(|error| format!("ffprobe could not start: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let data: Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let streams = data["streams"]
+        .as_array()
+        .ok_or("No media streams found.")?;
+    let video = streams
+        .iter()
+        .find(|stream| stream["codec_type"] == "video")
+        .ok_or("A selected file has no video stream.")?;
+    let audio = streams
+        .iter()
+        .find(|stream| stream["codec_type"] == "audio");
+    let signature = format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        video["codec_name"],
+        video["width"],
+        video["height"],
+        video["pix_fmt"],
+        video["r_frame_rate"],
+        audio.map(|v| &v["codec_name"]).unwrap_or(&Value::Null),
+        audio.map(|v| &v["sample_rate"]).unwrap_or(&Value::Null),
+        audio.map(|v| &v["channels"]).unwrap_or(&Value::Null),
+        audio.map(|v| &v["channel_layout"]).unwrap_or(&Value::Null),
+        audio.is_some()
+    );
+    let duration = data["format"]["duration"]
+        .as_str()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0);
+    Ok((signature, audio.is_some(), duration))
+}
+
+fn ffconcat_line(path: &Path) -> String {
+    format!(
+        "file '{}'{newline}",
+        path.to_string_lossy().replace('\'', "'\\''"),
+        newline = "\n"
+    )
+}
+
+async fn run_merge_videos(
+    app: Option<&AppHandle>,
+    state: &JobState,
+    request: &OperationRequest,
+) -> Result<JobResult, String> {
+    let paths: Vec<String> = serde_json::from_str(param(&request.params, "inputs")?)
+        .map_err(|_| "The merge file list is invalid.".to_string())?;
+    if paths.len() < 2 {
+        return Err("Choose at least two videos to merge.".into());
+    }
+    let inputs = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    if inputs.iter().any(|path| !path.is_file()) {
+        return Err("One of the selected videos could not be found.".into());
+    }
+    let mut signatures = Vec::new();
+    let mut total_duration = 0.0;
+    for path in &inputs {
+        let signature = stream_signature(path).await.map_err(|error| {
+            format!(
+                "{}: {error}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )
+        })?;
+        total_duration += signature.2;
+        signatures.push(signature);
+    }
+    let compatible = signatures.windows(2).all(|pair| pair[0].0 == pair[1].0);
+    let mode = param(&request.params, "mode")?;
+    let container = request
+        .params
+        .get("container")
+        .map(String::as_str)
+        .unwrap_or("mkv");
+    if !["mkv", "mp4"].contains(&container) {
+        return Err("Invalid merge output format.".into());
+    }
+    let first = probe_media(inputs[0].to_string_lossy().to_string()).await?;
+    let container_compatible = container == "mkv"
+        || (matches!(first.codec.as_str(), "h264" | "hevc" | "mpeg4" | "av1")
+            && first
+                .audio_codec
+                .as_deref()
+                .is_none_or(|codec| matches!(codec, "aac" | "mp3" | "ac3" | "eac3" | "alac")));
+    if mode == "lossless" && (!compatible || !container_compatible) {
+        return Err(
+            "These videos cannot be merged losslessly in the selected format. Choose Auto to normalize them safely."
+                .into(),
+        );
+    }
+    if !["auto", "lossless", "reencode"].contains(&mode) {
+        return Err("Invalid merge mode.".into());
+    }
+    let normalize =
+        mode == "reencode" || (mode == "auto" && (!compatible || !container_compatible));
+    let output = unique_output(&inputs[0], "merge_videos", container)?;
+    let temp = operation_temp_dir("merge")?;
+    let started = Instant::now();
+    let result = async {
+        let concat_inputs = if normalize {
+            let (first_width, first_height) = display_dimensions(&inputs[0], &first).await?;
+            let width = first_width.max(2) / 2 * 2;
+            let height = first_height.max(2) / 2 * 2;
+            let fps = first.fps.unwrap_or(30.0).clamp(1.0, 240.0);
+            let (encoder_name, encoder_args) = fastest_h264_encoder().await;
+            let normalize_status = format!("normalizing videos · {encoder_name}");
+            let mut normalized = Vec::new();
+            for (index, path) in inputs.iter().enumerate() {
+                let target = temp.join(format!("segment_{index:03}.mkv"));
+                let has_audio = signatures[index].1;
+                let mut args = vec!["-hide_banner".into(), "-loglevel".into(), "error".into(), "-y".into(), "-i".into(), path.to_string_lossy().to_string()];
+                if !has_audio { args.extend(["-f".into(), "lavfi".into(), "-i".into(), "anullsrc=channel_layout=stereo:sample_rate=48000".into()]); }
+                args.extend(["-map".into(), "0:v:0".into(), "-map".into(), if has_audio { "0:a:0".into() } else { "1:a:0".into() },
+                    "-vf".into(), format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps:.6},setsar=1,format=yuv420p"),
+                ]);
+                args.extend(encoder_args.clone());
+                args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into(), "-ar".into(), "48000".into(), "-ac".into(), "2".into(), "-shortest".into(), target.to_string_lossy().to_string()]);
+                run_ffmpeg_stage(app, state, args, signatures[index].2, &started, index as f64 * 80.0 / inputs.len() as f64, 80.0 / inputs.len() as f64, &normalize_status).await?;
+                normalized.push(target);
+            }
+            normalized
+        } else { inputs.clone() };
+        let list = temp.join("concat.ffconcat");
+        let content = format!("ffconcat version 1.0\n{}", concat_inputs.iter().map(|path| ffconcat_line(path)).collect::<String>());
+        std::fs::write(&list, content).map_err(|error| error.to_string())?;
+        run_ffmpeg_stage(app, state, vec!["-hide_banner".into(), "-loglevel".into(), "error".into(), "-y".into(), "-f".into(), "concat".into(), "-safe".into(), "0".into(), "-i".into(), list.to_string_lossy().to_string(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a?".into(), "-c".into(), "copy".into(), output.to_string_lossy().to_string()], total_duration, &started, if normalize { 80.0 } else { 0.0 }, if normalize { 19.0 } else { 99.0 }, "merging videos").await?;
+        if let Some(app) = app { allow_asset_file(app, &output)?; }
+        Ok(JobResult { output: output.to_string_lossy().to_string(), elapsed: started.elapsed().as_secs_f64() })
+    }.await;
+    let _ = std::fs::remove_dir_all(&temp);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&output);
+    }
+    result
+}
+
 #[tauri::command]
 async fn run_operation(
     app: AppHandle,
@@ -4899,6 +5481,12 @@ async fn run_operation(
 ) -> Result<JobResult, String> {
     state.cancelled.store(false, Ordering::Relaxed);
     let info = probe_media(request.input.clone()).await?;
+    if request.operation == "merge_videos" {
+        return run_merge_videos(Some(&app), &state, &request).await;
+    }
+    if request.operation == "stabilizer" {
+        return run_stabilizer(Some(&app), &state, &request, &info).await;
+    }
     if request.operation == "image_potatoify" {
         return run_image_potatoify(Some(&app), &state, &request, &info).await;
     }
@@ -5131,7 +5719,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             probe_media,
+            probe_subtitles,
             ffmpeg_status,
+            ffmpeg_capabilities,
             ffmpeg_runtime_error,
             repair_ffmpeg_runtime,
             downloader_status,
@@ -5968,7 +6558,6 @@ mod tests {
         assert_eq!(category("image_potatoify"), "image");
         assert_eq!(category("discord_compressor"), "quality");
         assert_eq!(category("smart_quality"), "quality");
-        assert_eq!(category("dedupe"), "motion");
         assert_eq!(category("proxy"), "proxy");
         assert_eq!(category("upscale"), "upscale");
     }
@@ -5988,13 +6577,10 @@ mod tests {
         tool_ids.dedup();
         let tested = [
             "audio_convert",
-            "bitrate",
+            "blur_pixelate",
             "color",
             "compression",
-            "corruption",
             "cut",
-            "dedupe",
-            "deep_fry",
             "discord_compressor",
             "distortion",
             "encode",
@@ -6004,8 +6590,10 @@ mod tests {
             "fps",
             "frame_blend",
             "gif",
+            "image_overlay",
             "image_potatoify",
             "interpolation",
+            "merge_videos",
             "noise",
             "potatoify",
             "proxy",
@@ -6014,6 +6602,8 @@ mod tests {
             "replace_audio",
             "screenshot",
             "speed",
+            "stabilizer",
+            "subtitles",
             "text",
             "transform",
             "upscale",
@@ -6069,6 +6659,21 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).into(), (*value).into()))
             .collect()
+    }
+
+    async fn render_request(request: &OperationRequest, info: &MediaInfo) -> PathBuf {
+        let (args, output) = build_command(request, info).await.unwrap();
+        assert!(
+            std::process::Command::new("ffmpeg")
+                .args(&args)
+                .status()
+                .unwrap()
+                .success(),
+            "operation {} failed",
+            request.operation
+        );
+        assert!(output.is_file());
+        output
     }
 
     #[tokio::test]
@@ -6255,6 +6860,360 @@ mod tests {
         assert!(xml.contains("CONTAINER SmartCut"));
         assert!(xml.contains("duration=\"0.700000s\""));
 
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_video_tools_render_real_media_and_preserve_streams() {
+        let root = std::env::temp_dir().join("container_yeni_araclar_ğüşi");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let video = root.join("kaynak video.mp4");
+        let different = root.join("farklı.mp4");
+        let rotated = root.join("döndürülmüş.mp4");
+        let logo = root.join("şeffaf logo.png");
+        let subtitle = root.join("Türkçe altyazı.srt");
+        let make_video = |path: &Path, source: &str, with_audio: bool| {
+            let mut command = std::process::Command::new("ffmpeg");
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                source,
+            ]);
+            if with_audio {
+                command.args([
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=1",
+                    "-shortest",
+                    "-c:a",
+                    "aac",
+                ]);
+            }
+            command
+                .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(make_video(&video, "testsrc2=s=320x180:r=25:d=1", true));
+        assert!(make_video(&different, "testsrc2=s=160x120:r=30:d=1", false));
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-display_rotation",
+                "90",
+                "-i",
+            ])
+            .arg(&video)
+            .args(["-c", "copy"])
+            .arg(&rotated)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red@0.6:s=64x32,format=rgba",
+                "-frames:v",
+                "1"
+            ])
+            .arg(&logo)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(
+            &subtitle,
+            "1\n00:00:00,100 --> 00:00:00,800\nMerhaba dünya\n",
+        )
+        .unwrap();
+        let info = probe_media(video.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let rotated_info = probe_media(rotated.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(
+            display_dimensions(&rotated, &rotated_info).await.unwrap(),
+            (180, 320)
+        );
+        let overlay = render_request(
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "image_overlay".into(),
+                params: values(&[
+                    ("image_path", &logo.to_string_lossy()),
+                    ("x", "80"),
+                    ("y", "80"),
+                    ("size", "20"),
+                    ("opacity", "60"),
+                    ("start", "0.1"),
+                    ("end", "0.8"),
+                ]),
+            },
+            &info,
+        )
+        .await;
+        assert!(probe_media(overlay.to_string_lossy().into_owned())
+            .await
+            .unwrap()
+            .audio_codec
+            .is_some());
+        let blurred = render_request(
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "blur_pixelate".into(),
+                params: values(&[
+                    ("effect", "blur"),
+                    ("strength", "20"),
+                    ("region_x", "20"),
+                    ("region_y", "20"),
+                    ("region_w", "40"),
+                    ("region_h", "40"),
+                ]),
+            },
+            &info,
+        )
+        .await;
+        assert!(probe_media(blurred.to_string_lossy().into_owned())
+            .await
+            .unwrap()
+            .audio_codec
+            .is_some());
+        let pixelated = render_request(
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "blur_pixelate".into(),
+                params: values(&[
+                    ("effect", "pixelate"),
+                    ("strength", "20"),
+                    ("region_x", "17"),
+                    ("region_y", "19"),
+                    ("region_w", "41"),
+                    ("region_h", "43"),
+                ]),
+            },
+            &info,
+        )
+        .await;
+        assert!(probe_media(pixelated.to_string_lossy().into_owned())
+            .await
+            .unwrap()
+            .audio_codec
+            .is_some());
+        let added = render_request(
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "subtitles".into(),
+                params: values(&[
+                    ("action", "add"),
+                    ("subtitle_path", &subtitle.to_string_lossy()),
+                    ("container", "mkv"),
+                    ("subtitle_track", ""),
+                ]),
+            },
+            &info,
+        )
+        .await;
+        let tracks = probe_subtitles(added.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(tracks.len(), 1);
+        let added_info = probe_media(added.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let extracted = render_request(
+            &OperationRequest {
+                input: added.to_string_lossy().into_owned(),
+                operation: "subtitles".into(),
+                params: values(&[
+                    ("action", "extract"),
+                    ("subtitle_path", ""),
+                    ("container", "mkv"),
+                    ("subtitle_track", &tracks[0].index.to_string()),
+                ]),
+            },
+            &added_info,
+        )
+        .await;
+        assert_eq!(
+            extracted.extension().and_then(|value| value.to_str()),
+            Some("srt")
+        );
+        let removed = render_request(
+            &OperationRequest {
+                input: added.to_string_lossy().into_owned(),
+                operation: "subtitles".into(),
+                params: values(&[
+                    ("action", "remove"),
+                    ("subtitle_path", ""),
+                    ("container", "mkv"),
+                    ("subtitle_track", ""),
+                ]),
+            },
+            &added_info,
+        )
+        .await;
+        assert!(probe_subtitles(removed.to_string_lossy().into_owned())
+            .await
+            .unwrap()
+            .is_empty());
+        let burned = render_request(
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "subtitles".into(),
+                params: values(&[
+                    ("action", "burn"),
+                    ("subtitle_path", &subtitle.to_string_lossy()),
+                    ("container", "mkv"),
+                    ("subtitle_track", ""),
+                ]),
+            },
+            &info,
+        )
+        .await;
+        assert!(probe_media(burned.to_string_lossy().into_owned())
+            .await
+            .unwrap()
+            .audio_codec
+            .is_some());
+        let state = JobState::default();
+        let stabilized = run_stabilizer(
+            None,
+            &state,
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "stabilizer".into(),
+                params: values(&[("strength", "light")]),
+            },
+            &info,
+        )
+        .await
+        .unwrap();
+        assert!(Path::new(&stabilized.output).is_file());
+        let temp_stabilizers = || {
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().starts_with("container_stabilizer_")
+                    })
+                })
+                .collect::<HashSet<_>>()
+        };
+        let before_cancel = temp_stabilizers();
+        let cancelled_state = JobState::default();
+        cancelled_state.cancelled.store(true, Ordering::Relaxed);
+        let cancel_error = run_stabilizer(
+            None,
+            &cancelled_state,
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "stabilizer".into(),
+                params: values(&[("strength", "strong")]),
+            },
+            &info,
+        )
+        .await
+        .unwrap_err();
+        assert!(cancel_error.to_ascii_lowercase().contains("cancel"));
+        assert_eq!(temp_stabilizers(), before_cancel);
+        let compatible_inputs = serde_json::to_string(&vec![
+            video.to_string_lossy().to_string(),
+            video.to_string_lossy().to_string(),
+        ])
+        .unwrap();
+        let merged = run_merge_videos(
+            None,
+            &state,
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "merge_videos".into(),
+                params: values(&[("mode", "auto"), ("inputs", &compatible_inputs)]),
+            },
+        )
+        .await
+        .unwrap();
+        let merged_path = PathBuf::from(&merged.output);
+        assert!(probe_media(merged.output)
+            .await
+            .unwrap()
+            .duration
+            .is_some_and(|duration| duration > 1.8));
+        assert!(packet_timestamps_are_monotonic(&merged_path, "v:0"));
+        assert!(packet_timestamps_are_monotonic(&merged_path, "a:0"));
+        let mixed_inputs = serde_json::to_string(&vec![
+            video.to_string_lossy().to_string(),
+            different.to_string_lossy().to_string(),
+        ])
+        .unwrap();
+        let lossless_error = run_merge_videos(
+            None,
+            &state,
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "merge_videos".into(),
+                params: values(&[("mode", "lossless"), ("inputs", &mixed_inputs)]),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(lossless_error.contains("cannot be merged losslessly"));
+        let normalized = run_merge_videos(
+            None,
+            &state,
+            &OperationRequest {
+                input: video.to_string_lossy().into_owned(),
+                operation: "merge_videos".into(),
+                params: values(&[
+                    ("mode", "auto"),
+                    ("container", "mp4"),
+                    ("inputs", &mixed_inputs),
+                ]),
+            },
+        )
+        .await
+        .unwrap();
+        let normalized_info = probe_media(normalized.output).await.unwrap();
+        assert_eq!(
+            Path::new(&normalized_info.path)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("mp4")
+        );
+        assert_eq!(
+            (normalized_info.width, normalized_info.height),
+            (Some(320), Some(180))
+        );
+        assert!(normalized_info.audio_codec.is_some());
+        assert!(packet_timestamps_are_monotonic(
+            Path::new(&normalized_info.path),
+            "v:0"
+        ));
+        assert!(packet_timestamps_are_monotonic(
+            Path::new(&normalized_info.path),
+            "a:0"
+        ));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6661,7 +7620,6 @@ mod tests {
             ("fps", values(&[("fps", "24"), ("crf", "20")])),
             ("interpolation", values(&[("fps", "60")])),
             ("frame_blend", values(&[("fps", "24")])),
-            ("dedupe", values(&[("profile", "safe")])),
             ("speed", values(&[("speed", "2"), ("crf", "20")])),
             (
                 "speed",
@@ -6675,7 +7633,10 @@ mod tests {
                 "compression",
                 values(&[("crf", "22"), ("preset", "ultrafast")]),
             ),
-            ("bitrate", values(&[("mbps", "0.3")])),
+            (
+                "compression",
+                values(&[("mode", "bitrate"), ("mbps", "0.3")]),
+            ),
             (
                 "potatoify",
                 values(&[
@@ -6724,8 +7685,6 @@ mod tests {
             ),
             ("noise", values(&[("amount", "3")])),
             ("negate", values(&[])),
-            ("deep_fry", values(&[("level", "2")])),
-            ("corruption", values(&[("level", "1")])),
             ("encode", values(&[("encoder", "libx264"), ("crf", "20")])),
             (
                 "encode",

@@ -5,7 +5,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { reportProblem } from "./toast";
 
-  let { language }: { language: "tr" | "en" } = $props();
+  let { language, onbusychange }: { language: "tr" | "en"; onbusychange?: (value:boolean)=>void } = $props();
   interface DownloaderStatus { ready:boolean; version:string|null }
   interface DownloaderResult { output_dir:string; details:string }
   interface DownloadFormat { id:string; label:string; detail:string; kind:string; codec:string; rank:number; height:number|null }
@@ -25,6 +25,8 @@
   let preferredHeight=$state<number|null>(null);
   let unlisten:UnlistenFn|undefined;
   let temporaryThumbnail:string|null=null;
+
+  $effect(()=>onbusychange?.(busy||analyzing));
 
   function releaseThumbnail(path:string|null|undefined){
     if(!path||path!==temporaryThumbnail)return;
