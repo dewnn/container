@@ -1,6 +1,6 @@
 [package]
 name = "container-studio"
-version = "0.9.3"
+version = "0.9.4"
 description = "CONTAINER FFmpeg media toolbox"
 authors = ["dewn"]
 edition = "2021"

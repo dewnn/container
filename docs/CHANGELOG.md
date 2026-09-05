@@ -4,6 +4,11 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.4] - 2026-09-05
+
+- Added a weekly supply-chain check for newer FFmpeg/FFprobe and yt-dlp releases without silently replacing unverified binaries.
+- Centralized the tested media-tool versions and yt-dlp checksum so CI, release packaging and the Windows runtime remain aligned.
+
 ## [0.9.3] - 2026-09-05
 
 - Added the secure DWLNDR workspace with link analysis, thumbnail previews, practical quality and codec choices, and live percentage, transferred-size and speed feedback.

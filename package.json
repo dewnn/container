@@ -2,7 +2,7 @@
   "name": "container-studio",
   "private": true,
   "license": "MIT",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Local-first FFmpeg media toolbox with SmartCut, batch processing and visual previews.",
   "homepage": "https://github.com/dewnn/container#readme",
   "bugs": {
