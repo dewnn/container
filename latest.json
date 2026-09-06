@@ -1,11 +1,11 @@
 {
-  "version": "0.11.0",
-  "pub_date": "2026-09-06T16:38:31.8108749Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWNZRlB2STYxeGUrb1kvazNxdTlEVHdmNUV1NkRlMjhpTHo0bVBnM1hwclpkUFpzQTg4Vk5nQkExbDhuaUZtc3FyOUFJLytPRmpnZ0xwbEZFM05iZFFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NzEyNjkxCWZpbGU6Q09OVEFJTkVSXzAuMTEuMF94NjQtc2V0dXAuZXhlCnlSbnpRV0VESkZrQ0s0dmFqYVMzUTRDSHdiSERJa2s0SFRQdHB2dDR1RExZY1VXa0M1NHUvMVBBcXNuV1I0MC9TRXRnSEhwSVk2aWFxTzRWcUFSVEJ3PT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.11.0/CONTAINER-Setup-0.11.0-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWZHOVl4THdUV0dWRWMxVmwxb1VKMnk4SWQ4cDNyL25iQVZoZmx1SU9lL01haFlkSlU2ZTZNUUVMRHdYdnE5RzZWUFBiQlIxV05BRDhZZ2paYU1pMWdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NzM2Mzk3CWZpbGU6Q09OVEFJTkVSXzAuMTEuMV94NjQtc2V0dXAuZXhlClpSZ0RZdGdZanhLUTh1bkdiT3RDTVYzbDRIa2d5N0ZXby9uZURXUFo0MDRBaG13VGRJYWM3SXhnNlFib1RRb3libWVJeitJZ1ltMHBhTnNaR0xYaUNBPT0K",
+      "url": "https://github.com/dewnn/container/releases/download/v0.11.1/CONTAINER-Setup-0.11.1-x64.exe"
     }
   },
-  "notes": "# Changes\n\n\n- Added image compression with live size estimates, target-size mode, format-aware quality controls, and safe JPEG background handling for transparent sources.\n- Expanded image editing with fit/canvas transforms, static blur and pixelation, text, draggable/resizable logo overlays, color adjustment, metadata cleaning, and additional output formats.\n- Improved image preview/export parity, source-safe output naming, alpha preservation, Unicode path handling, cancellation, and temporary-file cleanup.\n- Bundled a checksum-verified Deno runtime so yt-dlp can handle current YouTube JavaScript challenges without requiring a system runtime.\n- Made audio-only download choices describe and produce the actual M4A or Opus output format, and hardened downloader progress, cancellation, cleanup, and listener lifecycle behavior.\n- Prevented overlapping SmartCut, batch, analysis, and export operations from leaking stale state or leaving the interface busy after failures.\n"
+  "pub_date": "2026-09-06T23:13:33.9280157Z",
+  "notes": "# Changes\n\n\n- Fixed TikTok downloads by reusing a successful link analysis instead of asking TikTok to resolve the same video again when download starts.\n- Added the completion sound to successful DWLNDR downloads and made completed downloads reveal the actual downloaded file in Explorer.\n- Refined DWLNDR source-specific quality choices, including YouTube-only codec selection and a clear automatic-quality state for sources without quality variants.\n- Redesigned DWLNDR around a compact centered link workflow with optional engine information.\n- Synced the Windows title bar and taskbar icon with the selected app theme.\n",
+  "version": "0.11.1"
 }
