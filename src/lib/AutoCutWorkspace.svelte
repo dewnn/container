@@ -17,7 +17,7 @@
   interface LinkedTrack { path:string; offset:number; timecode:boolean }
   interface HistorySnapshot { threshold:number;minSilence:number;minSpeech:number;minimumPause:number;keepBeforeSpeech:number;keepAfterSpeech:number;preset:string;cuts:Cut[];autoSummary:string;skipRemoved:boolean;output:string;exportFormat:string;quality:string;resolution:string;analysisInput:string;linkedTracks:LinkedTrack[];hasAnalyzed:boolean;lastAnalyzedKey:string }
 
-  let { media, mediaUrl, language, onhistorychange=()=>{}, onsessionchange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void } = $props();
+  let { media, mediaUrl, language, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void; onbusychange?:(value:boolean)=>void } = $props();
   const words:Record<"tr"|"en",Record<string,string>>={
     tr:{detection:"ALGILAMA",silenceParams:"sessizlik parametreleri",threshold:"EŞİK",minSilence:"EN AZ SESSİZLİK",minSpeech:"EN AZ KONUŞMA",padding:"KENAR PAYI",help:"Eşik, Silero modelinin bir parçayı konuşma sayması için gereken güven değeridir. Yükseldikçe daha çok yer kesilir. Kenar payı kelimelerin başını ve sonunu korur.",listen:"BAŞKA BİR KAYDI DİNLE",camera:"kamera sesini kullan",analyzing:"ANALİZ EDİLİYOR…",detect:"SESSİZLİĞİ ALGILA",export:"DIŞA AKTAR",kept:"tutuldu",removed:"kaldırıldı",format:"FORMAT",quality:"KALİTE",resolution:"ÇÖZÜNÜRLÜK",high:"Yüksek",medium:"Orta",small:"Küçük",source:"Kaynak",linked:"BAĞLANTILI KAYITLAR",add:"+ EKLE",exporting:"AKTARILIYOR",cancelExport:"AKTARMAYI İPTAL ET",showOutput:"ÇIKTIYI GÖSTER",timeline:"ZAMAN ÇİZELGESİ",waveform:"ses dalgası oluşturuluyor…",skipping:"kesimler atlanıyor",playingAll:"tümü oynatılıyor",cuts:"KESİMLER",editable:"düzenlenebilir tutma bölgeleri",regions:"bölge",output:"çıktı",keep:"TUT",off:"KAPALI",empty:"Kesim listesini oluşturmak için algılamayı çalıştır.",noise:"gürültü",voice:"konuşma"},
     en:{detection:"DETECTION",silenceParams:"silence parameters",threshold:"THRESHOLD",minSilence:"MIN SILENCE",minSpeech:"MIN SPEECH",padding:"PADDING",help:"Threshold is the confidence Silero needs to count a segment as speech. Raising it cuts more. Padding protects word beginnings and endings.",listen:"LISTEN TO ANOTHER TRACK",camera:"use camera audio",analyzing:"ANALYZING…",detect:"DETECT SILENCE",export:"EXPORT",kept:"kept",removed:"removed",format:"FORMAT",quality:"QUALITY",resolution:"RESOLUTION",high:"High",medium:"Medium",small:"Small",source:"Source",linked:"LINKED TRACKS",add:"+ ADD",exporting:"EXPORTING",cancelExport:"CANCEL EXPORT",showOutput:"SHOW OUTPUT",timeline:"TIMELINE",waveform:"building waveform…",skipping:"skipping cuts",playingAll:"playing all",cuts:"CUTS",editable:"editable keep regions",regions:"regions",output:"output",keep:"KEEP",off:"OFF",empty:"Run detection to build a cut list.",noise:"noise",voice:"voice"}
@@ -61,6 +61,8 @@
   let viewEnd = $state(0);
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
   let historyApplying=false;
+
+  $effect(()=>onbusychange(analyzing||autoTuning||exporting));
 
   const duration = $derived(media.duration ?? 0);
   const kept = $derived(cuts.filter(c => c.enabled).reduce((n,c)=>n+Math.max(0,c.end-c.start),0));
@@ -132,18 +134,20 @@
   function previousCut(){const list=cuts.filter(c=>c.enabled&&c.start<current-.05);seek(list.at(-1)?.start??0)}
   function nextCut(){const c=cuts.find(c=>c.enabled&&c.start>current+.05);seek(c?.start??duration)}
 
-  async function analyze(){
+  async function analyze(fromAutoTune=false){
+    if(analyzing||exporting||(autoTuning&&!fromAutoTune))return;
     analyzing=true;error="";output="";
     try{const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=settingsKey;}
     catch(reason){error=String(reason);reportProblem(reason)}finally{analyzing=false}
   }
   async function autoTune(){
+    if(autoTuning||analyzing||exporting)return;
     autoTuning=true;error="";autoSummary="";
     try{
       const result=await invoke<Recommendation>("recommend_autocut_settings",{path:analysisInput||media.path});
       threshold=result.threshold;minSilence=result.min_silence;minSpeech=result.min_speech;minimumPause=result.minimum_pause;keepBeforeSpeech=result.keep_before_speech;keepAfterSpeech=result.keep_after_speech;preset="auto";
       autoSummary=`${t("noise")} ${result.noise_floor_db.toFixed(1)} dB · ${t("voice")} ${result.speech_level_db.toFixed(1)} dB`;
-      await tick(); await analyze();
+      await tick(); await analyze(true);
     }catch(reason){error=String(reason);reportProblem(reason)}finally{autoTuning=false}
   }
   function applyPreset(id:"natural"|"balanced"|"tight"){
@@ -151,6 +155,7 @@
     preset=id;minimumPause=value.minimum_pause;keepBeforeSpeech=value.keep_before_speech;keepAfterSpeech=value.keep_after_speech;autoSummary="";
   }
   async function exportCuts(){
+    if(exporting||analyzing||autoTuning||!cuts.length)return;
     armCompletionSound();
     exporting=true;progress=0;error="";output="";
     try{const result=await invoke<Result>("export_autocut",{request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;await playCompletionSound();}
@@ -199,23 +204,24 @@
   }
 
   onMount(()=>{
-    listen<Progress>("container-progress",e=>{if(exporting)progress=e.payload.percent}).then(fn=>unlisten=fn);
+    let disposed=false;
+    listen<Progress>("container-progress",e=>{if(exporting)progress=e.payload.percent}).then(fn=>{if(disposed)fn();else unlisten=fn});
     const key=(e:KeyboardEvent)=>{const tag=(document.activeElement as HTMLElement)?.tagName;if(["INPUT","SELECT","TEXTAREA"].includes(tag))return;if(e.code==="Space"){e.preventDefault();togglePlay()}else if(e.key==="ArrowLeft")seek(current-5);else if(e.key==="ArrowRight")seek(current+5)};
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
     resetHistory();
     invoke<Preset[]>("autocut_presets").then(result=>{presets=result;const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
     invoke<number[]>("compute_autocut_waveform",{path:media.path}).then(result=>waveform=result).catch(reason=>{error=String(reason);reportProblem(reason)}).finally(()=>waveformLoading=false);
-    return()=>{unlisten?.();window.removeEventListener("keydown",key)};
+    return()=>{disposed=true;unlisten?.();window.removeEventListener("keydown",key)};
   });
 </script>
 
 <section class="ac-layout">
   <aside class="ac-side ac-left">
     <div class="ac-card">
-      <header><div><h3>{t("detection")}</h3><p>{t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
+        <header><div><h3>{t("detection")}</h3><p>{t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing||exporting}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
       <div class="ac-fields">
-        <div class="ac-presets"><button class:active={preset==="natural"} onclick={()=>applyPreset("natural")}>{language==="tr"?"DOĞAL":"NATURAL"}</button><button class:active={preset==="balanced"} onclick={()=>applyPreset("balanced")}>{language==="tr"?"DENGELİ":"BALANCED"}</button><button class:active={preset==="tight"} onclick={()=>applyPreset("tight")}>{language==="tr"?"SIKI":"TIGHT"}</button><button class:active={preset==="auto"} onclick={autoTune}>AUTO</button></div>
+        <div class="ac-presets"><button class:active={preset==="natural"} onclick={()=>applyPreset("natural")}>{language==="tr"?"DOĞAL":"NATURAL"}</button><button class:active={preset==="balanced"} onclick={()=>applyPreset("balanced")}>{language==="tr"?"DENGELİ":"BALANCED"}</button><button class:active={preset==="tight"} onclick={()=>applyPreset("tight")}>{language==="tr"?"SIKI":"TIGHT"}</button><button class:active={preset==="auto"} onclick={autoTune} disabled={autoTuning||analyzing||exporting}>AUTO</button></div>
         <label><span>{language==="tr"?"EN AZ DURAKLAMA":"MINIMUM PAUSE"} <b>{Math.round(minimumPause*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minimumPause,.15,1.5)}`} min="0.15" max="1.5" step="0.025" bind:value={minimumPause} oninput={()=>preset="custom"}></label>
         <label><span>{language==="tr"?"KONUŞMADAN ÖNCE KORU":"KEEP BEFORE SPEECH"} <b>{Math.round(keepBeforeSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepBeforeSpeech,0,.5)}`} min="0" max="0.5" step="0.01" bind:value={keepBeforeSpeech} oninput={()=>preset="custom"}></label>
         <label><span>{language==="tr"?"KONUŞMADAN SONRA KORU":"KEEP AFTER SPEECH"} <b>{Math.round(keepAfterSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepAfterSpeech,0,.6)}`} min="0" max="0.6" step="0.01" bind:value={keepAfterSpeech} oninput={()=>preset="custom"}></label>
@@ -228,7 +234,7 @@
         {#if autoSummary}<p class="auto-summary">AUTO · {autoSummary}</p>{/if}
         <button class="ac-secondary listen" onclick={chooseAnalysis}>{analysisInput?`${t("listen")}: ${base(analysisInput)}`:t("listen")}</button>
         {#if analysisInput}<button class="clear-source" onclick={()=>analysisInput=""}>{t("camera")}</button>{/if}
-        <button class="ac-primary" onclick={analyze} disabled={analyzing||exporting}>{analyzing?t("analyzing"):t("detect")}</button>
+        <button class="ac-primary" onclick={()=>analyze()} disabled={analyzing||autoTuning||exporting}>{analyzing?t("analyzing"):t("detect")}</button>
       </div>
     </div>
     <div class="ac-card ac-export">
@@ -244,7 +250,7 @@
           <div class="linked-row"><span title={track.path}><b>{track.timecode?"tc":"≈"}</b> {base(track.path)}</span><input aria-label="Track offset" type="number" step="0.01" bind:value={track.offset}><button onclick={()=>linkedTracks=linkedTracks.filter((_,i)=>i!==index)}>×</button></div>
         {/each}
         {#if output}<button class="ac-secondary" onclick={()=>revealItemInDir(output)}>{t("showOutput")}</button>{/if}
-        <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||!cuts.length}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
+        <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||autoTuning||!cuts.length}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
         {#if exporting}<button class="ac-secondary danger" onclick={cancel}>{t("cancelExport")}</button>{/if}
       </div>
     </div>

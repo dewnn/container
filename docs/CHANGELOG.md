@@ -4,6 +4,15 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-09-06
+
+- Added image compression with live size estimates, target-size mode, format-aware quality controls, and safe JPEG background handling for transparent sources.
+- Expanded image editing with fit/canvas transforms, static blur and pixelation, text, draggable/resizable logo overlays, color adjustment, metadata cleaning, and additional output formats.
+- Improved image preview/export parity, source-safe output naming, alpha preservation, Unicode path handling, cancellation, and temporary-file cleanup.
+- Bundled a checksum-verified Deno runtime so yt-dlp can handle current YouTube JavaScript challenges without requiring a system runtime.
+- Made audio-only download choices describe and produce the actual M4A or Opus output format, and hardened downloader progress, cancellation, cleanup, and listener lifecycle behavior.
+- Prevented overlapping SmartCut, batch, analysis, and export operations from leaking stale state or leaving the interface busy after failures.
+
 ## [0.10.0] - 2026-09-06
 
 - Added Merge Videos with reordering, MKV/MP4 output, lossless joining for compatible inputs, and automatic hardware-accelerated normalization for incompatible files.

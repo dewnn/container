@@ -19,6 +19,14 @@ Windows release packages bundle the official yt-dlp 2026.08.19 executable. yt-dl
 - Release: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
 - Source: https://github.com/yt-dlp/yt-dlp/tree/2026.08.19
 
+## Deno
+
+Windows release packages bundle Deno 2.9.6 as the isolated JavaScript runtime used by yt-dlp for YouTube challenge processing. Deno is released under the MIT License reproduced in `deno-LICENSE.md`. The bundled Windows x64 archive SHA-256 is `15e5300b0ba3c3695a7621d90160a746ec9e710228cee639afa9d580f6e3cd11`.
+
+- Project: https://github.com/denoland/deno
+- Release: https://github.com/denoland/deno/releases/tag/v2.9.6
+- Source: https://github.com/denoland/deno/tree/v2.9.6
+
 ## Geist and Geist Mono
 
 The interface uses Geist and Geist Mono through Fontsource packages. The font families are distributed under the SIL Open Font License 1.1.

@@ -63,6 +63,23 @@ jobs:
           if ($actual -ne $expected) { throw "yt-dlp checksum mismatch: $actual" }
           "CONTAINER_YT_DLP=$path" >> $env:GITHUB_ENV
 
+      - name: Prepare verified Deno runtime
+        shell: pwsh
+        run: |
+          $config = @{}
+          Get-Content config/bundled-tools.env | ForEach-Object {
+            $key, $value = $_ -split '=', 2
+            $config[$key] = $value
+          }
+          $url = "https://github.com/denoland/deno/releases/download/v$($config.DENO_VERSION)/deno-x86_64-pc-windows-msvc.zip"
+          $archive = Join-Path $env:RUNNER_TEMP 'deno.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'deno-runtime'
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $config.DENO_SHA256) { throw "Deno checksum mismatch: $actual" }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          "CONTAINER_DENO=$(Join-Path $directory 'deno.exe')" >> $env:GITHUB_ENV
+
       - name: Verify release versions
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -95,7 +112,7 @@ jobs:
           New-Item -ItemType Directory -Force $updaterDir | Out-Null
 
           $app = Get-ChildItem src-tauri/target/release -Filter '*.exe' -File |
-            Where-Object Name -NotMatch '^(ffmpeg|ffprobe|yt-dlp)' |
+            Where-Object Name -NotMatch '^(ffmpeg|ffprobe|yt-dlp|deno)' |
             Select-Object -First 1
           if (-not $app) { throw 'Portable application executable was not found.' }
 
@@ -106,13 +123,16 @@ jobs:
           $ffmpegSidecar = Get-ChildItem $sidecarRoot -Filter 'ffmpeg-*-windows-msvc.exe' -File | Select-Object -First 1
           $ffprobeSidecar = Get-ChildItem $sidecarRoot -Filter 'ffprobe-*-windows-msvc.exe' -File | Select-Object -First 1
           $ytDlpSidecar = Get-ChildItem $sidecarRoot -Filter 'yt-dlp-*-windows-msvc.exe' -File | Select-Object -First 1
-          if (-not $ffmpegSidecar -or -not $ffprobeSidecar -or -not $ytDlpSidecar) { throw 'Bundled media sidecars were not prepared.' }
+          $denoSidecar = Get-ChildItem $sidecarRoot -Filter 'deno-*-windows-msvc.exe' -File | Select-Object -First 1
+          if (-not $ffmpegSidecar -or -not $ffprobeSidecar -or -not $ytDlpSidecar -or -not $denoSidecar) { throw 'Bundled media sidecars were not prepared.' }
           Copy-Item -LiteralPath $ffmpegSidecar.FullName -Destination (Join-Path $portableDir 'ffmpeg.exe')
           Copy-Item -LiteralPath $ffprobeSidecar.FullName -Destination (Join-Path $portableDir 'ffprobe.exe')
           Copy-Item -LiteralPath $ytDlpSidecar.FullName -Destination (Join-Path $portableDir 'yt-dlp.exe')
+          Copy-Item -LiteralPath $denoSidecar.FullName -Destination (Join-Path $portableDir 'deno.exe')
           Copy-Item -LiteralPath 'docs\THIRD_PARTY_NOTICES.md' -Destination (Join-Path $portableDir 'THIRD_PARTY_NOTICES.md')
           Copy-Item -LiteralPath 'src-tauri\resources\yt-dlp-LICENSE.txt' -Destination (Join-Path $portableDir 'yt-dlp-LICENSE.txt')
           Copy-Item -LiteralPath 'src-tauri\resources\yt-dlp-THIRD_PARTY_LICENSES.txt' -Destination (Join-Path $portableDir 'yt-dlp-THIRD_PARTY_LICENSES.txt')
+          Copy-Item -LiteralPath 'src-tauri\resources\deno-LICENSE.md' -Destination (Join-Path $portableDir 'deno-LICENSE.md')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip") -CompressionLevel Optimal
 
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1

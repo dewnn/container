@@ -8,7 +8,7 @@
   import { reportProblem } from "./toast";
 
   interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
-  let { initialPath, language, availableEncoders, onhistorychange=()=>{}, onsessionchange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void}=$props();
+  let { initialPath, language, availableEncoders, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void;onbusychange?:(value:boolean)=>void}=$props();
   const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","gif"];
   const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)).map(tool=>{
     const copy=localizedTool(tool,language);
@@ -26,6 +26,7 @@
   let currentIndex=$state(-1);
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
   let historyApplying=false;
+  $effect(()=>onbusychange(running));
   const name=(path:string)=>path.split(/[\\/]/).pop()??path;
   const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
   const snapshot=():HistorySnapshot=>clone({selected,items,recursive});
@@ -49,7 +50,7 @@
   async function start(){
     if(running||!items.length)return;armCompletionSound();running=true;cancelAll=false;aggregate=0;let completed=0;
     let unlisten:UnlistenFn|null=null;
-    unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=(currentIndex+event.payload.percent/100)/items.length*100;items=[...items]}});
+    try{unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=(currentIndex+event.payload.percent/100)/items.length*100;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
     for(let index=0;index<items.length;index++){
       if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,error:undefined};items=[...items];
       try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation:selected.id,params:params()}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}

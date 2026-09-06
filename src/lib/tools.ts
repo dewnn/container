@@ -41,6 +41,9 @@ export const tools: Tool[] = [
     detail: "Choose a social preset or adjust the crop directly in the preview, then rotate, flip and set the output size.",
     fields: [
       select("crop_mode", "Crop", "off", [["off","Off"],["free","Free"],["16:9","16:9"],["9:16","9:16"],["1:1","1:1"],["4:5","4:5"],["4:3","4:3"],["2:3","2:3"],["3:2","3:2"],["191:100","1.91:1"]]),
+      select("fit_mode", "Fit mode", "crop", [["crop","Crop / fill"],["contain","Fit / contain"]]),
+      select("canvas_background", "Fit background", "transparent", [["transparent","Transparent"],["black","Black"],["white","White"],["custom","Custom color"]]),
+      {key:"canvas_color",label:"Custom background",type:"text",value:"#202020"},
       number("crop_x", "Crop X", 0, 0, 100, 0.01, "%"), number("crop_y", "Crop Y", 0, 0, 100, 0.01, "%"),
       number("crop_w", "Crop width", 100, 1, 100, 0.01, "%"), number("crop_h", "Crop height", 100, 1, 100, 0.01, "%"),
       select("rotate", "Rotate", "0", [["0","0°"],["90","90° right"],["180","180°"],["270","90° left"]]),
@@ -48,7 +51,8 @@ export const tools: Tool[] = [
       select("flip_v", "Vertical flip", "false", [["false","Off"],["true","On"]]),
       select("size_mode", "Output size", "source", [["source","Keep cropped resolution"],["height","Target height"],["width","Target width"],["exact","Exact dimensions"]]),
       number("size", "Pixels", 1080, 2, 7680, 2, "px"), number("output_width", "Width", 1920, 2, 7680, 2, "px"), number("output_height", "Height", 1080, 2, 7680, 2, "px"),
-      select("format", "Output format", "png", [["png","PNG · lossless"],["jpg","JPEG · high quality / smaller"],["webp","WebP · lossless"]]),
+      select("format", "Output format", "png", [["png","PNG · lossless"],["jpg","JPEG · high quality / smaller"],["webp","WebP · lossless"],["bmp","BMP"],["tiff","TIFF"],["avif","AVIF"]]),
+      {key:"jpeg_background",label:"JPEG background",type:"text",value:"#ffffff"},
     ],
   },
   {
@@ -80,7 +84,7 @@ export const tools: Tool[] = [
   {
     id: "stabilizer", title: "Video Stabilizer", category: "Motion", kind: ["video"], accent: "green",
     description: "Kamera sarsıntısını iki aşamalı hareket analiziyle azaltır.",
-    detail: "Önce hareketi analiz eder, ardından hareketli kenarları otomatik azaltarak görüntüyü sabitler.",
+    detail: "Önce hareketi analiz eder, ardından hareketli kenarları otomatik azaltarak görüntüyü sabitler. Uyumlu ses akışı kalite kaybı olmadan korunur.",
     fields: [select("strength", "Strength", "medium", [["light","Light"],["medium","Medium"],["strong","Strong"]])],
   },
   {
@@ -114,22 +118,24 @@ export const tools: Tool[] = [
     fields: [select("profile","Quality profile","decent",[["decent","Decent"],["bad","Bad"],["terrible","Terrible"],["unbearable","Unbearable"],["custom","Custom"],["random","Random"]]), number("fps", "FPS", 12, 1, 120, 1), number("video_badness", "Video badness", 5, 1, 20, 1), number("audio_badness", "Audio badness", 5, 1, 20, 1), number("shrink", "Scale divisor", 4, 1, 20, 1)],
   },
   {
-    id: "text", title: "Text", category: "Overlay", kind: ["video"], accent: "blue",
+    id: "text", title: "Text", category: "Overlay", kind: ["video","image"], accent: "blue",
     description: "Birden fazla yazıyı önizlemede sürükleyip boyutlandırarak yerleştirir.", detail: "Add Text ile katman ekle; önizlemedeki veya listedeki yazıya tıklayarak ayarlarını düzenle.",
     fields: [],
   },
   {
-    id: "image_overlay", title: "Image / Logo Overlay", category: "Overlay", kind: ["video"], accent: "green",
-    description: "Videonun üzerine görsel veya şeffaf logo yerleştirir.",
-    detail: "Logoyu önizlemede sürükleyip kenarlarından boyutlandır. Zaman aralığını timeline'dan, opaklığı menüden ayarla.",
+    id: "image_overlay", title: "Image / Logo Overlay", category: "Overlay", kind: ["video","image"], accent: "green",
+    description: "Medyanın üzerine görsel veya şeffaf logo yerleştirir.",
+    detail: "Logoyu önizlemede sürükleyip kenarlarından boyutlandır; opaklığı menüden ayarla. Videoda zaman aralığı timeline üzerinden seçilir.",
     fields: [
       {key:"image_path",label:"Overlay image",type:"file",value:"",accept:["png","jpg","jpeg","webp"]},
+      select("position","Position","custom",[["custom","Custom / drag"],["top_left","Top left"],["top_right","Top right"],["bottom_left","Bottom left"],["bottom_right","Bottom right"],["center","Center"]]),
       number("x","Position X",80,0,100,.01,"%"), number("y","Position Y",20,0,100,.01,"%"), number("size","Size",20,1,100,.01,"%"), number("opacity","Opacity",100,1,100,1,"%"),
+      number("margin","Margin",3,0,25,.1,"%"),
       number("start","Start",0,0,86400,0.01,"s"), number("end","End",10,0.01,86400,0.01,"s"),
     ],
   },
   {
-    id: "color", title: "Color Adjustment", category: "Effects", kind: ["video"], accent: "blue",
+    id: "color", title: "Color Adjustment", category: "Effects", kind: ["video","image"], accent: "blue",
     description: "Renk, ton, detay ve temizlik ayarlarını canlı önizlemeyle düzenler.", detail: "Yalnızca işaretlediğin filtreler uygulanır. Başka araca geçersen uygulanmamış değişiklikler sıfırlanır.",
     fields: [
       number("brightness","Brightness",0,-100,100,1,"%"), number("contrast","Contrast",100,0,200,1,"%"), number("saturation","Saturation",100,0,200,1,"%"), number("gamma","Gamma",100,10,300,1,"%"),
@@ -144,9 +150,9 @@ export const tools: Tool[] = [
     fields: [number("amount","Noise amount",6,1,100,1)],
   },
   {
-    id: "blur_pixelate", title: "Blur / Pixelate", category: "Effects", kind: ["video"], accent: "purple",
+    id: "blur_pixelate", title: "Blur / Pixelate", category: "Effects", kind: ["video","image"], accent: "purple",
     description: "Sabit bir dikdörtgen alanı bulanıklaştırır veya pikselleştirir.",
-    detail: "Alanı önizlemede sürükleyip boyutlandır. Çıktıda kaynağa göre aynı koordinatlar kullanılır.",
+    detail: "Alanı önizlemede sürükleyip boyutlandır. Çıktıda kaynağa göre aynı koordinatlar kullanılır; uyumlu ses akışı değişmeden korunur.",
     fields: [select("effect","Mode","blur",[["blur","Blur"],["pixelate","Pixelate"]]),number("strength","Strength",20,2,60,1),number("region_x","Region X",25,0,99,.01,"%"),number("region_y","Region Y",25,0,99,.01,"%"),number("region_w","Region width",50,1,100,.01,"%"),number("region_h","Region height",50,1,100,.01,"%")],
   },
   {
@@ -219,6 +225,12 @@ export const tools: Tool[] = [
     id:"audio_convert", title:"Convert Audio", category:"Audio", kind:["audio"], accent:"blue", description:"Ses dosyasını başka formata dönüştürür.", detail:"AAC, MP3, WAV, FLAC ve OPUS desteklenir.", fields:[select("format","Output format","mp3",[["aac","AAC / M4A"],["mp3","MP3"],["wav","WAV"],["flac","FLAC"],["opus","OPUS"]])],
   },
   {
+    id:"image_compressor", title:"Image Compressor", category:"Image", kind:["image"], accent:"green", description:"Görseli kaliteye veya hedef dosya boyutuna göre sıkıştırır.", detail:"Hedef boyut modu uygun kaliteyi birden fazla denemeyle arar; görsel boyutları değişmez.", fields:[select("mode","Compression mode","quality",[["quality","Quality"],["target","Target size"]]),select("format","Output format","source",[["source","Keep source format"],["jpg","JPEG"],["webp","WebP"],["png","PNG"]]),number("quality","Quality",82,1,100,1,"%"),number("target_kb","Target size",500,1,1048576,1,"KB"),{key:"jpeg_background",label:"JPEG background",type:"text",value:"#ffffff"}],
+  },
+  {
+    id:"metadata_cleaner", title:"Metadata Cleaner", category:"Image", kind:["image"], accent:"yellow", description:"EXIF, GPS, XMP, IPTC ve kamera/yazılım metadatasını kaldırır.", detail:"Görüntü akışını yeniden kodlamadan temiz bir kapsayıcıya yazar; piksel içeriği korunur.", fields:[],
+  },
+  {
     id:"image_potatoify", title:"Image Potatoify", category:"Image", kind:["image"], accent:"purple", description:"Resmi tekrar tekrar JPEG sıkıştırarak bozar.", detail:"Hazır profiller JPEG bloklarını, renk kaybını ve çözünürlük düşüşünü birlikte ayarlar.", fields:[select("profile","Quality profile","decent",[["decent","Decent"],["bad","Bad"],["terrible","Terrible"],["unbearable","Unbearable"],["custom","Custom"],["random","Random"]]),number("quality","Badness",5,1,10,1),number("times","Times to compress",5,1,100,1),number("scale","Scale divisor",2,1,10,1)],
   },
 ];
@@ -233,15 +245,15 @@ const enText: Record<string, [string, string]> = {
   interpolation:["Raises FPS by generating blended intermediate frames.","The target must be above the source FPS, a multiple of 60, and no more than 2400."],
   frame_blend:["Lowers FPS while blending frames.","Motion may gain trails similar to a long-exposure look."],
   speed:["Speeds up or slows down picture and sound together.","0.5× makes it twice as long; 2× makes it roughly half as long."],
-  stabilizer:["Reduces camera shake with a two-stage motion analysis.","Analyzes motion first, then stabilizes the picture while automatically reducing moving borders."],
+  stabilizer:["Reduces camera shake with a two-stage motion analysis.","Analyzes motion first, then stabilizes the picture while automatically reducing moving borders. Compatible audio is preserved without quality loss."],
   compression:["Controls quality with CRF and can recommend a value using VMAF.","CRF 0 is mathematically lossless but extremely large. 16 is very high quality, 20 balanced, and 24 smaller. Analyze Video measures a suitable CRF for this source."],
   discord_compressor:["Compresses a video to fit a Discord upload-size limit.","File size is a fixed budget: longer duration and larger audio leave less room for picture. Smart mode adjusts audio, resolution, and FPS together; two-pass encoding distributes the remaining video budget more efficiently across scenes."],
   potatoify:["Deliberately damages FPS, resolution, and bitrate together.","Creates a low-quality internet video or meme look."],
   text:["Places multiple editable text layers over the video.","Add a text layer, then select, drag, and resize it directly in the preview."],
-  image_overlay:["Places an image or transparent logo over the video.","Drag the logo in the preview and resize it from its edges. Set its time range on the timeline and opacity in the menu."],
+  image_overlay:["Places an image or transparent logo over the media.","Drag the logo in the preview and resize it from its edges; set opacity in the menu. For video, choose its time range on the timeline."],
   color:["Adjusts color, tone, detail, and cleanup with a live preview.","Only enabled filters are rendered. Unapplied changes reset when you leave the tool."],
   noise:["Adds animated analogue grain/noise.","For 720p, 3 is safe and 6 is a balanced starting point."],
-  blur_pixelate:["Hides a fixed rectangular area with blur or pixelation.","Draw and resize the rectangle in the preview. Its source-relative coordinates are used for export."],
+  blur_pixelate:["Hides a fixed rectangular area with blur or pixelation.","Draw and resize the rectangle in the preview. Its source-relative coordinates are used for export, and compatible audio is copied unchanged."],
   encode:["Re-encodes using the selected CPU or hardware codec.","FFmpeg reports a clear error if the hardware encoder is unavailable."],
   proxy:["Creates a lightweight working copy that plays smoothly while editing.","The source is untouched. It uses H.264, fast decoding settings, and a short GOP, while copying every audio track without re-encoding. Auto chooses a suitable height for the source."],
   merge_videos:["Joins multiple videos in the order you choose.","Auto merges compatible files losslessly and safely normalizes incompatible files before joining them."],
@@ -259,9 +271,11 @@ const enText: Record<string, [string, string]> = {
   audio_convert:["Converts an audio file to another format.","AAC, MP3, WAV, FLAC, and OPUS are supported."],
   image_ratio:["Crops an image to common social-media aspect ratios.","The image is never stretched or enlarged. PNG preserves pixel data losslessly; JPEG is high quality but inherently lossy."],
   image_potatoify:["Damages an image through repeated JPEG compression.","Profiles adjust JPEG blocks, color loss, and resolution damage together."],
+  image_compressor:["Compresses an image by quality or a requested file size.","Target Size searches for the closest practical quality without changing the image dimensions."],
+  metadata_cleaner:["Removes private and descriptive metadata from an image.","EXIF, GPS, XMP, IPTC and software/camera tags are discarded while pixel content is preserved."],
 };
 
-const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",speed:"Video Hızı",stabilizer:"Video Sabitleyici",compression:"Kalite / Sıkıştırma",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",image_overlay:"Görsel / Logo Kaplama",color:"Renk Ayarı",noise:"Görsel Gürültü",blur_pixelate:"Bulanıklaştır / Pikselleştir",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",merge_videos:"Videoları Birleştir",subtitles:"Altyazılar",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_potatoify:"Görsel Potatoify"};
+const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",speed:"Video Hızı",stabilizer:"Video Sabitleyici",compression:"Kalite / Sıkıştırma",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",image_overlay:"Görsel / Logo Kaplama",color:"Renk Ayarı",noise:"Görsel Gürültü",blur_pixelate:"Bulanıklaştır / Pikselleştir",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",merge_videos:"Videoları Birleştir",subtitles:"Altyazılar",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_compressor:"Görsel Sıkıştırıcı",metadata_cleaner:"Metadata Temizleyici",image_potatoify:"Görsel Potatoify"};
 const trCategories: Record<string,string> = {Transform:"Dönüştürme",Upscale:"Upscale",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Utilities:"Araçlar",Audio:"Ses",Image:"Görsel"};
 trTitles.transform = "Dönüştür";
 const trFields: Record<string,string> = {"Target ratio":"Hedef oran",Dimension:"Boyut yönü",Pixels:"Piksel","Output resolution":"Çıktı çözünürlüğü","Compression mode":"Sıkıştırma modu","Quality / CRF":"Kalite / CRF","Quality goal":"Kalite hedefi","Sample duration":"Örnek süresi","Target FPS":"Hedef FPS",Multiplier:"Hız çarpanı","Speed mode":"Hız yöntemi",CRF:"CRF","CPU preset":"CPU ön ayarı","Target bitrate":"Hedef bitrate","Discord size limit":"Discord boyut sınırı","Video codec":"Video codec'i","Maximum resolution":"En yüksek çözünürlük","Frame rate limit":"Kare hızı sınırı","Audio bitrate":"Ses bitrate'i","Compression speed":"Sıkıştırma hızı","Video badness":"Video bozulması","Audio badness":"Ses bozulması","Scale divisor":"Ölçek böleni",Text:"Yazı",Position:"Konum",Color:"Renk","Font size":"Yazı boyutu",Opacity:"Opaklık",Contrast:"Kontrast",Saturation:"Doygunluk",Brightness:"Parlaklık",Gamma:"Gama",Hue:"Renk tonu",Temperature:"Sıcaklık",Sharpen:"Keskinlik","Gaussian Blur":"Gauss Bulanıklığı",Denoise:"Gürültü azaltma",Deband:"Bant giderme",Vignette:"Vinyet",Grayscale:"Gri tonlama",Interlace:"Tarama","Noise amount":"Gürültü miktarı",Severity:"Şiddet",Encoder:"Kodlayıcı",Quality:"Kalite","Pixel format":"Piksel formatı","Audio tracks":"Ses parçaları","Selected audio track":"Seçili ses parçası",Start:"Başlangıç",End:"Bitiş","Cut mode":"Kesim yöntemi",Container:"Kapsayıcı",Timestamp:"Zaman",Format:"Format",Duration:"Süre",Height:"Yükseklik","Maximum colors":"En fazla renk","Palette mode":"Palet yöntemi",Dithering:"Renk geçişi",Transparency:"Şeffaflık",Loop:"Tekrar","Audio format":"Ses formatı","Replacement audio":"Yeni ses dosyası","Output format":"Çıktı formatı",Badness:"Bozulma","Times to compress":"Sıkıştırma sayısı","Detection profile":"Algılama profili","Proxy resolution":"Proxy çözünürlüğü","Proxy quality":"Proxy kalitesi","Repair method":"Onarım yöntemi",Strength:"Şiddet","Overlay image":"Kaplama görseli",Size:"Boyut",Margin:"Kenar boşluğu",Mode:"Mod","Merge mode":"Birleştirme modu",Videos:"Videolar",Action:"İşlem","Subtitle file":"Altyazı dosyası","Subtitle track":"Altyazı parçası"};

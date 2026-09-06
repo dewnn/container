@@ -47,7 +47,7 @@
   interface SubtitleTrack { index:number; codec:string; language:string|null; title:string|null }
   interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
-  interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
+  interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
   interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean> }
   interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown }
 
@@ -75,6 +75,7 @@
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
   let downloaderOpen = $state(false);
   let downloaderBusy = $state(false);
+  let autoCutBusy=$state(false),batchBusy=$state(false);
   let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
@@ -87,11 +88,16 @@
   let toolboxCanvas: HTMLElement | null = $state(null);
   let transformCanvasWidth = $state(0);
   let transformCanvasHeight = $state(0);
+  let toolboxMetadataVersion=$state(0);
   let transformSourceBox: HTMLElement | null = $state(null);
   let toolboxCurrent = $state(0);
   let toolboxPlaying = $state(false);
   let toolboxVolume = $state(1);
   let renderedImageUrl = $state("");
+  let renderedImageSize = $state(0);
+  let compressionEstimate = $state<number|null>(null);
+  let compressionEstimateLoading = $state(false);
+  let compressionEstimateId = 0;
   let qualityAnalysis: QualityAnalysis | null = $state(null);
   let qualityAnalyzing = $state(false);
   let hashResult = $state("");
@@ -114,6 +120,7 @@
   let customNumberFields: Record<string, boolean> = $state({});
   let toolboxFilmstripUrl = $state("");
   let toolboxFilmstripLoading = $state(false);
+  let filmstripLoadId=0,subtitleLoadId=0;
   let toolboxTimeline: HTMLElement | null = $state(null);
   let timelineHover = $state<number|null>(null);
   let language: "tr" | "en" = $state("en");
@@ -192,12 +199,14 @@
     if(tool.id==="merge_videos")return ffmpegCapabilities.concat;
     return true;
   });
-  const timelineTool = $derived.by(()=>selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
+  const timelineTool = $derived.by(()=>media?.kind==="video"&&selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
+  const operationBusy=$derived(busy||qualityAnalyzing||autoCutBusy||batchBusy||downloaderBusy);
   const canUndo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
   const canRedo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenDrop: UnlistenFn | null = null;
   let timelineIgnoreClickUntil = 0;
+  let mediaLoadId = 0;
 
   function cloneEditorValue<T>(value:T):T{return JSON.parse(JSON.stringify(value)) as T}
 
@@ -310,11 +319,16 @@
     return `${hours ? `${String(hours).padStart(2,"0")}:` : ""}${String(minutes).padStart(2,"0")}:${String(seconds).padStart(2,"0")}.${String(millis).padStart(3,"0")}`;
   };
   const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  function previewSourceDimensions(){
+    const current=toolboxVideo?.getAttribute("src")===mediaUrl&&toolboxVideo.videoWidth&&toolboxVideo.videoHeight;
+    return current?{width:toolboxVideo!.videoWidth,height:toolboxVideo!.videoHeight}:{width:media?.width??0,height:media?.height??0};
+  }
   const upscaleStandards = [720,1080,1440,2160,4320];
 
   function upscaleDimensions(targetEdge:number){
     if(!media?.width||!media?.height)return null;
-    const landscape=media.width>=media.height,ratio=media.width/media.height;
+    const {width:sourceWidth,height:sourceHeight}=previewSourceDimensions();
+    const landscape=sourceWidth>=sourceHeight,ratio=sourceWidth/sourceHeight;
     const even=(value:number)=>Math.max(2,Math.round(value/2)*2);
     const width=landscape?even(targetEdge*ratio):even(targetEdge);
     const height=landscape?even(targetEdge):even(targetEdge/ratio);
@@ -322,7 +336,7 @@
   }
   function upscaleTargets(){
     if(!media?.width||!media?.height)return [];
-    const sourceEdge=Math.min(media.width,media.height);
+    const source=previewSourceDimensions(),sourceEdge=Math.min(source.width,source.height);
     const names:Record<number,string>={720:"720p HD",1080:"1080p Full HD",1440:"1440p / 2K QHD",2160:"2160p / 4K UHD",4320:"4320p / 8K UHD"};
     return upscaleStandards.flatMap(targetEdge=>{
       const dimensions=upscaleDimensions(targetEdge);
@@ -363,6 +377,7 @@
     }
     error = "";
     output = "";
+    renderedImageSize = 0;
     hashResult = "";
     if (changed) qualityAnalysis = null;
     if (media && selected.id === "interpolation" && media.fps) {
@@ -413,7 +428,12 @@
     }
     if(selected?.id==="merge_videos")return ["container","mode"].includes(key);
     if(selected?.id==="blur_pixelate"&&key.startsWith("region_"))return false;
-    if(selected?.id==="image_overlay")return ["image_path","opacity","start","end"].includes(key);
+    if(selected?.id==="image_overlay")return media?.kind==="image"?["image_path","opacity"].includes(key):["image_path","opacity","start","end"].includes(key);
+    if(selected?.id==="image_compressor"){
+      if(key==="quality")return toolValue("mode")==="quality";
+      if(key==="target_kb")return toolValue("mode")==="target";
+      if(key==="jpeg_background")return toolValue("format")==="jpg";
+    }
     if(selected?.id==="subtitles"){
       const action=toolValue("action");
       if(key==="subtitle_path")return ["add","burn"].includes(action);
@@ -433,11 +453,14 @@
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
   async function loadSubtitleTracks(){
     if(!media)return;
+    const path=media.path,id=++subtitleLoadId;
     try{
-      subtitleTracks=await invoke<SubtitleTrack[]>("probe_subtitles",{path:media.path});
+      const tracks=await invoke<SubtitleTrack[]>("probe_subtitles",{path});
+      if(id!==subtitleLoadId||media?.path!==path||selected?.id!=="subtitles")return;
+      subtitleTracks=tracks;
       const field=toolField("subtitle_track");
       if(field){field.options=subtitleTracks.map((track,index)=>({value:String(track.index),label:`${language==="tr"?"Parça":"Track"} ${index+1} · ${track.codec.toUpperCase()}${track.language?` · ${track.language.toUpperCase()}`:""}${track.title?` · ${track.title}`:""}`}));field.value=field.options[0]?.value??""}
-    }catch(reason){subtitleTracks=[];reportProblem(reason)}
+    }catch(reason){if(id===subtitleLoadId&&media?.path===path){subtitleTracks=[];reportProblem(reason)}}
   }
   async function addMergeVideos(){
     const paths=await open({multiple:true,filters:[{name:"Video",extensions:["mp4","mkv","mov","avi","webm","m4v"]}]});
@@ -499,16 +522,17 @@
     const fonts=await ensureSystemFonts();
     const font=fonts.find(item=>item.name.toLowerCase()==="impact")??fonts.find(item=>item.name.toLowerCase().startsWith("arial"))??fonts[0];
     if(!font){error=language==="tr"?"Bilgisayarda kullanılabilir font bulunamadı.":"No usable system font was found.";return}
-    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,fontName:font.name,font_path:font.path,outline:0,outline_color:"#000000",shadow:0,shadow_color:"#000000",background:false,background_color:"#000000",background_opacity:65,background_padding:12};
+    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,align:"center",fontName:font.name,font_path:font.path,outline:0,outline_color:"#000000",shadow:0,shadow_color:"#000000",background:false,background_color:"#000000",background_opacity:65,background_padding:12};
     textLayers=[...textLayers,layer];activeTextId=layer.id;
   }
   function updateTextLayer(patch:Partial<TextLayer>){textLayers=textLayers.map(layer=>layer.id===activeTextId?{...layer,...patch}:layer)}
   function removeTextLayer(id:number){textLayers=textLayers.filter(layer=>layer.id!==id);if(activeTextId===id)activeTextId=textLayers[0]?.id??null}
   function textLayerStyle(layer:TextLayer){
     const box=mediaDisplayBox();if(!box||!media?.width)return "display:none";
-    const scale=box.width/media.width;
+    const scale=box.width/(previewSourceDimensions().width||media.width);
     const outline=Math.max(0,layer.outline*scale),shadow=Math.max(0,layer.shadow*scale),padding=Math.max(0,layer.background_padding*scale);
-    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)};-webkit-text-stroke:${outline}px ${layer.outline_color};text-shadow:${shadow?`${shadow}px ${shadow}px ${Math.max(1,shadow*.7)}px ${layer.shadow_color}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"3px 8px"}`;
+    const translate=layer.align==="left"?"0":layer.align==="right"?"-100%":"-50%";
+    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;transform:translate(${translate},-50%);text-align:${layer.align};font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)};-webkit-text-stroke:${outline}px ${layer.outline_color};text-shadow:${shadow?`${shadow}px ${shadow}px ${Math.max(1,shadow*.7)}px ${layer.shadow_color}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"3px 8px"}`;
   }
   function chooseTextFont(path:string){const font=systemFonts.find(item=>item.path===path);if(font)updateTextLayer({fontName:font.name,font_path:font.path})}
   function setTextColor(value:string){if(/^#[0-9a-f]{6}$/i.test(value))updateTextLayer({color:value.toLowerCase()})}
@@ -538,7 +562,7 @@
     const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
   }
-  const transformPresets = ["off","free","16:9","9:16","1:1","4:5","4:3","2:3","3:2","191:100"];
+  const transformPresets = ["off","free","16:9","9:16","1:1","4:5","5:4","4:3","3:4","2:3","3:2","191:100"];
   const transformHandles = ["nw","n","ne","e","se","s","sw","w"] as const;
   const colorGroups=[
     {title:"Color Adjustments",keys:["brightness","contrast","saturation","gamma"]},
@@ -549,8 +573,9 @@
   ];
   const colorLabels:Record<string,string>={brightness:"Brightness",contrast:"Contrast",saturation:"Saturation",gamma:"Gamma",hue:"Hue",temperature:"Temperature",sharpen:"Sharpen",blur:"Gaussian Blur",deband:"Deband",vignette:"Vignette"};
   function mediaDisplayBox(){
+    toolboxMetadataVersion;
     if(!toolboxCanvas||!media?.width||!media?.height)return null;
-    const videoWidth=toolboxVideo?.videoWidth||media.width,videoHeight=toolboxVideo?.videoHeight||media.height;
+    const {width:videoWidth,height:videoHeight}=previewSourceDimensions();
     const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,ratio=videoWidth/videoHeight;
     const availableWidth=Math.max(1,stageWidth-16),availableHeight=Math.max(1,stageHeight-16);
     let width=availableWidth,height=width/ratio;if(height>availableHeight){height=availableHeight;width=height*ratio}
@@ -565,9 +590,11 @@
     return()=>observer.disconnect();
   });
   function transformDisplayBox(){
+    toolboxMetadataVersion;
     if(!toolboxCanvas||!media?.width||!media?.height)return null;
     const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight,rotation=Number(toolValue("rotate")),swapped=rotation===90||rotation===270;
-    const ratio=swapped?media.height/media.width:media.width/media.height;
+    const {width:sourceWidth,height:sourceHeight}=previewSourceDimensions();
+    const ratio=swapped?sourceHeight/sourceWidth:sourceWidth/sourceHeight;
     // Keep a small interaction gutter so crop borders and resize handles remain
     // fully visible even when the source aspect ratio fills one stage axis.
     const availableWidth=Math.max(1,stageWidth-16),availableHeight=Math.max(1,stageHeight-16);
@@ -579,10 +606,22 @@
     const box=transformDisplayBox();if(!box)return "inset:0";
     return `left:${(box.stageWidth-box.width)/2}px;top:${(box.stageHeight-box.height)/2}px;width:${box.width}px;height:${box.height}px`;
   }
+  function mediaBoxStyle(){
+    const box=mediaDisplayBox();if(!box)return "inset:0";
+    return `left:${(box.stageWidth-box.width)/2}px;top:${(box.stageHeight-box.height)/2}px;width:${box.width}px;height:${box.height}px`;
+  }
   function transformPreviewStyle(){
     if(selected?.id!=="transform")return "";
     const box=transformDisplayBox();if(!box)return "";
     const rotation=Number(toolValue("rotate"));
+    if(media?.kind==="image"&&rotation===0&&toolValue("fit_mode")==="contain"&&!['off','free'].includes(toolValue("crop_mode"))){
+      const [rw,rh]=toolValue("crop_mode").split(":").map(Number),ratio=rw/rh;
+      const availableWidth=Math.max(1,box.stageWidth-16),availableHeight=Math.max(1,box.stageHeight-16);
+      let width=availableWidth,height=width/ratio;if(height>availableHeight){height=availableHeight;width=height*ratio}
+      const background=toolValue("canvas_background"),color=background==="black"?"#000":background==="white"?"#fff":background==="custom"?toolValue("canvas_color"):"repeating-conic-gradient(#25252a 0 25%,#161619 0 50%) 0/12px 12px";
+      const flipX=toolValue("flip_h")==="true"?-1:1,flipY=toolValue("flip_v")==="true"?-1:1;
+      return `position:absolute;left:50%;top:50%;width:${width}px;height:${height}px;object-fit:contain;background:${color};transform:translate(-50%,-50%) scale(${flipX},${flipY})`;
+    }
     const width=box.swapped?box.height:box.width,height=box.swapped?box.width:box.height;
     const flipX=toolValue("flip_h")==="true"?-1:1,flipY=toolValue("flip_v")==="true"?-1:1;
     return `position:absolute;left:50%;top:50%;width:${width}px;height:${height}px;transform:translate(-50%,-50%) scale(${flipX},${flipY}) rotate(${rotation}deg)`;
@@ -595,7 +634,8 @@
       return;
     }
     const [rw,rh]=mode.split(":").map(Number),rotation=Number(toolValue("rotate"));
-    const sourceRatio=rotation===90||rotation===270?(media?.height??9)/(media?.width??16):(media?.width??16)/(media?.height??9),target=rw/rh;
+    const source=previewSourceDimensions(),sourceWidth=source.width||16,sourceHeight=source.height||9;
+    const sourceRatio=rotation===90||rotation===270?sourceHeight/sourceWidth:sourceWidth/sourceHeight,target=rw/rh;
     let width=100,height=100;
     if(sourceRatio>target)width=target/sourceRatio*100;else height=sourceRatio/target*100;
     setToolNumber("crop_x",(100-width)/2);setToolNumber("crop_y",(100-height)/2);setToolNumber("crop_w",width);setToolNumber("crop_h",height);
@@ -649,14 +689,23 @@
   function overlayPreviewStyle(){
     const box=mediaDisplayBox();if(!box||selected?.id!=="image_overlay")return "display:none";
     const width=box.width*toolNumber("size")/100;
-    const x=(box.stageWidth-box.width)/2+box.width*toolNumber("x")/100,y=(box.stageHeight-box.height)/2+box.height*toolNumber("y")/100;
-    return `position:absolute;z-index:4;left:${x}px;top:${y}px;width:${width}px;transform:translate(-50%,-50%)`;
+    const aspect=(overlayPreviewImage?.naturalWidth||1)/(overlayPreviewImage?.naturalHeight||1),height=width/aspect;
+    const left=(box.stageWidth-box.width)/2,top=(box.stageHeight-box.height)/2,margin=toolNumber("margin")/100;
+    const position=toolValue("position");
+    let x=left+box.width*toolNumber("x")/100-width/2,y=top+box.height*toolNumber("y")/100-height/2;
+    if(position==="top_left"){x=left+box.width*margin;y=top+box.height*margin}
+    if(position==="top_right"){x=left+box.width-width-box.width*margin;y=top+box.height*margin}
+    if(position==="bottom_left"){x=left+box.width*margin;y=top+box.height-height-box.height*margin}
+    if(position==="bottom_right"){x=left+box.width-width-box.width*margin;y=top+box.height-height-box.height*margin}
+    if(position==="center"){x=left+(box.width-width)/2;y=top+(box.height-height)/2}
+    return `position:absolute;z-index:4;left:${x}px;top:${y}px;width:${width}px`;
   }
   function startOverlayDrag(event:PointerEvent,resizeDirection:-1|0|1=0){
     if(!toolboxCanvas||selected?.id!=="image_overlay")return;event.preventDefault();event.stopPropagation();
     const box=mediaDisplayBox();if(!box)return;const startX=event.clientX,startY=event.clientY,origin={x:toolNumber("x"),y:toolNumber("y"),size:toolNumber("size")};
     const aspect=(overlayPreviewImage?.naturalWidth||1)/(overlayPreviewImage?.naturalHeight||1);
     const move=(moveEvent:PointerEvent)=>{
+      setToolValue("position","custom");
       if(resizeDirection){setToolNumber("size",Math.max(1,Math.min(100,origin.size+(moveEvent.clientX-startX)/box.width*100*resizeDirection)));return}
       const size=toolNumber("size"),halfW=size/2,halfH=(box.width*size/100/aspect)/box.height*50;
       setToolNumber("x",Math.max(halfW,Math.min(100-halfW,origin.x+(moveEvent.clientX-startX)/box.width*100)));
@@ -673,8 +722,8 @@
   }
   async function loadToolboxFilmstrip(){
     if(!media||media.kind!=="video"||toolboxFilmstripLoading||toolboxFilmstripUrl)return;
-    toolboxFilmstripLoading=true;
-    try{toolboxFilmstripUrl=await invoke<string>("compute_video_filmstrip",{path:media.path})}catch(reason){error=String(reason);reportProblem(reason)}finally{toolboxFilmstripLoading=false}
+    const path=media.path,id=++filmstripLoadId;toolboxFilmstripLoading=true;
+    try{const result=await invoke<string>("compute_video_filmstrip",{path});if(id===filmstripLoadId&&media?.path===path)toolboxFilmstripUrl=result}catch(reason){if(id===filmstripLoadId&&media?.path===path){error=String(reason);reportProblem(reason)}}finally{if(id===filmstripLoadId)toolboxFilmstripLoading=false}
   }
   function timelineAt(clientX:number){if(!toolboxTimeline||!media?.duration)return 0;const rect=toolboxTimeline.getBoundingClientRect();return Math.max(0,Math.min(media.duration,(clientX-rect.left)/rect.width*media.duration))}
   function seekTimeline(event:MouseEvent){
@@ -726,6 +775,7 @@
     if(first)chooseTool(first);else selected=null;
   }
   function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
+    if(mode!==workspaceMode&&operationBusy)return;
     downloaderOpen=false;
     if(mode!==workspaceMode&&workspaceMode==="toolbox")resetSelectedTool();
     workspaceMode=mode;
@@ -773,14 +823,16 @@
   async function selectMedia() {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Media", extensions: ["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff"] }],
+      filters: [{ name: "Media", extensions: ["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif"] }],
     });
     if (typeof path === "string") await loadMedia(path);
   }
 
   async function loadMedia(path: string) {
-    if (busy) return;
+    if (operationBusy) return;
+    const loadId=++mediaLoadId;
     const dependency = ffmpegStatus ?? await refreshFfmpegStatus();
+    if(loadId!==mediaLoadId)return;
     if (!dependency.ready) {
       dependencyPanel = true;
       error = language === "tr" ? "FFmpeg ve FFprobe bulunamadı. Devam etmek için ikisini PATH içine kur." : "FFmpeg and FFprobe were not found. Install both on PATH to continue.";
@@ -791,7 +843,9 @@
     output = "";
     jobStatus = "probing media";
     try {
-      media = await invoke<MediaInfo>("probe_media", { path });
+      const loaded=await invoke<MediaInfo>("probe_media", { path });
+      if(loadId!==mediaLoadId)return;
+      media = loaded;
       activeKind = media.kind;
       mediaUrl = convertFileSrc(path);
       workspaceMode = "toolbox";
@@ -800,6 +854,7 @@
       toolboxCurrent = 0;
       toolboxPlaying = false;
       renderedImageUrl = "";
+      renderedImageSize = 0;
       qualityAnalysis = null;
       imageCompare = 50;
       imageZoom = 1;
@@ -808,13 +863,14 @@
       imagePanY = 0;
       imageDragging = false;
       imageViewInitialized = false;
-      toolboxFilmstripUrl="";toolboxFilmstripLoading=false;
+      filmstripLoadId++;subtitleLoadId++;toolboxFilmstripUrl="";toolboxFilmstripLoading=false;subtitleTracks=[];
       const first = kindTools(activeKind)[0];
       if (first) chooseTool(first);
       progress = 0;
       jobStatus = "ready";
       resetEditorHistory();
     } catch (reason) {
+      if(loadId!==mediaLoadId)return;
       media = null;
       selected = null;
       editHistory = [];
@@ -826,7 +882,9 @@
   }
 
   function closeMedia() {
-    if (busy) return;
+    if (operationBusy) return;
+    mediaLoadId++;
+    filmstripLoadId++;subtitleLoadId++;
     media = null;
     selected = null;
     mediaUrl = "";
@@ -837,6 +895,7 @@
     toolboxCurrent = 0;
     toolboxPlaying = false;
     renderedImageUrl = "";
+    renderedImageSize = 0;
     qualityAnalysis = null;
     imageCompare = 50;
     imageZoom = 1;
@@ -978,6 +1037,26 @@
     return params;
   }
 
+  $effect(()=>{
+    const path=media?.path,id=selected?.id,mode=toolValue("mode"),format=toolValue("format"),quality=toolNumber("quality"),background=toolValue("jpeg_background");
+    const requestId=++compressionEstimateId;
+    compressionEstimate=null;
+    compressionEstimateLoading=false;
+    if(!path||id!=="image_compressor"||mode!=="quality"||busy)return;
+    compressionEstimateLoading=true;
+    const timer=window.setTimeout(async()=>{
+      try{
+        const size=await invoke<number>("estimate_image_compression",{request:{input:path,operation:"image_compressor",params:{mode,format,quality:String(quality),target_kb:"1",jpeg_background:background||"#ffffff"}}});
+        if(requestId===compressionEstimateId)compressionEstimate=size;
+      }catch{
+        if(requestId===compressionEstimateId)compressionEstimate=null;
+      }finally{
+        if(requestId===compressionEstimateId)compressionEstimateLoading=false;
+      }
+    },400);
+    return()=>window.clearTimeout(timer);
+  });
+
   async function analyzeCompression(){
     if(!media||selected?.id!=="compression"||qualityAnalyzing||busy)return;
     const analyzedPath=media.path;
@@ -1011,18 +1090,18 @@
       if (fps <= media.fps || fps > 2400 || fps % 60 !== 0) return `Interpolation FPS ${media.fps.toFixed(2)} değerinden yüksek, 60'ın katı ve en fazla 2400 olmalı.`;
     }
     if (tool.id === "frame_blend" && media?.fps && Number(params.fps) >= media.fps) return `Frame Blending hedefi ${media.fps.toFixed(2)} FPS değerinden düşük olmalı.`;
-    if (tool.id === "upscale" && media?.width && media?.height && Number(params.target_edge) <= Math.min(media.width,media.height)) return language==="tr"?"Bu kaynak için daha yüksek bir standart çözünürlük hedefi yok.":"There is no higher standard resolution target for this source.";
+    if (tool.id === "upscale" && media?.width && media?.height && Number(params.target_edge) <= Math.min(previewSourceDimensions().width,previewSourceDimensions().height)) return language==="tr"?"Bu kaynak için daha yüksek bir standart çözünürlük hedefi yok.":"There is no higher standard resolution target for this source.";
     if (["cut", "gif"].includes(tool.id) && Number(params.start) >= Number(params.end ?? Number(params.start) + Number(params.duration))) {
       if (tool.id === "cut") return "Bitiş zamanı başlangıçtan büyük olmalı.";
     }
     if (tool.id === "replace_audio" && !params.audio_path) return "Önce replacement audio dosyasını seç.";
     if(tool.id==="merge_videos"&&mergeInputs.length<2)return language==="tr"?"Birleştirmek için en az iki video seç.":"Choose at least two videos to merge.";
     if(tool.id==="image_overlay"&&!params.image_path)return language==="tr"?"Önce bir kaplama görseli seç.":"Choose an overlay image first.";
-    if(tool.id==="image_overlay"&&Number(params.end)<=Number(params.start))return language==="tr"?"Bitiş zamanı başlangıçtan sonra olmalı.":"End time must be later than start time.";
+    if(tool.id==="image_overlay"&&media?.kind==="video"&&Number(params.end)<=Number(params.start))return language==="tr"?"Bitiş zamanı başlangıçtan sonra olmalı.":"End time must be later than start time.";
     if(tool.id==="subtitles"&&["add","burn"].includes(params.action)&&!params.subtitle_path)return language==="tr"?"Önce bir altyazı dosyası seç.":"Choose a subtitle file first.";
     if(tool.id==="subtitles"&&params.action==="extract"&&!params.subtitle_track)return language==="tr"?"Bu videoda çıkarılabilir altyazı parçası yok.":"This video has no subtitle track to extract.";
     if (tool.id === "text" && (!textLayers.length || textLayers.some(layer=>!layer.text.trim()))) return language==="tr"?"En az bir dolu yazı katmanı ekle.":"Add at least one non-empty text layer.";
-    if(tool.id==="color"&&!Object.values(colorEnabled).some(Boolean)&&toolValue("denoise")==="off"&&toolValue("grayscale")!=="on"&&toolValue("deinterlace")==="off")return language==="tr"?"Önce en az bir video filtresini etkinleştir.":"Enable at least one video filter.";
+    if(tool.id==="color"&&!Object.values(colorEnabled).some(Boolean)&&toolValue("denoise")==="off"&&toolValue("grayscale")!=="on"&&toolValue("deinterlace")==="off")return language==="tr"?"Önce en az bir filtreyi etkinleştir.":"Enable at least one filter.";
     if (tool.id === "discord_compressor") {
       if (!media?.duration || Number(params.target_mb) < 2) return language === "tr" ? "Discord sıkıştırması için geçerli bir süre ve en az 2 MB sınır gerekli." : "Discord compression needs a valid duration and a limit of at least 2 MB.";
       const budget=discordBudget();
@@ -1060,7 +1139,7 @@
       });
       output = result.output;
       const appliedTool=selected.id;
-      if(["color","text"].includes(appliedTool)){
+      if(media.kind==="video"&&["color","text"].includes(appliedTool)){
         media=await invoke<MediaInfo>("probe_media",{path:result.output});
         mediaUrl=`${convertFileSrc(result.output)}?applied=${Date.now()}`;
         toolboxCurrent=0;toolboxPlaying=false;
@@ -1070,6 +1149,7 @@
       }
       if (media.kind === "image") {
         renderedImageUrl = `${convertFileSrc(result.output)}?render=${Date.now()}`;
+        renderedImageSize = (await invoke<MediaInfo>("probe_media",{path:result.output})).size;
         imageCompare = 50;
       }
       elapsed = result.elapsed;
@@ -1255,13 +1335,14 @@
     window.addEventListener("container-toast",toastEvent);
     window.addEventListener("error",browserError);
     window.addEventListener("unhandledrejection",rejected);
+    let disposed=false;
     listen<ProgressEvent>("container-progress", (event) => {
       progress = Math.max(0, Math.min(100, event.payload.percent));
       speed = event.payload.speed || "—";
       frame = event.payload.frame || "—";
       elapsed = event.payload.time;
       jobStatus = event.payload.status || jobStatus;
-    }).then((fn) => unlistenProgress = fn);
+    }).then((fn) => {if(disposed)fn();else unlistenProgress=fn});
 
     getCurrentWebview().onDragDropEvent((event) => {
       if (event.payload.type === "enter" || event.payload.type === "over") dragActive = true;
@@ -1271,9 +1352,9 @@
         const path = event.payload.paths[0];
         if (path) loadMedia(path);
       }
-    }).then((fn) => unlistenDrop = fn);
+    }).then((fn) => {if(disposed)fn();else unlistenDrop=fn});
 
-    return () => { unlistenProgress?.(); unlistenDrop?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
+    return () => { disposed=true;unlistenProgress?.(); unlistenDrop?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -1309,11 +1390,11 @@
         <span><b>codec</b>{media.codec}</span><em>·</em><span><b>size</b>{formatBytes(media.size)}</span>
       </div>
       <nav class="mode-tabs" aria-label="Workspace">
-        <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")}>{t("toolbox")}</button>
-        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")}>SMARTCUT</button>{/if}
-        <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
+        <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")} disabled={operationBusy&&workspaceMode!=="toolbox"}>{t("toolbox")}</button>
+        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")} disabled={operationBusy&&workspaceMode!=="autocut"}>SMARTCUT</button>{/if}
+        <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
       </nav>
-      <button class="ghost top-cancel" onclick={closeMedia} disabled={busy}>{t("close")}</button>
+      <button class="ghost top-cancel" onclick={closeMedia} disabled={operationBusy}>{t("close")}</button>
     {:else}
       <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
       {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
@@ -1410,9 +1491,9 @@
     </section>
   {:else}
     {#if workspaceMode === "autocut" && media.kind === "video"}
-      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} />
+      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
     {:else if workspaceMode === "batch"}
-      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} />
+      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} />
     {:else}
     <section class="workspace">
       <aside class="tool-pane panel">
@@ -1453,7 +1534,7 @@
             {#if media.kind === "video"}
               <div class="video-canvas" bind:this={toolboxCanvas}>
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
+              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={()=>{toolboxMetadataVersion++;if(selected?.id==="upscale")configureUpscale(selected)}} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
               {#if selected?.id === "transform" && toolValue("crop_mode") !== "off"}
                 <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                   <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
@@ -1485,7 +1566,7 @@
                 </button>
               {/if}
               {#if selected?.id === "blur_pixelate"}
-                <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
+                <div class="transform-source-box" bind:this={transformSourceBox} style={mediaBoxStyle()}>
                   <div class="effect-region" class:pixelated={toolValue("effect")==="pixelate"} style:left={`${toolNumber("region_x")}%`} style:top={`${toolNumber("region_y")}%`} style:width={`${toolNumber("region_w")}%`} style:height={`${toolNumber("region_h")}%`} style={`--effect-strength:${Math.max(1,toolNumber("strength")/3)}px`} onpointerdown={(event)=>startEffectRegion(event,"move")} role="presentation">
                     {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize effect ${handle}`} onpointerdown={(event)=>startEffectRegion(event,handle)}></button>{/each}
                   </div>
@@ -1503,10 +1584,10 @@
               </div>
             {:else if media.kind === "audio"}
               <div class="audio-visual"><div class="disc">◉</div><h2>{media.name}</h2><p>{media.codec.toUpperCase()} · {formatDuration(media.duration)}</p><audio src={mediaUrl} controls></audio></div>
-            {:else if selected?.id === "transform"}
+            {:else if selected && ["transform","text","image_overlay","blur_pixelate","color"].includes(selected.id)}
               <div class="transform-image-canvas" bind:this={toolboxCanvas}>
-                <img style={transformPreviewStyle()} src={mediaUrl} alt={media.name} draggable="false" />
-                {#if toolValue("crop_mode") !== "off"}
+                <img style={selected.id==="transform"?transformPreviewStyle():`${neutralPreviewStyle()};${colorPreviewStyle()}`} src={mediaUrl} alt={media.name} draggable="false" />
+                {#if selected.id === "transform" && toolValue("crop_mode") !== "off" && toolValue("fit_mode") !== "contain"}
                   <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                     <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
                     <div class="crop-shade left" style:left="0" style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_x")}%`} style:height={`${toolNumber("crop_h")}%`}></div>
@@ -1515,6 +1596,28 @@
                     <div class="transform-crop" style:left={`${toolNumber("crop_x")}%`} style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_w")}%`} style:height={`${toolNumber("crop_h")}%`} onpointerdown={(event)=>startTransformCrop(event,"move")} role="presentation">
                       <i class="crop-grid v one"></i><i class="crop-grid v two"></i><i class="crop-grid h one"></i><i class="crop-grid h two"></i>
                       {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize crop ${handle}`} onpointerdown={(event)=>startTransformCrop(event,handle)}></button>{/each}
+                    </div>
+                  </div>
+                {/if}
+                {#if selected.id === "text"}
+                  <div class="text-preview-layer">
+                    {#each textLayers as layer (layer.id)}
+                      <button class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} onclick={()=>activeTextId=layer.id} onpointerdown={(event)=>startTextDrag(event,layer)}>
+                        <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i><span>{layer.text}</span><i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+                {#if selected.id === "image_overlay" && toolValue("image_path")}
+                  <button class="overlay-preview-box" style={overlayPreviewStyle()} onpointerdown={(event)=>startOverlayDrag(event)} aria-label="Move overlay">
+                    <img bind:this={overlayPreviewImage} src={convertFileSrc(toolValue("image_path"))} alt="Overlay preview" draggable="false" style:opacity={toolNumber("opacity")/100} />
+                    <i class="text-size-handle left" role="presentation" aria-label="Resize overlay from left" onpointerdown={(event)=>startOverlayDrag(event,-1)}></i><i class="text-size-handle right" role="presentation" aria-label="Resize overlay from right" onpointerdown={(event)=>startOverlayDrag(event,1)}></i>
+                  </button>
+                {/if}
+                {#if selected.id === "blur_pixelate"}
+                  <div class="transform-source-box" bind:this={transformSourceBox} style={mediaBoxStyle()}>
+                    <div class="effect-region" class:pixelated={toolValue("effect")==="pixelate"} style:left={`${toolNumber("region_x")}%`} style:top={`${toolNumber("region_y")}%`} style:width={`${toolNumber("region_w")}%`} style:height={`${toolNumber("region_h")}%`} style={`--effect-strength:${Math.max(1,toolNumber("strength")/3)}px`} onpointerdown={(event)=>startEffectRegion(event,"move")} role="presentation">
+                      {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize effect ${handle}`} onpointerdown={(event)=>startEffectRegion(event,handle)}></button>{/each}
                     </div>
                   </div>
                 {/if}
@@ -1640,6 +1743,7 @@
                   </div>
                   <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.size,8,600)}%`} min="8" max="600" step="1" value={layer.size} oninput={(event)=>updateTextLayer({size:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.size)} px</small></label>
                   <label class="field"><span>{language==="tr"?"Opaklık":"Opacity"}<small>%</small></span><input type="range" style={`--range-pct:${rangePercent(layer.opacity,0,100)}%`} min="0" max="100" step="1" value={layer.opacity} oninput={(event)=>updateTextLayer({opacity:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.opacity)}%</small></label>
+                  <label class="field"><span>{language==="tr"?"Hizalama":"Alignment"}</span><select value={layer.align} onchange={(event)=>updateTextLayer({align:event.currentTarget.value as "left"|"center"|"right"})}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
                   <details class="text-style-options">
                     <summary>{language==="tr"?"Kontur, gölge ve arka plan":"Outline, shadow & background"}</summary>
                     <label class="field"><span>{language==="tr"?"Kontur":"Outline"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.outline,0,20)}%`} min="0" max="20" step="1" value={layer.outline} oninput={(event)=>updateTextLayer({outline:Number(event.currentTarget.value)})}><small class="hint">{layer.outline}px</small></label>
@@ -1712,9 +1816,16 @@
               <section>
                 <header><b>CROP</b><small>{toolValue("crop_mode")==="off" ? (language==="tr"?"kapalı":"off") : `${toolNumber("crop_w").toFixed(1)}% × ${toolNumber("crop_h").toFixed(1)}%`}</small></header>
                 <div class="transform-options crop-options">
-                  {#each transformPresets as preset}<button class:active={toolValue("crop_mode")===preset} onclick={()=>setCropPreset(preset)}>{preset==="191:100"?"1.91:1":preset.toUpperCase()}</button>{/each}
+                  {#each transformPresets.filter(preset=>(media?.kind==="image"||!["5:4","3:4"].includes(preset))&&!(media?.kind==="image"&&toolValue("fit_mode")==="contain"&&preset==="free")) as preset}<button class:active={toolValue("crop_mode")===preset} onclick={()=>setCropPreset(preset)}>{preset==="off"?(media?.kind==="image"?"ORIGINAL":"OFF"):preset==="191:100"?"1.91:1":preset.toUpperCase()}</button>{/each}
                 </div>
-                {#if toolValue("crop_mode")!=="off"}<p>{language==="tr"?"Kadrajı önizlemede sürükle; kenar ve köşelerden serbestçe boyutlandır.":"Drag the frame in the preview; resize freely from its edges and corners."}</p>{/if}
+                {#if toolValue("crop_mode")!=="off" && toolValue("fit_mode")!=="contain"}<p>{language==="tr"?"Kadrajı önizlemede sürükle; kenar ve köşelerden serbestçe boyutlandır.":"Drag the frame in the preview; resize freely from its edges and corners."}</p>{/if}
+                {#if media.kind === "image"}
+                  <details class="text-style-options"><summary>{language==="tr"?"Sığdır / Tuval":"Fit / Canvas"}</summary>
+                    <div class="transform-options two"><button class:active={toolValue("fit_mode")==="crop"} onclick={()=>setToolValue("fit_mode","crop")}>{language==="tr"?"Kırp / doldur":"Crop / fill"}</button><button class:active={toolValue("fit_mode")==="contain"} onclick={()=>{setToolValue("fit_mode","contain");if(toolValue("crop_mode")==="free")setCropPreset("off")}}>{language==="tr"?"Sığdır / tuval":"Fit / contain"}</button></div>
+                    {#if toolValue("fit_mode")==="contain" && toolValue("crop_mode")!=="off"}<label class="field"><span>{language==="tr"?"Tuval arka planı":"Canvas background"}</span><select value={toolValue("canvas_background")} onchange={(event)=>setToolValue("canvas_background",event.currentTarget.value)}><option value="transparent">{language==="tr"?"Şeffaf":"Transparent"}</option><option value="black">{language==="tr"?"Siyah":"Black"}</option><option value="white">{language==="tr"?"Beyaz":"White"}</option><option value="custom">{language==="tr"?"Özel renk":"Custom color"}</option></select></label>{/if}
+                    {#if toolValue("fit_mode")==="contain" && toolValue("canvas_background")==="custom"}<label class="field"><span>{language==="tr"?"Arka plan rengi":"Background color"}</span><input type="text" maxlength="7" value={toolValue("canvas_color")} oninput={(event)=>setToolValue("canvas_color",event.currentTarget.value)}></label>{/if}
+                  </details>
+                {/if}
               </section>
               <section>
                 <header><b>ROTATE</b><small>{toolValue("rotate")}°</small></header>
@@ -1731,13 +1842,14 @@
                   <label><span>{toolValue("size_mode")==="height"?(language==="tr"?"Hedef yükseklik":"Target height"):(language==="tr"?"Hedef genişlik":"Target width")}</span><div class="size-entry"><select value={String(toolNumber("size"))} onchange={(event)=>setToolNumber("size",Number(event.currentTarget.value))}>{#each [480,720,1080,1440,2160,4320] as size}<option value={size}>{size}px</option>{/each}</select><input aria-label="Custom output size" type="number" min="2" max="7680" step="2" value={toolNumber("size")} oninput={(event)=>setToolNumber("size",Number(event.currentTarget.value))}></div></label>
                 {:else if toolValue("size_mode")==="exact"}
                   <div class="exact-size"><label><span>{language==="tr"?"Genişlik":"Width"}</span><input type="number" min="2" max="7680" step="2" value={toolNumber("output_width")} oninput={(event)=>setToolNumber("output_width",Number(event.currentTarget.value))}></label><b>×</b><label><span>{language==="tr"?"Yükseklik":"Height"}</span><input type="number" min="2" max="7680" step="2" value={toolNumber("output_height")} oninput={(event)=>setToolNumber("output_height",Number(event.currentTarget.value))}></label></div>
-                  <p>{language==="tr"?"Tam boyut, seçtiğin kadrajı bu ölçülere ölçekler; oranlar farklıysa görüntü esneyebilir.":"Exact size scales the crop to these dimensions; mismatched ratios may stretch the image."}</p>
+                  <p>{media.kind==="image"?(language==="tr"?"Görsel esnetilmeden bu tuvale sığdırılır; boş alanlar şeffaf kalır.":"The image is fitted into this canvas without stretching; unused space remains transparent."):(language==="tr"?"Tam boyut, seçtiğin kadrajı bu ölçülere ölçekler; oranlar farklıysa görüntü esneyebilir.":"Exact size scales the crop to these dimensions; mismatched ratios may stretch the image.")}</p>
                 {/if}
               </section>
               {#if media.kind === "image"}
                 <section>
                   <header><b>{language==="tr"?"ÇIKTI FORMATI":"OUTPUT FORMAT"}</b></header>
-                  <div class="transform-options three"><button class:active={toolValue("format")==="png"} onclick={()=>setToolValue("format","png")}>PNG · LOSSLESS</button><button class:active={toolValue("format")==="webp"} onclick={()=>setToolValue("format","webp")}>WEBP · LOSSLESS</button><button class:active={toolValue("format")==="jpg"} onclick={()=>setToolValue("format","jpg")}>JPEG</button></div>
+                  <div class="transform-options three"><button class:active={toolValue("format")==="png"} onclick={()=>setToolValue("format","png")}>PNG · LOSSLESS</button><button class:active={toolValue("format")==="webp"} onclick={()=>setToolValue("format","webp")}>WEBP</button><button class:active={toolValue("format")==="jpg"} onclick={()=>setToolValue("format","jpg")}>JPEG</button><button class:active={toolValue("format")==="bmp"} onclick={()=>setToolValue("format","bmp")}>BMP</button><button class:active={toolValue("format")==="tiff"} onclick={()=>setToolValue("format","tiff")}>TIFF</button><button class:active={toolValue("format")==="avif"} onclick={()=>setToolValue("format","avif")}>AVIF</button></div>
+                  {#if toolValue("format")==="jpg"}<label class="field"><span>{language==="tr"?"Şeffaf alan rengi":"Transparent area color"}</span><input type="text" maxlength="7" value={toolValue("jpeg_background")} oninput={(event)=>setToolValue("jpeg_background",event.currentTarget.value)}></label>{/if}
                 </section>
               {/if}
             </div>
@@ -1806,6 +1918,10 @@
                 <div class="quality-verdict"><span>SHA-256</span><code>{hashResult}</code></div>
                 <button class="ghost" onclick={() => navigator.clipboard.writeText(hashResult)}>{language === "tr" ? "özeti kopyala" : "copy hash"}</button>
               </div>
+            {/if}
+            {#if selected.id === "image_compressor"}
+              <div class="codec-note"><b>{language==="tr"?"TAHMİNİ BOYUT":"ESTIMATED SIZE"}</b><span>{formatBytes(media.size)} → {toolValue("mode")==="target"?`${toolNumber("target_kb")} KB`:(compressionEstimateLoading?(language==="tr"?"hesaplanıyor…":"calculating…"):(compressionEstimate!=null?formatBytes(compressionEstimate):"—"))}</span></div>
+              {#if renderedImageSize}<div class="codec-note"><b>{language==="tr"?"GERÇEK ÇIKTI":"ACTUAL OUTPUT"}</b><span>{formatBytes(renderedImageSize)}</span></div>{/if}
             {/if}
           </div>
           <div class="run-box">

@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -56,11 +57,41 @@ fn locate(name: &str, override_name: &str) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+fn files_equal(left: &Path, right: &Path) -> bool {
+    let Some((left_metadata, right_metadata)) =
+        fs::metadata(left).ok().zip(fs::metadata(right).ok())
+    else {
+        return false;
+    };
+    if left_metadata.len() != right_metadata.len() {
+        return false;
+    }
+    let Some((left_file, right_file)) = fs::File::open(left).ok().zip(fs::File::open(right).ok())
+    else {
+        return false;
+    };
+    let mut left_reader = BufReader::new(left_file);
+    let mut right_reader = BufReader::new(right_file);
+    let mut left_buffer = vec![0_u8; 1024 * 1024];
+    let mut right_buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let Ok(left_count) = left_reader.read(&mut left_buffer) else {
+            return false;
+        };
+        let Ok(right_count) = right_reader.read(&mut right_buffer) else {
+            return false;
+        };
+        if left_count != right_count || left_buffer[..left_count] != right_buffer[..right_count] {
+            return false;
+        }
+        if left_count == 0 {
+            return true;
+        }
+    }
+}
+
 fn copy_if_changed(source: &Path, destination: &Path) {
-    let unchanged = fs::metadata(source)
-        .ok()
-        .zip(fs::metadata(destination).ok())
-        .is_some_and(|(left, right)| left.len() == right.len());
+    let unchanged = files_equal(source, destination);
     if !unchanged {
         fs::create_dir_all(destination.parent().expect("sidecar directory"))
             .expect("create sidecar directory");
@@ -84,6 +115,7 @@ fn prepare_windows_sidecars() {
         ("ffmpeg", "CONTAINER_FFMPEG"),
         ("ffprobe", "CONTAINER_FFPROBE"),
         ("yt-dlp", "CONTAINER_YT_DLP"),
+        ("deno", "CONTAINER_DENO"),
     ] {
         let source = locate(name, override_name);
         let destination = manifest
