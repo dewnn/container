@@ -4,6 +4,14 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-09-07
+
+- Fixed TikTok downloads by reusing a successful link analysis instead of asking TikTok to resolve the same video again when download starts.
+- Added the completion sound to successful DWLNDR downloads and made completed downloads reveal the actual downloaded file in Explorer.
+- Refined DWLNDR source-specific quality choices, including YouTube-only codec selection and a clear automatic-quality state for sources without quality variants.
+- Redesigned DWLNDR around a compact centered link workflow with optional engine information.
+- Synced the Windows title bar and taskbar icon with the selected app theme.
+
 ## [0.11.0] - 2026-09-06
 
 - Added image compression with live size estimates, target-size mode, format-aware quality controls, and safe JPEG background handling for transparent sources.

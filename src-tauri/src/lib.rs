@@ -17,7 +17,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
 };
 use url::{Host, Url};
@@ -199,6 +199,7 @@ struct JobState {
     cancelled: AtomicBool,
     pid: Mutex<Option<u32>>,
     download_cleanup: Mutex<Option<DownloadCleanup>>,
+    download_info: Mutex<Option<DownloadInfoCache>>,
     vad_cache: Mutex<Option<VadCache>>,
 }
 
@@ -229,6 +230,12 @@ struct DownloadCleanup {
     existing_temporary_files: HashSet<PathBuf>,
 }
 
+struct DownloadInfoCache {
+    url: String,
+    json: Vec<u8>,
+    created: Instant,
+}
+
 #[derive(Default)]
 struct RuntimeMigrationState {
     error: Mutex<Option<String>>,
@@ -254,6 +261,7 @@ struct DownloaderStatus {
 #[derive(Debug, Serialize)]
 struct DownloaderResult {
     output_dir: String,
+    output_file: Option<String>,
     details: String,
 }
 
@@ -421,6 +429,18 @@ fn downloader_javascript_args(runtime: &Path) -> Vec<String> {
         "--js-runtimes".into(),
         format!("deno:{}", runtime.to_string_lossy()),
     ]
+}
+
+fn downloader_site_args(url: &str) -> Vec<&'static str> {
+    let is_tiktok = Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "tiktok.com" || host.ends_with(".tiktok.com"));
+    if is_tiktok {
+        vec!["--impersonate", "chrome"]
+    } else {
+        Vec::new()
+    }
 }
 
 fn downloader_output_dir() -> Result<PathBuf, String> {
@@ -708,7 +728,11 @@ async fn cache_download_thumbnail(app: &AppHandle, url: Option<&str>) -> Option<
 }
 
 #[tauri::command]
-async fn analyze_download_url(app: AppHandle, url: String) -> Result<DownloadAnalysis, String> {
+async fn analyze_download_url(
+    app: AppHandle,
+    state: State<'_, JobState>,
+    url: String,
+) -> Result<DownloadAnalysis, String> {
     let url = validated_download_url(&url)?;
     let binary = downloader_binary_path()?;
     if !binary.is_file() || downloader_version().await.is_none() {
@@ -719,6 +743,7 @@ async fn analyze_download_url(app: AppHandle, url: String) -> Result<DownloadAna
     command
         .args(["--ignore-config", "--no-plugin-dirs", "-J", "--no-playlist"])
         .args(downloader_javascript_args(&javascript_runtime))
+        .args(downloader_site_args(&url))
         .arg(&url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -748,6 +773,19 @@ async fn analyze_download_url(app: AppHandle, url: String) -> Result<DownloadAna
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "yt-dlp returned invalid media information.")?;
+    // TikTok extraction can intermittently fail for the same public URL. Keep
+    // the successful analysis briefly in memory so starting the download does
+    // not have to extract the page a second time. Nothing is persisted.
+    if !downloader_site_args(&url).is_empty() {
+        *state
+            .download_info
+            .lock()
+            .map_err(|_| "Download analysis state lock failed")? = Some(DownloadInfoCache {
+            url: url.clone(),
+            json: output.stdout.clone(),
+            created: Instant::now(),
+        });
+    }
     let title = metadata
         .get("title")
         .and_then(Value::as_str)
@@ -872,9 +910,17 @@ async fn download_media(
         .filter(|path| path.is_dir())
         .ok_or("Bundled FFmpeg folder is unavailable.")?;
     let format_args = downloader_format_args(&format)?;
+    let cached_info = state
+        .download_info
+        .lock()
+        .map_err(|_| "Download analysis state lock failed")?
+        .as_ref()
+        .filter(|info| info.url == url && info.created.elapsed() < Duration::from_secs(10 * 60))
+        .map(|info| info.json.clone());
     state.cancelled.store(false, Ordering::Relaxed);
     let existing_temporary_files = downloader_temporary_files(&output_dir);
-    let mut child = hidden_path_command(&binary)
+    let mut command = hidden_path_command(&binary);
+    command
         .args([
             "--ignore-config",
             "--no-plugin-dirs",
@@ -889,21 +935,44 @@ async fn download_media(
             "--progress",
             "--progress-template",
             "download:CONTAINER_PROGRESS:%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._speed_str)s",
-            "-P",
         ])
         .args(downloader_javascript_args(&javascript_runtime))
+        // `-P` consumes its next token. It must follow the runtime option or
+        // yt-dlp treats `deno:...` as the URL to download.
+        .arg("-P")
         .arg(&output_dir)
         .arg("--ffmpeg-location")
         .arg(ffmpeg_directory)
         .args(&format_args)
         .arg("--print")
-        .arg("after_move:filepath")
-        .arg(&url)
+        .arg("after_move:filepath");
+    if cached_info.is_some() {
+        command
+            .args(["--load-info-json", "-"])
+            .stdin(Stdio::piped());
+    } else {
+        command.args(downloader_site_args(&url)).arg(&url);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("yt-dlp could not start: {error}"))?;
+    if let Some(json) = cached_info {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or("yt-dlp input stream is unavailable.")?;
+        stdin
+            .write_all(&json)
+            .await
+            .map_err(|error| format!("yt-dlp analysis could not be reused: {error}"))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|error| format!("yt-dlp input stream could not be closed: {error}"))?;
+    }
     *state
         .download_cleanup
         .lock()
@@ -992,6 +1061,14 @@ async fn download_media(
         .to_string();
     Ok(DownloaderResult {
         output_dir: output_dir.to_string_lossy().to_string(),
+        output_file: output_lines
+            .iter()
+            .rev()
+            .find(|line| {
+                let path = Path::new(line.as_str());
+                path.parent() == Some(output_dir.as_path()) && path.is_file()
+            })
+            .cloned(),
         details,
     })
 }
@@ -6578,6 +6655,19 @@ mod tests {
             downloader_javascript_args(path),
             ["--js-runtimes", r"deno:C:\Program Files\CONTAINER\deno.exe"]
         );
+    }
+
+    #[test]
+    fn downloader_uses_browser_impersonation_only_for_tiktok() {
+        assert_eq!(
+            downloader_site_args("https://www.tiktok.com/@creator/video/123"),
+            ["--impersonate", "chrome"]
+        );
+        assert_eq!(
+            downloader_site_args("https://vm.tiktok.com/example"),
+            ["--impersonate", "chrome"]
+        );
+        assert!(downloader_site_args("https://example.com/tiktok.com/video").is_empty());
     }
 
     #[test]

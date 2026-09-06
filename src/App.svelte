@@ -2,7 +2,7 @@
   import "@fontsource-variable/geist";
   import "@fontsource-variable/geist-mono";
   import { onMount, tick } from "svelte";
-  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+  import { invoke, convertFileSrc, isTauri } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -50,11 +50,6 @@
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
   interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean> }
   interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown }
-
-  const windowIconBuffers = {
-    dark: fetch("/logo-dark.png").then(response => response.arrayBuffer()),
-    light: fetch("/logo-light.png").then(response => response.arrayBuffer())
-  };
 
   let media: MediaInfo | null = $state(null);
   let mediaUrl = $state("");
@@ -1273,12 +1268,12 @@
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
     document.documentElement.lang=language;
     theme=document.documentElement.dataset.theme==="light"?"light":"dark";
+    void syncWindowTheme(theme);
     try{const savedFavorites=JSON.parse(localStorage.getItem("container-favorites")??"[]");if(Array.isArray(savedFavorites))favoriteIds=savedFavorites.filter(value=>typeof value==="string")}catch{favoriteIds=[]}
     void invoke<boolean>("previous_session_interrupted").then((interrupted)=>{
       if(!interrupted){discardRecovery();return}
       try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession;else discardRecovery()}catch{discardRecovery()}
     }).catch(()=>discardRecovery());
-    void updateWindowIcon(theme);
     void getVersion().then((version) => appVersion = version).catch(() => {});
     void invoke<string | null>("startup_media_path").then((path) => { if (path){recoveryCandidate=null;void loadMedia(path);} }).catch(() => {});
     // Run both checks on every launch. The UI stays quiet unless the user
@@ -1370,11 +1365,26 @@
     root.dataset.theme=next;
     root.style.colorScheme=next;
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content",next==="light"?"#f3f5f8":"#09090b");
-    theme=next;localStorage.setItem("container-theme",next);void updateWindowIcon(next);
+    theme=next;localStorage.setItem("container-theme",next);void syncWindowTheme(next);
     requestAnimationFrame(()=>requestAnimationFrame(()=>root.classList.remove("theme-changing")));
   }
-  async function updateWindowIcon(next:"dark"|"light"){
-    try{await getCurrentWindow().setIcon((await windowIconBuffers[next]).slice(0))}catch{/* Browser preview has no Tauri window. */}
+  async function syncWindowTheme(next:"dark"|"light"){
+    if(!isTauri())return;
+    try{
+      const appWindow=getCurrentWindow();
+      await appWindow.setTheme(next);
+      const logo=new Image();
+      logo.src=next==="light"?"/logo-light.png":"/logo-dark.png";
+      await logo.decode();
+      const canvas=document.createElement("canvas");
+      canvas.width=64;canvas.height=64;
+      const context=canvas.getContext("2d");
+      if(!context)throw new Error("Window icon could not be prepared.");
+      context.drawImage(logo,0,0,64,64);
+      const { Image: TauriImage }=await import("@tauri-apps/api/image");
+      const icon=await TauriImage.new(new Uint8Array(context.getImageData(0,0,64,64).data.buffer),64,64);
+      try{await appWindow.setIcon(icon)}finally{await icon.close()}
+    }catch(error){reportProblem(error)}
   }
 </script>
 
