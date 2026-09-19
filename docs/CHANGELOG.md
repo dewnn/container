@@ -4,6 +4,15 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-09-19
+
+- Added Vertical Clipper with Original, Blur, Fill, Split, Squares and Freecam layouts, draggable camera/content regions, centering controls and faster, size-efficient exports.
+- Added reusable project open/save support and refined the landing-page project action placement.
+- Fixed installed Windows font previews so the selected font file is loaded directly and matches FFmpeg output instead of silently retaining a fallback font.
+- Added correct Apple HEIC/HEIF tile-grid previews, dimensions and image processing so the complete oriented photo is used rather than an individual image tile.
+- Improved image workflows, preview geometry, text positioning, cut time entry and related regression coverage.
+- Updated the Rust TLS dependency to resolve the current rustls security advisory.
+
 ## [0.11.1] - 2026-09-07
 
 - Fixed TikTok downloads by reusing a successful link analysis instead of asking TikTok to resolve the same video again when download starts.

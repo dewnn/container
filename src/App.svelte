@@ -7,7 +7,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { armCompletionSound, playCompletionSound } from "./lib/completionSound";
   import { check, Update } from "@tauri-apps/plugin-updater";
@@ -79,17 +79,20 @@
   let autoCutCanUndo=$state(false),autoCutCanRedo=$state(false);
   let batchCanUndo=$state(false),batchCanRedo=$state(false);
   let toolboxVideo: HTMLVideoElement | null = $state(null);
+  let transformBackdropVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
   let toolboxCanvas: HTMLElement | null = $state(null);
   let transformCanvasWidth = $state(0);
   let transformCanvasHeight = $state(0);
   let toolboxMetadataVersion=$state(0);
   let transformSourceBox: HTMLElement | null = $state(null);
+  let freecamLayoutBox: HTMLElement | null = $state(null);
   let toolboxCurrent = $state(0);
   let toolboxPlaying = $state(false);
   let toolboxVolume = $state(1);
   let renderedImageUrl = $state("");
   let renderedImageSize = $state(0);
+  let temporaryImagePreviewPath = "";
   let compressionEstimate = $state<number|null>(null);
   let compressionEstimateLoading = $state(false);
   let compressionEstimateId = 0;
@@ -102,6 +105,7 @@
   let activeTextId: number | null = $state(null);
   let systemFonts: FontOption[] = $state([]);
   let fontsLoading = $state(false);
+  const previewFontLoads = new Map<string,Promise<string>>();
   let qualityAdvanced = $state(localStorage.getItem("container-quality-mode")==="advanced");
   let nextTextId = 1;
   let imageCompare = $state(50);
@@ -159,6 +163,7 @@
       if(/valid HTTPS|video link/i.test(raw))return "Geçerli bir HTTPS video bağlantısı girip tekrar dene.";
       if(/yt-dlp.*not ready|yt-dlp gerekli/i.test(raw))return "İndirme bileşeni hazır değil. Önce resmî yt-dlp.exe dosyasını seç.";
       if(/ffmpeg.*(?:not found|missing|could not start)/i.test(raw))return "FFmpeg bileşeni bulunamadı. Uygulamayı yeniden kurup tekrar dene.";
+      if(/font|yazı tipi/i.test(raw))return `Yazı tipi önizlemesi yüklenemedi: ${raw}`;
       if(/network|connect|timed? out|internet/i.test(raw))return "Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.";
       if(/permission|access denied/i.test(raw))return "Dosyaya erişilemedi. Klasör izinlerini kontrol edip tekrar dene.";
       if(/download failed/i.test(raw))return "İndirme tamamlanamadı. Bağlantıyı veya seçilen formatı kontrol et.";
@@ -171,6 +176,7 @@
     if(/valid HTTPS|video link/i.test(raw))return "Enter a valid HTTPS video link and try again.";
     if(/yt-dlp.*not ready/i.test(raw))return "The download component is not ready. Select the official yt-dlp executable first.";
     if(/ffmpeg.*(?:not found|missing|could not start)/i.test(raw))return "FFmpeg is unavailable. Reinstall the application and try again.";
+    if(/font/i.test(raw))return `The font preview could not be loaded: ${raw}`;
     if(/network|connect|timed? out|internet/i.test(raw))return "Could not connect. Check your internet connection and try again.";
     if(/permission|access denied/i.test(raw))return "The file could not be accessed. Check the folder permissions and try again.";
     if(/download failed/i.test(raw))return "The download could not be completed. Check the link or selected format.";
@@ -216,6 +222,21 @@
     const value:RecoverySession={version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode,toolbox:captureEditorSnapshot(),autocut:autoCutSession,batch:batchSession};
     localStorage.setItem(recoveryKey,JSON.stringify(value));
   }
+  function currentSession():RecoverySession|null{
+    if(!media)return null;
+    return {version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode,toolbox:captureEditorSnapshot(),autocut:autoCutSession,batch:batchSession};
+  }
+  async function saveProject(){
+    const session=currentSession();if(!session||operationBusy)return;
+    const path=await save({defaultPath:`${media?.name.replace(/\.[^.]+$/,"")||"project"}.containerproject`,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});
+    if(!path)return;
+    try{await invoke("write_project",{path,contents:JSON.stringify(session,null,2)});jobStatus=language==="tr"?"proje kaydedildi":"project saved"}catch(reason){reportProblem(reason)}
+  }
+  async function openProject(){
+    if(operationBusy)return;
+    const path=await open({multiple:false,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});if(typeof path!=="string")return;
+    try{const saved=JSON.parse(await invoke<string>("read_project",{path}));if(!validRecovery(saved))throw new Error(language==="tr"?"Geçersiz CONTAINER proje dosyası.":"Invalid CONTAINER project file.");recoveryCandidate=saved;await restorePreviousSession()}catch(reason){reportProblem(reason)}
+  }
   function discardRecovery(){localStorage.removeItem(recoveryKey);recoveryCandidate=null}
   async function cleanOutputFolder(){
     if(outputCleaning)return;
@@ -235,7 +256,7 @@
     restoringSession=true;error="";
     await loadMedia(saved.mediaPath);
     if(!media){restoringSession=false;discardRecovery();return}
-    if(saved.toolbox){applyEditorSnapshot(saved.toolbox,"redo");resetEditorHistory()}
+    if(saved.toolbox){const preparedMediaUrl=mediaUrl;applyEditorSnapshot(saved.toolbox,"redo");mediaUrl=preparedMediaUrl;await restorePreviewFonts();resetEditorHistory()}
     workspaceMode=saved.workspaceMode;
     autoCutSession=saved.autocut;batchSession=saved.batch;
     await tick();
@@ -313,6 +334,22 @@
     const millis = Math.floor((safe % 1) * 1000);
     return `${hours ? `${String(hours).padStart(2,"0")}:` : ""}${String(minutes).padStart(2,"0")}:${String(seconds).padStart(2,"0")}.${String(millis).padStart(3,"0")}`;
   };
+  function parseTimecode(value:string){
+    const parts=value.trim().split(":");
+    if(parts.length<1||parts.length>3||parts.some(part=>part===""||!/^\d+(?:\.\d{1,3})?$/.test(part)))return null;
+    const numbers=parts.map(Number);let seconds=0;
+    if(numbers.length===1)seconds=numbers[0];
+    else if(numbers.length===2){if(numbers[1]>=60)return null;seconds=numbers[0]*60+numbers[1]}
+    else{if(numbers[1]>=60||numbers[2]>=60)return null;seconds=numbers[0]*3600+numbers[1]*60+numbers[2]}
+    return Number.isFinite(seconds)?seconds:null;
+  }
+  function setCutTime(key:"start"|"end",value:string){
+    const seconds=parseTimecode(value),duration=media?.duration??0;
+    if(seconds===null||seconds<0||seconds>duration){error=language==="tr"?"Geçerli bir zaman gir (SS, DD:SS veya SS:DD:SS.sss).":"Enter a valid time (SS, MM:SS or HH:MM:SS.sss).";return}
+    const other=toolNumber(key==="start"?"end":"start");
+    if((key==="start"&&seconds>=other)||(key==="end"&&seconds<=other)){error=language==="tr"?"Bitiş zamanı başlangıçtan büyük olmalı.":"End must be greater than start.";return}
+    setToolNumber(key,seconds);seekToolbox(seconds);error="";
+  }
   const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
   function previewSourceDimensions(){
     const current=toolboxVideo?.getAttribute("src")===mediaUrl&&toolboxVideo.videoWidth&&toolboxVideo.videoHeight;
@@ -357,6 +394,7 @@
       activeTextId=null;
     }
     selected = localizedTool(tool,language);
+    if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}
     if(selected.id==="merge_videos"&&media)mergeInputs=[media.path];
     if(selected.id==="subtitles"&&media)void loadSubtitleTracks();
     if(selected.id==="text")void ensureSystemFonts();
@@ -407,14 +445,14 @@
   function resetSelectedTool(){
     if(!selected)return;
     const source=kindTools(activeKind).find(item=>item.id===selected?.id);
-    if(source)selected=localizedTool(source,language);
+    if(source){selected=localizedTool(source,language);if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}}
     colorEnabled={};colorPreviewVisible=true;textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
   }
 
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
   function fieldLivesOnTimeline(key:string){return ["cut","image_overlay"].includes(selected?.id??"")?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":selected?.id==="gif"?["start","duration"].includes(key):false}
   function fieldVisible(key:string){
-    if(selected?.id==="transform" && key!=="crf") return false;
+    if(["transform","clipper"].includes(selected?.id??"") && key!=="crf") return false;
     if(selected?.id==="color" || selected?.id==="text") return false;
     if(selected?.id==="compression"){
       if(!qualityAdvanced)return false;
@@ -502,8 +540,35 @@
     return `position:absolute;left:50%;top:50%;width:${box.width}px;height:${box.height}px;transform:translate(-50%,-50%)`;
   }
   function previewVideoStyle(){
-    const geometry=selected?.id==="transform"?transformPreviewStyle():neutralPreviewStyle();
+    if(selected?.id==="clipper"&&["original","blur","fill"].includes(toolValue("vertical_layout"))){
+      const box=verticalOutputBox();if(!box)return "";
+      const background=toolValue("canvas_background"),color=background==="white"?"#fff":background==="custom"?toolValue("canvas_color"):"#000";
+      if(toolValue("vertical_layout")==="fill"){
+        const maxX=Math.max(0,100-toolNumber("crop_w")),maxY=Math.max(0,100-toolNumber("crop_h"));
+        const positionX=maxX?toolNumber("crop_x")/maxX*100:50,positionY=maxY?toolNumber("crop_y")/maxY*100:50;
+        return `position:absolute;z-index:2;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:cover;object-position:${positionX}% ${positionY}%;background:#000`;
+      }
+      const foregroundBackground=toolValue("vertical_layout")==="blur"?"transparent":color;
+      return `position:absolute;z-index:2;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:contain;background:${foregroundBackground}`;
+    }
+    const geometry=["transform","clipper"].includes(selected?.id??"")?transformPreviewStyle():neutralPreviewStyle();
     return `${geometry};${colorPreviewStyle()}`;
+  }
+
+  function verticalOutputBox(){
+    if(!toolboxCanvas)return null;
+    const stageWidth=transformCanvasWidth||toolboxCanvas.clientWidth,stageHeight=transformCanvasHeight||toolboxCanvas.clientHeight;
+    const availableWidth=Math.max(1,stageWidth-16),availableHeight=Math.max(1,stageHeight-16),ratio=9/16;
+    let width=availableHeight*ratio,height=availableHeight;if(width>availableWidth){width=availableWidth;height=width/ratio}
+    return {left:(stageWidth-width)/2,top:(stageHeight-height)/2,width,height};
+  }
+  function verticalBackdropStyle(){
+    const box=verticalOutputBox();if(!box)return "display:none";
+    return `position:absolute;z-index:1;pointer-events:none;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:cover;filter:blur(${Math.max(10,box.width*.045)}px);clip-path:inset(0)`;
+  }
+  function syncTransformBackdrop(force=false){
+    if(!toolboxVideo||!transformBackdropVideo)return;
+    if(force||Math.abs(transformBackdropVideo.currentTime-toolboxVideo.currentTime)>.12)transformBackdropVideo.currentTime=toolboxVideo.currentTime;
   }
 
   function activeText(){return textLayers.find(layer=>layer.id===activeTextId)??null}
@@ -517,7 +582,9 @@
     const fonts=await ensureSystemFonts();
     const font=fonts.find(item=>item.name.toLowerCase()==="impact")??fonts.find(item=>item.name.toLowerCase().startsWith("arial"))??fonts[0];
     if(!font){error=language==="tr"?"Bilgisayarda kullanılabilir font bulunamadı.":"No usable system font was found.";return}
-    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,align:"center",fontName:font.name,font_path:font.path,outline:0,outline_color:"#000000",shadow:0,shadow_color:"#000000",background:false,background_color:"#000000",background_opacity:65,background_padding:12};
+    let fontName:string;
+    try{fontName=await loadPreviewFont(font)}catch(reason){error=String(reason);reportProblem(reason);return}
+    const layer:TextLayer={id:nextTextId++,text:`${language==="tr"?"Yazı":"Text"} ${textLayers.length+1}`,x:50,y:50,size:64,color:"#ffffff",opacity:100,align:"center",fontName,font_path:font.path,outline:0,outline_color:"#000000",shadow:0,shadow_color:"#000000",background:false,background_color:"#000000",background_opacity:65,background_padding:12};
     textLayers=[...textLayers,layer];activeTextId=layer.id;
   }
   function updateTextLayer(patch:Partial<TextLayer>){textLayers=textLayers.map(layer=>layer.id===activeTextId?{...layer,...patch}:layer)}
@@ -527,9 +594,34 @@
     const scale=box.width/(previewSourceDimensions().width||media.width);
     const outline=Math.max(0,layer.outline*scale),shadow=Math.max(0,layer.shadow*scale),padding=Math.max(0,layer.background_padding*scale);
     const translate=layer.align==="left"?"0":layer.align==="right"?"-100%":"-50%";
-    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;transform:translate(${translate},-50%);text-align:${layer.align};font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)};-webkit-text-stroke:${outline}px ${layer.outline_color};text-shadow:${shadow?`${shadow}px ${shadow}px ${Math.max(1,shadow*.7)}px ${layer.shadow_color}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"3px 8px"}`;
+    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;transform:translate(${translate},-50%);text-align:${layer.align};font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)};-webkit-text-stroke:${outline}px ${layer.outline_color};paint-order:stroke fill;text-shadow:${shadow?`${shadow}px ${shadow}px ${Math.max(1,shadow*.7)}px ${layer.shadow_color}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"3px 8px"}`;
   }
-  function chooseTextFont(path:string){const font=systemFonts.find(item=>item.path===path);if(font)updateTextLayer({fontName:font.name,font_path:font.path})}
+  function previewFontAlias(path:string){let hash=2166136261;for(const character of path){hash^=character.charCodeAt(0);hash=Math.imul(hash,16777619)}return `container-font-${(hash>>>0).toString(16)}`}
+  async function loadPreviewFont(font:FontOption){
+    const alias=previewFontAlias(font.path);
+    const existing=previewFontLoads.get(alias);if(existing)return existing;
+    const loading=(async()=>{const source=await invoke<string>("font_preview_data",{path:font.path});const encoded=source.slice(source.indexOf(",")+1),binary=atob(encoded),bytes=new Uint8Array(binary.length);for(let index=0;index<binary.length;index++)bytes[index]=binary.charCodeAt(index);const face=await new FontFace(alias,bytes.buffer).load();document.fonts.add(face);return alias})().catch(reason=>{previewFontLoads.delete(alias);throw new Error(`${font.name}: ${String(reason)}`)});
+    previewFontLoads.set(alias,loading);return loading;
+  }
+  async function restorePreviewFonts(){
+    const layers=[...textLayers];
+    const fonts=await ensureSystemFonts();
+    const restored=await Promise.all(layers.map(async layer=>{
+      const font=fonts.find(candidate=>candidate.path.toLowerCase()===layer.font_path.toLowerCase());
+      try{return {...layer,fontName:await loadPreviewFont(font??{name:basename(layer.font_path).replace(/\.[^.]+$/,""),path:layer.font_path})}}catch(reason){reportProblem(reason);return layer}
+    }));
+    if(layers.every((layer,index)=>textLayers[index]?.id===layer.id)){
+      textLayers=restored;
+      nextTextId=Math.max(0,...restored.map(layer=>layer.id))+1;
+    }
+  }
+  async function chooseTextFont(path:string){const font=systemFonts.find(item=>item.path===path);if(!font)return;try{updateTextLayer({fontName:await loadPreviewFont(font),font_path:font.path});error=""}catch(reason){error=String(reason);reportProblem(reason)}}
+  function positionText(position:string){
+    const layer=activeText();if(!layer)return;
+    const [vertical,horizontal]=position.split("-");
+    const x=horizontal==="left"?7:horizontal==="right"?93:50,y=vertical==="top"?8:vertical==="bottom"?92:50;
+    updateTextLayer({x,y,align:horizontal==="left"?"left":horizontal==="right"?"right":"center"});
+  }
   function setTextColor(value:string){if(/^#[0-9a-f]{6}$/i.test(value))updateTextLayer({color:value.toLowerCase()})}
   function hexWithAlpha(color:string,opacity:number){return /^#[0-9a-f]{6}$/i.test(color)?`${color}${Math.round(Math.max(0,Math.min(100,opacity))*2.55).toString(16).padStart(2,"0")}`:"transparent"}
   const textColors=["#ffffff","#000000","#00f1ff","#38d67a","#e7c84f","#fa646d","#6ba8ff","#d85cff"];
@@ -552,7 +644,9 @@
     const box=mediaDisplayBox();if(!box)return;const mediaWidth=media.width;const startX=event.clientX,startY=event.clientY,origin={...layer};
     const move=(moveEvent:PointerEvent)=>{
       if(resizeDirection){const delta=(moveEvent.clientX-startX)/box.width*mediaWidth*resizeDirection;updateTextLayer({size:Math.max(8,Math.min(600,origin.size+delta))});return}
-      updateTextLayer({x:Math.max(0,Math.min(100,origin.x+(moveEvent.clientX-startX)/box.width*100)),y:Math.max(0,Math.min(100,origin.y+(moveEvent.clientY-startY)/box.height*100))});
+      let dx=(moveEvent.clientX-startX)/box.width*100,dy=(moveEvent.clientY-startY)/box.height*100;
+      if(moveEvent.shiftKey){if(Math.abs(dx)>=Math.abs(dy))dy=0;else dx=0}
+      updateTextLayer({x:Math.max(0,Math.min(100,origin.x+dx)),y:Math.max(0,Math.min(100,origin.y+dy))});
     };
     const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
@@ -606,7 +700,7 @@
     return `left:${(box.stageWidth-box.width)/2}px;top:${(box.stageHeight-box.height)/2}px;width:${box.width}px;height:${box.height}px`;
   }
   function transformPreviewStyle(){
-    if(selected?.id!=="transform")return "";
+    if(!["transform","clipper"].includes(selected?.id??""))return "";
     const box=transformDisplayBox();if(!box)return "";
     const rotation=Number(toolValue("rotate"));
     if(media?.kind==="image"&&rotation===0&&toolValue("fit_mode")==="contain"&&!['off','free'].includes(toolValue("crop_mode"))){
@@ -621,7 +715,35 @@
     const flipX=toolValue("flip_h")==="true"?-1:1,flipY=toolValue("flip_v")==="true"?-1:1;
     return `position:absolute;left:50%;top:50%;width:${width}px;height:${height}px;transform:translate(-50%,-50%) scale(${flipX},${flipY}) rotate(${rotation}deg)`;
   }
-  function setCropPreset(mode:string){
+  const socialOutputSizes:Record<string,[number,number]>={"9:16":[1080,1920],"16:9":[1920,1080],"1:1":[1080,1080],"4:5":[1080,1350]};
+  function setVerticalLayout(layout:"original"|"blur"|"fill"|"split"|"squares"|"freecam"){
+    setToolValue("vertical_layout",layout);
+    setCropPreset("9:16",true);
+    if(layout!=="fill"){
+      setToolNumber("crop_x",0);setToolNumber("crop_y",0);setToolNumber("crop_w",100);setToolNumber("crop_h",100);
+      if(toolValue("canvas_background")==="transparent")setToolValue("canvas_background","black");
+    }
+    if(["split","squares","freecam"].includes(layout))centerContentRegion();
+  }
+  function contentTargetDimensions(){
+    const layout=toolValue("vertical_layout");
+    if(layout==="squares")return {width:1080,height:960};
+    if(layout==="split"){
+      const top=Math.round(1920*toolNumber("region_a_height")/100),contentOnTop=toolValue("region_order")==="b_first";
+      return {width:1080,height:contentOnTop?top:1920-top};
+    }
+    return {width:1080,height:1920};
+  }
+  function centerContentRegion(){
+    if(selected?.id!=="clipper")return;
+    const source=previewSourceDimensions(),target=contentTargetDimensions(),sourceRatio=(source.width||16)/(source.height||9),targetRatio=target.width/target.height;
+    let width=100,height=100;
+    if(sourceRatio>targetRatio)width=targetRatio/sourceRatio*100;else height=sourceRatio/targetRatio*100;
+    setToolNumber("region_b_x",(100-width)/2);setToolNumber("region_b_y",(100-height)/2);setToolNumber("region_b_w",width);setToolNumber("region_b_h",height);
+  }
+  function setSplitOrder(value:string){setToolValue("region_order",value);centerContentRegion()}
+  function setSplitHeight(value:number){setToolNumber("region_a_height",value);centerContentRegion()}
+  function setCropPreset(mode:string,applyOutputDefault=true){
     setToolValue("crop_mode",mode);
     if(mode==="off"){setToolNumber("crop_x",0);setToolNumber("crop_y",0);setToolNumber("crop_w",100);setToolNumber("crop_h",100);return}
     if(mode==="free"){
@@ -634,10 +756,16 @@
     let width=100,height=100;
     if(sourceRatio>target)width=target/sourceRatio*100;else height=sourceRatio/target*100;
     setToolNumber("crop_x",(100-width)/2);setToolNumber("crop_y",(100-height)/2);setToolNumber("crop_w",width);setToolNumber("crop_h",height);
+    const outputSize=socialOutputSizes[mode];
+    if(applyOutputDefault&&outputSize){
+      setToolValue("size_mode","exact");
+      setToolNumber("output_width",outputSize[0]);
+      setToolNumber("output_height",outputSize[1]);
+    }
   }
   function setTransformRotation(value:number){
     const mode=toolValue("crop_mode");setToolValue("rotate",String((value+360)%360));
-    if(!["off","free"].includes(mode))setCropPreset(mode);
+    if(!["off","free"].includes(mode))setCropPreset(mode,false);
   }
   function rotateTransform(delta:number){setTransformRotation(Number(toolValue("rotate"))+delta)}
   function startTransformCrop(event:PointerEvent,mode:"move"|"n"|"s"|"e"|"w"|"nw"|"ne"|"sw"|"se"){
@@ -657,6 +785,61 @@
         if(mode.includes("n")){y=Math.max(0,Math.min(initial.y+initial.h-min,initial.y+dy));h=initial.h+(initial.y-y)}
       }
       setToolNumber("crop_x",x);setToolNumber("crop_y",y);setToolNumber("crop_w",w);setToolNumber("crop_h",h);
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
+  function startTransformRegion(event:PointerEvent,region:"a"|"b",mode:"move"|"n"|"s"|"e"|"w"|"nw"|"ne"|"sw"|"se"){
+    if(!transformSourceBox||!["split","squares","freecam"].includes(toolValue("vertical_layout")))return;
+    event.preventDefault();event.stopPropagation();
+    const bounds=transformSourceBox.getBoundingClientRect(),startX=event.clientX,startY=event.clientY,prefix=`region_${region}_`;
+    const initial={x:toolNumber(`${prefix}x`),y:toolNumber(`${prefix}y`),w:toolNumber(`${prefix}w`),h:toolNumber(`${prefix}h`)};
+    const move=(moveEvent:PointerEvent)=>{
+      const dx=(moveEvent.clientX-startX)/bounds.width*100,dy=(moveEvent.clientY-startY)/bounds.height*100,min=5;
+      let {x,y,w,h}=initial;
+      if(mode==="move"){x=Math.max(0,Math.min(100-w,x+dx));y=Math.max(0,Math.min(100-h,y+dy))}
+      else{
+        if(mode.includes("e"))w=Math.max(min,Math.min(100-x,initial.w+dx));
+        if(mode.includes("s"))h=Math.max(min,Math.min(100-y,initial.h+dy));
+        if(mode.includes("w")){x=Math.max(0,Math.min(initial.x+initial.w-min,initial.x+dx));w=initial.w+(initial.x-x)}
+        if(mode.includes("n")){y=Math.max(0,Math.min(initial.y+initial.h-min,initial.y+dy));h=initial.h+(initial.y-y)}
+      }
+      setToolNumber(`${prefix}x`,x);setToolNumber(`${prefix}y`,y);setToolNumber(`${prefix}w`,w);setToolNumber(`${prefix}h`,h);
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
+  function startFillPan(event:PointerEvent){
+    const box=verticalOutputBox();if(!box||toolValue("vertical_layout")!=="fill")return;
+    event.preventDefault();event.stopPropagation();
+    const startX=event.clientX,startY=event.clientY,initialX=toolNumber("crop_x"),initialY=toolNumber("crop_y"),width=toolNumber("crop_w"),height=toolNumber("crop_h");
+    const move=(moveEvent:PointerEvent)=>{
+      const x=Math.max(0,Math.min(100-width,initialX-(moveEvent.clientX-startX)/box.width*width));
+      const y=Math.max(0,Math.min(100-height,initialY-(moveEvent.clientY-startY)/box.height*height));
+      setToolNumber("crop_x",x);setToolNumber("crop_y",y);
+    };
+    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+  }
+  function freecamPlacement(){
+    const source=previewSourceDimensions(),regionWidth=Math.max(1,source.width*toolNumber("region_a_w")/100),regionHeight=Math.max(1,source.height*toolNumber("region_a_h")/100);
+    const width=Math.max(15,Math.min(90,toolNumber("freecam_size"))),height=Math.min(90,width*(9/16)/(regionWidth/regionHeight));
+    return {width,height,left:(100-width)*toolNumber("freecam_x")/100,top:(100-height)*toolNumber("freecam_y")/100};
+  }
+  function startFreecamPlacement(event:PointerEvent,mode:"move"|"resize"){
+    if(!freecamLayoutBox)return;
+    event.preventDefault();event.stopPropagation();
+    const bounds=freecamLayoutBox.getBoundingClientRect(),startX=event.clientX,startY=event.clientY,initial=freecamPlacement();
+    const move=(moveEvent:PointerEvent)=>{
+      if(mode==="resize"){
+        const width=Math.max(15,Math.min(90,initial.width+(moveEvent.clientX-startX)/bounds.width*100));
+        setToolNumber("freecam_size",width);
+        return;
+      }
+      const left=Math.max(0,Math.min(100-initial.width,initial.left+(moveEvent.clientX-startX)/bounds.width*100));
+      const top=Math.max(0,Math.min(100-initial.height,initial.top+(moveEvent.clientY-startY)/bounds.height*100));
+      setToolNumber("freecam_x",100-initial.width>0?left/(100-initial.width)*100:0);
+      setToolNumber("freecam_y",100-initial.height>0?top/(100-initial.height)*100:0);
     };
     const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
@@ -818,9 +1001,15 @@
   async function selectMedia() {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Media", extensions: ["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif"] }],
+      filters: [{ name: "Media", extensions: ["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif","heic","heif"] }],
     });
     if (typeof path === "string") await loadMedia(path);
+  }
+
+  function releaseTemporaryImagePreview(path:string){
+    if(!path)return;
+    if(temporaryImagePreviewPath===path)temporaryImagePreviewPath="";
+    void invoke<boolean>("remove_image_preview",{path}).catch(reportProblem);
   }
 
   async function loadMedia(path: string) {
@@ -837,12 +1026,22 @@
     error = "";
     output = "";
     jobStatus = "probing media";
+    let preparedPreview="";
     try {
       const loaded=await invoke<MediaInfo>("probe_media", { path });
       if(loadId!==mediaLoadId)return;
+      const extension=path.split(".").pop()?.toLowerCase()??"";
+      if(loaded.kind==="image"&&["heic","heif"].includes(extension)){
+        jobStatus=language==="tr"?"HEIC önizleme hazırlanıyor":"preparing HEIC preview";
+        preparedPreview=await invoke<string>("prepare_image_preview",{path});
+        if(loadId!==mediaLoadId){releaseTemporaryImagePreview(preparedPreview);return}
+      }
+      const previousPreview=temporaryImagePreviewPath;
+      temporaryImagePreviewPath=preparedPreview;
       media = loaded;
       activeKind = media.kind;
-      mediaUrl = convertFileSrc(path);
+      mediaUrl = convertFileSrc(preparedPreview||path);
+      if(previousPreview&&previousPreview!==preparedPreview)releaseTemporaryImagePreview(previousPreview);
       workspaceMode = "toolbox";
       autoCutSession = null;
       batchSession = null;
@@ -865,6 +1064,7 @@
       jobStatus = "ready";
       resetEditorHistory();
     } catch (reason) {
+      if(preparedPreview)releaseTemporaryImagePreview(preparedPreview);
       if(loadId!==mediaLoadId)return;
       media = null;
       selected = null;
@@ -883,6 +1083,7 @@
     media = null;
     selected = null;
     mediaUrl = "";
+    releaseTemporaryImagePreview(temporaryImagePreviewPath);
     output = "";
     error = "";
     progress = 0;
@@ -903,6 +1104,11 @@
     editHistory = [];
     editHistoryIndex = -1;
     autoCutSession=null;batchSession=null;discardRecovery();
+  }
+
+  async function continueEditingOutput(){
+    if(!output||operationBusy)return;
+    await loadMedia(output);
   }
 
   function seekToolbox(value: number) {
@@ -1041,7 +1247,7 @@
     compressionEstimateLoading=true;
     const timer=window.setTimeout(async()=>{
       try{
-        const size=await invoke<number>("estimate_image_compression",{request:{input:path,operation:"image_compressor",params:{mode,format,quality:String(quality),target_kb:"1",jpeg_background:background||"#ffffff"}}});
+        const size=await invoke<number>("estimate_image_compression",{request:{input:temporaryImagePreviewPath||path,operation:"image_compressor",params:{mode,format,quality:String(quality),target_kb:"1",jpeg_background:background||"#ffffff"}}});
         if(requestId===compressionEstimateId)compressionEstimate=size;
       }catch{
         if(requestId===compressionEstimateId)compressionEstimate=null;
@@ -1129,8 +1335,11 @@
         jobStatus = language === "tr" ? "SHA-256 hesaplandı" : "SHA-256 calculated";
         return;
       }
+      const operationParams=paramsFrom(selected);
+      const operationInput=temporaryImagePreviewPath||media.path;
+      if(temporaryImagePreviewPath)operationParams.__source_path=media.path;
       const result = await invoke<JobResult>("run_operation", {
-        request: { input: media.path, operation: selected.id, params: paramsFrom(selected) },
+        request: { input: operationInput, operation: selected.id, params: operationParams },
       });
       output = result.output;
       const appliedTool=selected.id;
@@ -1404,11 +1613,15 @@
         {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")} disabled={operationBusy&&workspaceMode!=="autocut"}>SMARTCUT</button>{/if}
         <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
       </nav>
+      <div class="project-actions"><button onclick={openProject} disabled={operationBusy}>{language==="tr"?"PROJE AÇ":"OPEN PROJECT"}</button><button onclick={saveProject} disabled={operationBusy}>{language==="tr"?"PROJEYİ KAYDET":"SAVE PROJECT"}</button></div>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={operationBusy}>{t("close")}</button>
     {:else}
-      <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
-      {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
-      <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
+      <div class="landing-header-actions">
+        <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
+        {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
+        <div class="project-actions landing-project-actions"><button onclick={openProject} disabled={operationBusy}>{language==="tr"?"PROJE AÇ":"OPEN PROJECT"}</button></div>
+        <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
+      </div>
     {/if}
   </header>
 
@@ -1544,8 +1757,25 @@
             {#if media.kind === "video"}
               <div class="video-canvas" bind:this={toolboxCanvas}>
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={()=>{toolboxMetadataVersion++;if(selected?.id==="upscale")configureUpscale(selected)}} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; }} onplay={() => toolboxPlaying = true} onpause={() => toolboxPlaying = false} onended={() => toolboxPlaying = false}></video>
-              {#if selected?.id === "transform" && toolValue("crop_mode") !== "off"}
+              {#if selected?.id==="clipper"&&toolValue("vertical_layout")==="blur"}
+                <!-- svelte-ignore a11y_media_has_caption -->
+                <video bind:this={transformBackdropVideo} class="transform-video-backdrop" style={verticalBackdropStyle()} src={mediaUrl} preload="metadata" muted tabindex="-1"></video>
+              {/if}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={()=>{toolboxMetadataVersion++;syncTransformBackdrop(true);if(selected?.id==="upscale")configureUpscale(selected)}} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; syncTransformBackdrop(); }} onplay={() => {toolboxPlaying=true;syncTransformBackdrop(true);void transformBackdropVideo?.play().catch(()=>{})}} onpause={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}} onended={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}}></video>
+              {#if selected?.id==="clipper"&&["split","squares","freecam"].includes(toolValue("vertical_layout"))}
+                <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
+                  {#each [{id:"a" as const,label:"CAMERA REGION"},{id:"b" as const,label:"CONTENT REGION"}] as region}
+                    <div class={`transform-crop transform-region region-${region.id}`} style:left={`${toolNumber(`region_${region.id}_x`)}%`} style:top={`${toolNumber(`region_${region.id}_y`)}%`} style:width={`${toolNumber(`region_${region.id}_w`)}%`} style:height={`${toolNumber(`region_${region.id}_h`)}%`} onpointerdown={(event)=>startTransformRegion(event,region.id,"move")} role="presentation">
+                      <b>{region.label}</b>
+                      {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize ${region.label} ${handle}`} onpointerdown={(event)=>startTransformRegion(event,region.id,handle)}></button>{/each}
+                    </div>
+                  {/each}
+                </div>
+              {:else if selected?.id==="clipper"&&toolValue("vertical_layout")==="fill"}
+                {@const fillBox=verticalOutputBox()}
+                {#if fillBox}<div class="fill-pan-layer" style:left={`${fillBox.left}px`} style:top={`${fillBox.top}px`} style:width={`${fillBox.width}px`} style:height={`${fillBox.height}px`} onpointerdown={startFillPan} role="presentation"><span>{language==="tr"?"KADRAJI SÜRÜKLE":"DRAG TO REFRAME"}</span></div>{/if}
+              {:else if ["transform","clipper"].includes(selected?.id??"") && toolValue("crop_mode") !== "off" && (selected?.id==="transform" || !["original","blur"].includes(toolValue("vertical_layout")))}
                 <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                   <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
                   <div class="crop-shade left" style:left="0" style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_x")}%`} style:height={`${toolNumber("crop_h")}%`}></div>
@@ -1661,6 +1891,7 @@
         {#if timelineTool && media.duration}
           <div class="tool-timeline panel">
             <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div><b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${playerTime(timelineBounds().start)} — ${playerTime(timelineBounds().end)}`}</b></header>
+            {#if selected?.id==="cut"}<div class="cut-timecodes"><label><span>START</span><input class="mono" value={playerTime(toolNumber("start"))} onchange={(event)=>setCutTime("start",event.currentTarget.value)}></label><label><span>END</span><input class="mono" value={playerTime(toolNumber("end"))} onchange={(event)=>setCutTime("end",event.currentTarget.value)}></label></div>{/if}
             <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} onpointermove={hoverTimeline} onpointerleave={()=>timelineHover=null} role="presentation">
               {#if toolboxFilmstripUrl}<img class="filmstrip" src={toolboxFilmstripUrl} alt="Video filmstrip" draggable="false">{:else}<span class="wave-loading">{toolboxFilmstripLoading ? (language==="tr"?"video kareleri hazırlanıyor…":"building video frames…") : "—"}</span>{/if}
               {#if selected?.id === "screenshot"}
@@ -1682,7 +1913,7 @@
             <div><h3>{t("process")}</h3><p class="mono">{jobStatus}</p></div>
             <div class="job-meta">
               <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
-              {#if output}<button class="ghost job-action" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
+              {#if output}<button class="ghost job-action" onclick={continueEditingOutput}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
               {#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}
             </div>
           </div>
@@ -1754,10 +1985,12 @@
                   <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.size,8,600)}%`} min="8" max="600" step="1" value={layer.size} oninput={(event)=>updateTextLayer({size:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.size)} px</small></label>
                   <label class="field"><span>{language==="tr"?"Opaklık":"Opacity"}<small>%</small></span><input type="range" style={`--range-pct:${rangePercent(layer.opacity,0,100)}%`} min="0" max="100" step="1" value={layer.opacity} oninput={(event)=>updateTextLayer({opacity:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.opacity)}%</small></label>
                   <label class="field"><span>{language==="tr"?"Hizalama":"Alignment"}</span><select value={layer.align} onchange={(event)=>updateTextLayer({align:event.currentTarget.value as "left"|"center"|"right"})}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
+                  <div class="text-position-grid" aria-label={language==="tr"?"Yazı konumu":"Text position"}>{#each ["top-left","top-center","top-right","middle-left","middle-center","middle-right","bottom-left","bottom-center","bottom-right"] as position}<button title={position.replace("-"," ")} onclick={()=>positionText(position)}></button>{/each}</div>
                   <details class="text-style-options">
-                    <summary>{language==="tr"?"Kontur, gölge ve arka plan":"Outline, shadow & background"}</summary>
-                    <label class="field"><span>{language==="tr"?"Kontur":"Outline"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.outline,0,20)}%`} min="0" max="20" step="1" value={layer.outline} oninput={(event)=>updateTextLayer({outline:Number(event.currentTarget.value)})}><small class="hint">{layer.outline}px</small></label>
-                    <label class="field"><span>{language==="tr"?"Kontur rengi":"Outline color"}</span><input type="text" value={layer.outline_color} maxlength="7" onchange={(event)=>/^#[0-9a-f]{6}$/i.test(event.currentTarget.value)&&updateTextLayer({outline_color:event.currentTarget.value})}></label>
+                    <summary>{language==="tr"?"Kontur, gölge ve arka plan":"Stroke, shadow & background"}</summary>
+                    <label class="color-toggle"><input type="checkbox" checked={layer.outline>0} onchange={(event)=>updateTextLayer({outline:event.currentTarget.checked?Math.max(2,layer.outline):0})}><span>{language==="tr"?"Kontur açık":"Stroke enabled"}</span></label>
+                    {#if layer.outline>0}<label class="field"><span>{language==="tr"?"Kontur genişliği":"Stroke width"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.outline,1,20)}%`} min="1" max="20" step="1" value={layer.outline} oninput={(event)=>updateTextLayer({outline:Number(event.currentTarget.value)})}><small class="hint">{layer.outline}px</small></label>
+                    <label class="field"><span>{language==="tr"?"Kontur rengi":"Stroke color"}</span><input type="text" value={layer.outline_color} maxlength="7" onchange={(event)=>/^#[0-9a-f]{6}$/i.test(event.currentTarget.value)&&updateTextLayer({outline_color:event.currentTarget.value})}></label>{/if}
                     <label class="field"><span>{language==="tr"?"Gölge":"Shadow"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.shadow,0,30)}%`} min="0" max="30" step="1" value={layer.shadow} oninput={(event)=>updateTextLayer({shadow:Number(event.currentTarget.value)})}><small class="hint">{layer.shadow}px</small></label>
                     <label class="color-toggle"><input type="checkbox" checked={layer.background} onchange={(event)=>updateTextLayer({background:event.currentTarget.checked})}><span>{language==="tr"?"Arka plan kutusu":"Background box"}</span></label>
                     {#if layer.background}
@@ -1767,7 +2000,7 @@
                     {/if}
                   </details>
                   <button class="remove-text" onclick={()=>removeTextLayer(layer.id)}>{language==="tr"?"Seçili yazıyı kaldır":"Remove selected text"}</button>
-                  <p class="text-help">{language==="tr"?"Yazıyı önizlemede sürükle; iki yanındaki tutamaçlardan boyutlandır.":"Drag text in the preview; resize it from either side handle."}</p>
+                  <p class="text-help">{language==="tr"?"Yazıyı sürükle; Shift ile yatay/dikey eksene kilitle. Yan tutamaçlardan boyutlandır.":"Drag text; hold Shift to lock movement to one axis. Resize from either side handle."}</p>
                 {/if}
               {:else}<p class="text-empty">{language==="tr"?"Önizlemeye ilk katmanı eklemek için Yazı ekle’ye bas.":"Choose Add text to place the first layer in the preview."}</p>{/if}
             </div>
@@ -1821,8 +2054,53 @@
           {#if ["encode","cut","remux","extract_audio"].includes(selected.id) && media.audio_tracks.length}
             <div class="codec-note"><b>{language === "tr" ? "SES PARÇALARI" : "AUDIO TRACKS"}</b><span>{language === "tr" ? `${media.audio_tracks.length} parça bulundu. Ana varsayılandır; Tümü parçaları ayrı tutar; Birleştir hepsini tek dengeli ses parçasında toplar.` : `${media.audio_tracks.length} track(s) found. Main is the default; All keeps tracks separate; Merge combines them into one normalized track.`}</span></div>
           {/if}
-          {#if selected.id === "transform"}
+          {#if ["transform","clipper"].includes(selected.id)}
             <div class="transform-controls">
+              {#if selected.id==="clipper"}
+                <section>
+                  <header><b>{language==="tr"?"DİKEY YERLEŞİM":"VERTICAL LAYOUT"}</b><small>1080×1920</small></header>
+                  <div class="transform-options three">
+                    <button class:active={toolValue("vertical_layout")==="original"} onclick={()=>setVerticalLayout("original")}>ORIGINAL SIZE</button>
+                    <button class:active={toolValue("vertical_layout")==="blur"} onclick={()=>setVerticalLayout("blur")}>BLUR</button>
+                    <button class:active={toolValue("vertical_layout")==="fill"} onclick={()=>setVerticalLayout("fill")}>FILL</button>
+                    <button class:active={toolValue("vertical_layout")==="split"} onclick={()=>setVerticalLayout("split")}>SPLIT</button>
+                    <button class:active={toolValue("vertical_layout")==="squares"} onclick={()=>setVerticalLayout("squares")}>SQUARES</button>
+                    <button class:active={toolValue("vertical_layout")==="freecam"} onclick={()=>setVerticalLayout("freecam")}>FREECAM</button>
+                  </div>
+                  {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
+                    {@const contentTarget=contentTargetDimensions()}
+                    <button class="center-content" onclick={centerContentRegion}>◎ {language==="tr"?"İÇERİĞİ ORTALA":"CENTER CONTENT"} · {contentTarget.width}×{contentTarget.height}</button>
+                  {/if}
+                  {#if toolValue("vertical_layout")==="original"}
+                    <label class="field"><span>{language==="tr"?"Tuval arka planı":"Canvas background"}</span><select value={toolValue("canvas_background")} onchange={(event)=>setToolValue("canvas_background",event.currentTarget.value)}><option value="black">{language==="tr"?"Siyah":"Black"}</option><option value="white">{language==="tr"?"Beyaz":"White"}</option><option value="custom">{language==="tr"?"Özel renk":"Custom color"}</option></select></label>
+                    {#if toolValue("canvas_background")==="custom"}<label class="field"><span>{language==="tr"?"Arka plan rengi":"Background color"}</span><input type="text" maxlength="7" value={toolValue("canvas_color")} oninput={(event)=>setToolValue("canvas_color",event.currentTarget.value)}></label>{/if}
+                  {/if}
+                  {#if toolValue("vertical_layout")==="split"}
+                    <details class="text-style-options clipper-advanced">
+                      <summary>{language==="tr"?"GELİŞMİŞ":"ADVANCED"}</summary>
+                      <label><span>{language==="tr"?"Sıralama":"Order"}</span><select value={toolValue("region_order")} onchange={(event)=>setSplitOrder(event.currentTarget.value)}><option value="a_first">{language==="tr"?"Kamera üstte":"Camera above content"}</option><option value="b_first">{language==="tr"?"İçerik üstte":"Content above camera"}</option></select></label>
+                      <label><span>{language==="tr"?"Üst bölüm yüksekliği":"Top region height"}</span><input type="range" min="20" max="80" step="1" value={toolNumber("region_a_height")} oninput={(event)=>setSplitHeight(Number(event.currentTarget.value))}><small>{toolNumber("region_a_height").toFixed(0)}%</small></label>
+                      <p>{language==="tr"?"Kamera ve içerik kutularını kaynak önizleme üzerinde sürükleyip kenarlarından boyutlandır.":"Drag Camera and Content on the source preview and resize them from their edges."}</p>
+                    </details>
+                  {/if}
+                  {#if toolValue("vertical_layout")==="fill"}<p>{language==="tr"?"Video dikey tuvali tamamen doldurur. Sonuç önizlemesini sürükleyerek yatay kadrajı ayarla.":"The video fills the vertical canvas completely. Drag the result preview to adjust the horizontal framing."}</p>{/if}
+                  {#if toolValue("vertical_layout")==="squares"}<p>{language==="tr"?"Kamera ve içerik, dikey tuvali eşit iki tam genişlikte bölüme ayırır.":"Camera and content divide the vertical canvas into two equal full-width sections."}</p>{/if}
+                  {#if toolValue("vertical_layout")==="freecam"}
+                    {@const freecam=freecamPlacement()}
+                    <div class="freecam-layout" bind:this={freecamLayoutBox} aria-label={language==="tr"?"Freecam çıktı yerleşimi":"Freecam output layout"}>
+                      <span>{language==="tr"?"İÇERİK":"CONTENT"}</span>
+                      <button class="freecam-camera" style:left={`${freecam.left}%`} style:top={`${freecam.top}%`} style:width={`${freecam.width}%`} style:height={`${freecam.height}%`} onpointerdown={(event)=>startFreecamPlacement(event,"move")}>
+                        {language==="tr"?"KAMERA":"CAMERA"}<i role="presentation" onpointerdown={(event)=>startFreecamPlacement(event,"resize")}></i>
+                      </button>
+                    </div>
+                    <p>{language==="tr"?"Kamerayı çıktı yerleşiminde sürükle; sağ alt köşeden boyutlandır. Kaynak kırpımını ana önizlemedeki Camera Region ile ayarla.":"Drag the camera in the output layout; resize it from the lower-right corner. Adjust its source crop with Camera Region in the main preview."}</p>
+                    <label><span>{language==="tr"?"Kamera konumu X":"Camera position X"}</span><input type="range" min="0" max="100" step="1" value={toolNumber("freecam_x")} oninput={(event)=>setToolNumber("freecam_x",Number(event.currentTarget.value))}></label>
+                    <label><span>{language==="tr"?"Kamera konumu Y":"Camera position Y"}</span><input type="range" min="0" max="100" step="1" value={toolNumber("freecam_y")} oninput={(event)=>setToolNumber("freecam_y",Number(event.currentTarget.value))}></label>
+                    <label><span>{language==="tr"?"Kamera boyutu":"Camera size"}</span><input type="range" min="15" max="90" step="1" value={toolNumber("freecam_size")} oninput={(event)=>setToolNumber("freecam_size",Number(event.currentTarget.value))}><small>{toolNumber("freecam_size").toFixed(0)}%</small></label>
+                  {/if}
+                </section>
+              {/if}
+              {#if selected.id==="transform"}
               <section>
                 <header><b>CROP</b><small>{toolValue("crop_mode")==="off" ? (language==="tr"?"kapalı":"off") : `${toolNumber("crop_w").toFixed(1)}% × ${toolNumber("crop_h").toFixed(1)}%`}</small></header>
                 <div class="transform-options crop-options">
@@ -1861,6 +2139,7 @@
                   <div class="transform-options three"><button class:active={toolValue("format")==="png"} onclick={()=>setToolValue("format","png")}>PNG · LOSSLESS</button><button class:active={toolValue("format")==="webp"} onclick={()=>setToolValue("format","webp")}>WEBP</button><button class:active={toolValue("format")==="jpg"} onclick={()=>setToolValue("format","jpg")}>JPEG</button><button class:active={toolValue("format")==="bmp"} onclick={()=>setToolValue("format","bmp")}>BMP</button><button class:active={toolValue("format")==="tiff"} onclick={()=>setToolValue("format","tiff")}>TIFF</button><button class:active={toolValue("format")==="avif"} onclick={()=>setToolValue("format","avif")}>AVIF</button></div>
                   {#if toolValue("format")==="jpg"}<label class="field"><span>{language==="tr"?"Şeffaf alan rengi":"Transparent area color"}</span><input type="text" maxlength="7" value={toolValue("jpeg_background")} oninput={(event)=>setToolValue("jpeg_background",event.currentTarget.value)}></label>{/if}
                 </section>
+              {/if}
               {/if}
             </div>
           {/if}

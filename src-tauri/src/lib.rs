@@ -658,6 +658,112 @@ fn remove_download_thumbnail_file(path: &Path) -> Result<bool, String> {
     }
 }
 
+fn temporary_image_preview_path(source: &Path) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let identity = format!("{}:{nonce}", source.to_string_lossy());
+    std::env::temp_dir().join(format!(
+        "container-image-preview-{}-{:x}.png",
+        std::process::id(),
+        Sha256::digest(identity.as_bytes())
+    ))
+}
+
+fn remove_temporary_image_preview_file(path: &Path) -> Result<bool, String> {
+    let valid_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("container-image-preview-") && name.ends_with(".png"));
+    if path.parent() != Some(std::env::temp_dir().as_path()) || !valid_name {
+        return Err("Invalid temporary image preview path.".into());
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "Temporary image preview could not be removed: {error}"
+        )),
+    }
+}
+
+fn cleanup_current_image_previews() {
+    let directory = std::env::temp_dir();
+    let prefix = format!("container-image-preview-{}-", std::process::id());
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let matches = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".png"));
+        if matches && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[tauri::command]
+async fn prepare_image_preview(app: AppHandle, path: String) -> Result<String, String> {
+    let source = PathBuf::from(path);
+    if !source.is_file() {
+        return Err("Image preview source was not found.".into());
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "heic" | "heif") {
+        return Err("A compatibility preview is only required for HEIC/HEIF images.".into());
+    }
+    let output = temporary_image_preview_path(&source);
+    let temporary = output.with_extension("part.png");
+    let result = async {
+        let process = hidden_command("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&source)
+            // Do not select v:0 here. Apple HEIC files can store the primary
+            // picture as a default Tile Grid made from many HEVC streams.
+            // FFmpeg reconstructs that grid only when its default output is
+            // allowed to select the primary image.
+            .args(["-frames:v", "1", "-c:v", "png"])
+            .arg(&temporary)
+            .output()
+            .await
+            .map_err(|error| format!("HEIC preview could not start: {error}"))?;
+        if !process.status.success() {
+            return Err(format!(
+                "HEIC preview could not be generated: {}",
+                String::from_utf8_lossy(&process.stderr).trim()
+            ));
+        }
+        if !temporary.is_file()
+            || std::fs::metadata(&temporary).map_or(true, |value| value.len() == 0)
+        {
+            return Err("HEIC preview generation produced no image.".into());
+        }
+        std::fs::rename(&temporary, &output)
+            .map_err(|error| format!("HEIC preview could not be finalized: {error}"))?;
+        allow_asset_file(&app, &output)?;
+        Ok(output.to_string_lossy().to_string())
+    }
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        let _ = std::fs::remove_file(&output);
+    }
+    result
+}
+
+#[tauri::command]
+fn remove_image_preview(path: String) -> Result<bool, String> {
+    remove_temporary_image_preview_file(Path::new(&path))
+}
+
 fn cleanup_legacy_download_thumbnail_cache() {
     let Some(directory) =
         dirs::cache_dir().map(|path| path.join("CONTAINER").join("download-thumbnails"))
@@ -1333,7 +1439,13 @@ async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
                         system_fonts.join(supplied)
                     }
                 };
-                if path.is_file() {
+                let supported = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| {
+                        matches!(value.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc")
+                    });
+                if path.is_file() && supported {
                     let name = raw_name
                         .trim()
                         .replace(" (TrueType)", "")
@@ -1381,6 +1493,48 @@ async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
         allow_asset_file(&app, Path::new(&font.path))?;
     }
     Ok(fonts)
+}
+
+#[tauri::command]
+fn font_preview_data(path: String) -> Result<String, String> {
+    let canonical = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|error| format!("Font file could not be opened: {error}"))?;
+    let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    let mut roots = vec![PathBuf::from(windows).join("Fonts")];
+    if let Some(user_fonts) =
+        dirs::data_local_dir().map(|root| root.join("Microsoft").join("Windows").join("Fonts"))
+    {
+        roots.push(user_fonts);
+    }
+    let allowed = roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| canonical.starts_with(root));
+    if !allowed {
+        return Err("Font preview is limited to installed system fonts.".into());
+    }
+    let extension = canonical
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "ttf" | "otf" | "ttc") {
+        return Err("This installed font format cannot be previewed.".into());
+    }
+    let metadata = std::fs::metadata(&canonical)
+        .map_err(|error| format!("Font metadata could not be read: {error}"))?;
+    if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+        return Err("The selected font file is invalid or too large.".into());
+    }
+    let bytes = std::fs::read(&canonical)
+        .map_err(|error| format!("Font file could not be read: {error}"))?;
+    let mime = match extension.as_str() {
+        "otf" => "font/otf",
+        "ttc" => "font/collection",
+        _ => "font/ttf",
+    };
+    Ok(format!("data:{mime};base64,{}", BASE64.encode(bytes)))
 }
 
 #[derive(Debug, Serialize)]
@@ -1641,6 +1795,7 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
             "json",
             "-show_format",
             "-show_streams",
+            "-show_stream_groups",
         ])
         .arg(&input)
         .output()
@@ -1680,16 +1835,7 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
         .and_then(|part| part.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let image_extensions = ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "avif"];
-    let kind = if image_extensions.contains(&extension.as_str()) {
-        "image"
-    } else if video.is_some() {
-        "video"
-    } else if audio.is_some() {
-        "audio"
-    } else {
-        return Err("Unsupported media file.".into());
-    };
+    let kind = classify_media_kind(&extension, video.is_some(), audio.is_some())?;
     let primary =
         if kind == "audio" { audio } else { video }.ok_or("Primary media stream missing.")?;
     let duration = data["format"]["duration"]
@@ -1713,6 +1859,11 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
         .and_then(|stream| stream["tags"]["timecode"].as_str())
         .or_else(|| data["format"]["tags"]["timecode"].as_str())
         .map(str::to_string);
+    let primary_dimensions = if kind == "image" {
+        primary_tile_grid_display_dimensions(&data)
+    } else {
+        None
+    };
     Ok(MediaInfo {
         path: input.to_string_lossy().to_string(),
         name: input
@@ -1722,8 +1873,12 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
             .to_string(),
         kind: kind.to_string(),
         duration,
-        width: primary["width"].as_u64(),
-        height: primary["height"].as_u64(),
+        width: primary_dimensions
+            .map(|dimensions| dimensions.0)
+            .or_else(|| primary["width"].as_u64()),
+        height: primary_dimensions
+            .map(|dimensions| dimensions.1)
+            .or_else(|| primary["height"].as_u64()),
         fps: parse_rate(primary["r_frame_rate"].as_str()),
         codec: primary["codec_name"]
             .as_str()
@@ -1752,6 +1907,93 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
         size,
         start_timecode,
     })
+}
+
+fn primary_tile_grid_display_dimensions(data: &Value) -> Option<(u64, u64)> {
+    let groups = data["stream_groups"].as_array()?;
+    let group = groups
+        .iter()
+        .filter(|group| group["type"].as_str() == Some("Tile Grid"))
+        .max_by_key(|group| {
+            let default = group["disposition"]["default"].as_u64().unwrap_or(0);
+            let component = group["components"]
+                .as_array()
+                .and_then(|items| items.first());
+            let area = component
+                .and_then(|item| item["width"].as_u64().zip(item["height"].as_u64()))
+                .map_or(0, |(width, height)| width.saturating_mul(height));
+            (default, area)
+        })?;
+    let component = group["components"].as_array()?.first()?;
+    let mut width = component["width"].as_u64()?;
+    let mut height = component["height"].as_u64()?;
+    let rotation = component["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|item| item["rotation"].as_i64())
+        .unwrap_or(0)
+        .rem_euclid(360);
+    if matches!(rotation, 90 | 270) {
+        std::mem::swap(&mut width, &mut height);
+    }
+    Some((width, height))
+}
+
+#[tauri::command]
+fn read_project(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    if !path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("containerproject"))
+    {
+        return Err("Choose a .containerproject file.".into());
+    }
+    let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > 5 * 1024 * 1024 {
+        return Err("The project file is invalid or too large.".into());
+    }
+    std::fs::read_to_string(path).map_err(|error| format!("Project could not be opened: {error}"))
+}
+
+#[tauri::command]
+fn write_project(path: String, contents: String) -> Result<(), String> {
+    if contents.len() > 5 * 1024 * 1024 {
+        return Err("The project data is too large.".into());
+    }
+    serde_json::from_str::<Value>(&contents)
+        .map_err(|_| "The project data is invalid.".to_string())?;
+    let mut path = PathBuf::from(path);
+    if !path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("containerproject"))
+    {
+        path.set_extension("containerproject");
+    }
+    std::fs::write(path, contents).map_err(|error| format!("Project could not be saved: {error}"))
+}
+
+fn classify_media_kind(
+    extension: &str,
+    has_video_stream: bool,
+    has_audio_stream: bool,
+) -> Result<&'static str, String> {
+    // FFprobe exposes the primary item in still-image containers such as
+    // HEIC/HEIF as a video stream, so the known image container wins here.
+    const IMAGE_EXTENSIONS: &[&str] = &[
+        "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif",
+    ];
+    if IMAGE_EXTENSIONS.contains(&extension) {
+        Ok("image")
+    } else if has_video_stream {
+        Ok("video")
+    } else if has_audio_stream {
+        Ok("audio")
+    } else {
+        Err("Unsupported media file.".into())
+    }
 }
 
 #[tauri::command]
@@ -2009,7 +2251,7 @@ fn safe_stem(input: &Path) -> String {
 
 fn category(operation: &str) -> &str {
     match operation {
-        "transform" | "ratio" | "resize" => "transform",
+        "transform" | "clipper" | "ratio" | "resize" => "transform",
         "upscale" => "upscale",
         "fps" | "interpolation" | "frame_blend" | "speed" | "cfr" | "stabilizer" => "motion",
         "compression" | "smart_quality" | "discord_compressor" | "potatoify" => "quality",
@@ -2055,6 +2297,22 @@ fn unique_output(input: &Path, operation: &str, extension: &str) -> Result<PathB
         counter += 1;
     }
     Ok(output)
+}
+
+fn operation_output_source(request: &OperationRequest) -> Result<PathBuf, String> {
+    let Some(original) = request.params.get("__source_path") else {
+        return Ok(PathBuf::from(&request.input));
+    };
+    let original = PathBuf::from(original);
+    let extension = original
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !original.is_file() || !matches!(extension.as_str(), "heic" | "heif") {
+        return Err("Invalid original HEIC source path.".into());
+    }
+    Ok(original)
 }
 
 async fn waveform_for(input: &Path) -> Result<Vec<f32>, String> {
@@ -3288,6 +3546,111 @@ fn append_image_encoder(
     Ok(())
 }
 
+fn transform_region(
+    params: &HashMap<String, String>,
+    prefix: &str,
+) -> Result<(f64, f64, f64, f64), String> {
+    let x = check_range(
+        parse_number(params, &format!("{prefix}_x"))?,
+        0.0,
+        99.0,
+        "Region X",
+    )?;
+    let y = check_range(
+        parse_number(params, &format!("{prefix}_y"))?,
+        0.0,
+        99.0,
+        "Region Y",
+    )?;
+    let w = check_range(
+        parse_number(params, &format!("{prefix}_w"))?,
+        1.0,
+        100.0,
+        "Region width",
+    )?;
+    let h = check_range(
+        parse_number(params, &format!("{prefix}_h"))?,
+        1.0,
+        100.0,
+        "Region height",
+    )?;
+    if x + w > 100.001 || y + h > 100.001 {
+        return Err("Transform regions must stay inside the video.".into());
+    }
+    Ok((x, y, w, h))
+}
+
+fn transform_region_crop(
+    input: &str,
+    output: &str,
+    region: (f64, f64, f64, f64),
+    width: u64,
+    height: u64,
+) -> String {
+    let (x, y, w, h) = region;
+    format!("[{input}]crop=trunc(iw*{w}/100/2)*2:trunc(ih*{h}/100/2)*2:trunc(iw*{x}/100/2)*2:trunc(ih*{y}/100/2)*2,scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height}[{output}]")
+}
+
+fn multi_region_layout_filter(
+    params: &HashMap<String, String>,
+    layout: &str,
+    width: u64,
+    height: u64,
+) -> Result<String, String> {
+    let camera = transform_region(params, "region_a")?;
+    let content = transform_region(params, "region_b")?;
+    match layout {
+        "split" => {
+            let top_percent = check_range(
+                parse_number(params, "region_a_height")?,
+                20.0,
+                80.0,
+                "Top region height",
+            )?;
+            let top_height =
+                ((height as f64 * top_percent / 100.0).round() as u64 / 2 * 2).clamp(2, height - 2);
+            let bottom_height = height - top_height;
+            let order = params
+                .get("region_order")
+                .map(String::as_str)
+                .unwrap_or("a_first");
+            let (top, bottom) = match order {
+                "a_first" => (camera, content),
+                "b_first" => (content, camera),
+                _ => return Err("Invalid region order.".into()),
+            };
+            Ok(format!(
+                "split=2[ra][rb];{};{};[top][bottom]vstack=inputs=2,setsar=1",
+                transform_region_crop("ra", "top", top, width, top_height),
+                transform_region_crop("rb", "bottom", bottom, width, bottom_height)
+            ))
+        }
+        "squares" => {
+            let half_height = height / 2 / 2 * 2;
+            let lower_height = height - half_height;
+            Ok(format!(
+                "split=2[ra][rb];{};{};[camera][content]vstack=inputs=2,setsar=1",
+                transform_region_crop("ra", "camera", camera, width, half_height),
+                transform_region_crop("rb", "content", content, width, lower_height)
+            ))
+        }
+        "freecam" => {
+            let size = check_range(
+                parse_number(params, "freecam_size")?,
+                15.0,
+                90.0,
+                "Camera size",
+            )?;
+            let x = check_range(parse_number(params, "freecam_x")?, 0.0, 100.0, "Camera X")?;
+            let y = check_range(parse_number(params, "freecam_y")?, 0.0, 100.0, "Camera Y")?;
+            let camera_width = ((width as f64 * size / 100.0).round() as u64 / 2 * 2).max(2);
+            let (cx, cy, cw, ch) = camera;
+            Ok(format!("split=2[ra][rb];{};[ra]crop=trunc(iw*{cw}/100/2)*2:trunc(ih*{ch}/100/2)*2:trunc(iw*{cx}/100/2)*2:trunc(ih*{cy}/100/2)*2,scale={camera_width}:-2:flags=lanczos[camera];[content][camera]overlay=(W-w)*{x}/100:(H-h)*{y}/100,setsar=1", transform_region_crop("rb", "content", content, width, height)))
+        }
+        _ => Err("Invalid multi-region layout.".into()),
+    }
+}
+
 async fn build_command(
     request: &OperationRequest,
     info: &MediaInfo,
@@ -3306,11 +3669,21 @@ async fn build_command(
     let extension: String;
 
     match op {
-        "transform" => {
+        "transform" | "clipper" => {
             if info.kind != "video" && info.kind != "image" {
                 return Err("Transform requires a video or image file.".into());
             }
             let crop_mode = param(p, "crop_mode")?;
+            let vertical_layout = p
+                .get("vertical_layout")
+                .map(String::as_str)
+                .unwrap_or("fill");
+            if !["original", "blur", "fill", "split", "squares", "freecam"]
+                .contains(&vertical_layout)
+            {
+                return Err("Invalid vertical layout.".into());
+            }
+            let vertical_layout_active = info.kind == "video" && crop_mode == "9:16";
             let fit_mode = p.get("fit_mode").map(String::as_str).unwrap_or("crop");
             if !["crop", "contain"].contains(&fit_mode) {
                 return Err("Invalid fit mode.".into());
@@ -3331,7 +3704,10 @@ async fn build_command(
             if param(p, "flip_v")? == "true" {
                 filters.push("vflip".into());
             }
-            if crop_mode != "off" && (info.kind != "image" || fit_mode == "crop") {
+            if crop_mode != "off"
+                && (info.kind != "image" || fit_mode == "crop")
+                && (!vertical_layout_active || vertical_layout == "fill")
+            {
                 let x = check_range(parse_number(p, "crop_x")?, 0.0, 99.0, "Crop X")?;
                 let y = check_range(parse_number(p, "crop_y")?, 0.0, 99.0, "Crop Y")?;
                 let w = check_range(parse_number(p, "crop_w")?, 1.0, 100.0, "Crop width")?;
@@ -3405,7 +3781,41 @@ async fn build_command(
                     let height =
                         check_range(parse_number(p, "output_height")?, 2.0, 7680.0, "Height")?
                             as u64;
-                    if info.kind == "image" {
+                    if vertical_layout_active
+                        && ["split", "squares", "freecam"].contains(&vertical_layout)
+                    {
+                        filters.push(multi_region_layout_filter(
+                            p,
+                            vertical_layout,
+                            width,
+                            height,
+                        )?);
+                    } else if vertical_layout_active && vertical_layout == "original" {
+                        let background = match p
+                            .get("canvas_background")
+                            .map(String::as_str)
+                            .unwrap_or("black")
+                        {
+                            "black" | "transparent" => "black".into(),
+                            "white" => "white".into(),
+                            "custom" => {
+                                let value = p
+                                    .get("canvas_color")
+                                    .map(String::as_str)
+                                    .unwrap_or("#202020");
+                                parse_hex_color(value, "Canvas background")?;
+                                format!("0x{}", value.trim_start_matches('#'))
+                            }
+                            _ => return Err("Invalid canvas background.".into()),
+                        };
+                        filters.push(format!(
+                            "scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background},setsar=1"
+                        ));
+                    } else if vertical_layout_active && vertical_layout == "blur" {
+                        filters.push(format!(
+                            "split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},gblur=sigma=35[bg];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1"
+                        ));
+                    } else if info.kind == "image" {
                         filters.push(format!(
                             "scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
                         ));
@@ -3451,14 +3861,30 @@ async fn build_command(
                 append_image_encoder(&mut args, output_extension, 100)?;
                 extension = output_extension.into();
             } else {
-                args.extend([
-                    "-c:v".into(),
-                    "libx264".into(),
-                    "-qp".into(),
-                    "0".into(),
-                    "-preset".into(),
-                    "veryfast".into(),
-                ]);
+                if op == "clipper" {
+                    // Lossless H.264 is disproportionately large for social-layout exports.
+                    // CRF 18 remains visually transparent while ultrafast keeps the CPU-heavy
+                    // crop/scale/composite pipeline moving substantially faster.
+                    args.extend([
+                        "-c:v".into(),
+                        "libx264".into(),
+                        "-crf".into(),
+                        "18".into(),
+                        "-preset".into(),
+                        "ultrafast".into(),
+                        "-pix_fmt".into(),
+                        "yuv420p".into(),
+                    ]);
+                } else {
+                    args.extend([
+                        "-c:v".into(),
+                        "libx264".into(),
+                        "-qp".into(),
+                        "0".into(),
+                        "-preset".into(),
+                        "veryfast".into(),
+                    ]);
+                }
                 append_mp4_audio_codec(&mut args, info);
                 extension = "mp4".into();
             }
@@ -4836,7 +5262,8 @@ async fn build_command(
     if extension == "mp4" {
         args.extend(["-movflags".into(), "+faststart".into()]);
     }
-    let output = unique_output(&input, op, &extension)?;
+    let output_source = operation_output_source(request)?;
+    let output = unique_output(&output_source, op, &extension)?;
     args.push(output.to_string_lossy().to_string());
     Ok((args, output))
 }
@@ -4949,9 +5376,10 @@ async fn run_image_compressor(
         return Err("Image Compressor requires an image file.".into());
     }
     let input = PathBuf::from(&request.input);
+    let output_source = operation_output_source(request)?;
     let requested_format = param(&request.params, "format")?;
     let extension = match requested_format {
-        "source" => image_extension(&input),
+        "source" => image_extension(&output_source),
         "jpeg" | "jpg" => "jpg".into(),
         "png" => "png".into(),
         "webp" => "webp".into(),
@@ -4975,7 +5403,7 @@ async fn run_image_compressor(
     if extension == "jpg" {
         parse_hex_color(background, "JPEG background")?;
     }
-    let output = unique_output(&input, "image_compressor", &extension)?;
+    let output = unique_output(&output_source, "image_compressor", &extension)?;
     let temp = operation_temp_dir("image-compressor")?;
     let started = Instant::now();
     let result = async {
@@ -5102,7 +5530,8 @@ async fn run_image_potatoify(
     let height = ((info.height.unwrap_or(1080) as f64 / scale) as u64 / 2 * 2).max(2);
     let qscale = (2.0 + (quality - 1.0) * 29.0 / 9.0).round() as u64;
     let input = PathBuf::from(&request.input);
-    let output = unique_output(&input, "image_potatoify", "jpg")?;
+    let output_source = operation_output_source(request)?;
+    let output = unique_output(&output_source, "image_potatoify", "jpg")?;
     let temp = operation_temp_dir("image")?;
     let started = Instant::now();
     let result = async {
@@ -6403,6 +6832,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             probe_media,
+            read_project,
+            write_project,
             probe_subtitles,
             ffmpeg_status,
             ffmpeg_capabilities,
@@ -6413,7 +6844,10 @@ pub fn run() {
             analyze_download_url,
             remove_download_thumbnail,
             download_media,
+            prepare_image_preview,
+            remove_image_preview,
             list_system_fonts,
+            font_preview_data,
             available_encoders,
             hash_file,
             list_media_files,
@@ -6452,6 +6886,7 @@ pub fn run() {
         .expect("error while building CONTAINER")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                cleanup_current_image_previews();
                 // yt-dlp must be tied to this application session. Without
                 // explicitly ending its process tree, Windows can keep a
                 // download alive after the UI has been closed.
@@ -6472,6 +6907,195 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn project_files_round_trip_and_reject_invalid_input() {
+        let root = std::env::temp_dir().join(format!(
+            "container-project-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let requested = root.join("unicode proje");
+        let contents = r#"{"version":1,"mediaPath":"C:\\medya\\çalışma.mp4"}"#;
+        write_project(
+            requested.to_string_lossy().into_owned(),
+            contents.to_string(),
+        )
+        .unwrap();
+        let saved = requested.with_extension("containerproject");
+        assert_eq!(
+            read_project(saved.to_string_lossy().into_owned()).unwrap(),
+            contents
+        );
+        assert!(write_project(
+            root.join("invalid").to_string_lossy().into_owned(),
+            "not json".into()
+        )
+        .is_err());
+        assert!(read_project(root.join("wrong.json").to_string_lossy().into_owned()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn still_image_containers_are_not_misclassified_as_video() {
+        for extension in ["heic", "heif", "avif", "png"] {
+            assert_eq!(
+                classify_media_kind(extension, true, false).unwrap(),
+                "image"
+            );
+        }
+        assert_eq!(classify_media_kind("mp4", true, true).unwrap(), "video");
+        assert_eq!(classify_media_kind("wav", false, true).unwrap(), "audio");
+        assert!(classify_media_kind("unknown", false, false).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn installed_truetype_font_can_be_embedded_for_preview() {
+        let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+        let font = PathBuf::from(windows).join("Fonts").join("arial.ttf");
+        let data = font_preview_data(font.to_string_lossy().into_owned()).unwrap();
+        assert!(data.starts_with("data:font/ttf;base64,"));
+        assert!(data.len() > 1_000);
+    }
+
+    #[test]
+    fn heif_tile_grid_reports_the_composed_display_dimensions() {
+        let data = serde_json::json!({
+            "stream_groups": [{
+                "type": "Tile Grid",
+                "disposition": { "default": 1 },
+                "components": [{
+                    "width": 4032,
+                    "height": 3024,
+                    "side_data_list": [{ "rotation": -90 }]
+                }]
+            }]
+        });
+        assert_eq!(
+            primary_tile_grid_display_dimensions(&data),
+            Some((3024, 4032))
+        );
+    }
+
+    #[tokio::test]
+    async fn vertical_transform_layouts_preserve_aspect_ratio() {
+        let info = MediaInfo {
+            path: "source.mp4".into(),
+            name: "source.mp4".into(),
+            kind: "video".into(),
+            duration: Some(5.0),
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            codec: "h264".into(),
+            audio_codec: Some("aac".into()),
+            audio_tracks: Vec::new(),
+            pixel_format: Some("yuv420p".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        let request = |layout: &str| OperationRequest {
+            input: info.path.clone(),
+            operation: "clipper".into(),
+            params: values(&[
+                ("crop_mode", "9:16"),
+                ("vertical_layout", layout),
+                ("fit_mode", "crop"),
+                ("canvas_background", "black"),
+                ("canvas_color", "#202020"),
+                ("crop_x", "34.1797"),
+                ("crop_y", "0"),
+                ("crop_w", "31.6406"),
+                ("crop_h", "100"),
+                ("rotate", "0"),
+                ("flip_h", "false"),
+                ("flip_v", "false"),
+                ("size_mode", "exact"),
+                ("size", "1080"),
+                ("output_width", "1080"),
+                ("output_height", "1920"),
+                ("region_a_x", "72"),
+                ("region_a_y", "2"),
+                ("region_a_w", "26"),
+                ("region_a_h", "30"),
+                ("region_b_x", "0"),
+                ("region_b_y", "0"),
+                ("region_b_w", "100"),
+                ("region_b_h", "100"),
+                ("region_order", "a_first"),
+                ("region_a_height", "30"),
+                ("freecam_x", "50"),
+                ("freecam_y", "2"),
+                ("freecam_size", "77"),
+            ]),
+        };
+        let (original, _) = build_command(&request("original"), &info).await.unwrap();
+        let original_filter = original
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(original_filter.contains("force_original_aspect_ratio=decrease"));
+        assert!(original_filter.contains("pad=1080:1920"));
+        assert!(!original_filter.contains("crop=trunc"));
+
+        let (blur, _) = build_command(&request("blur"), &info).await.unwrap();
+        let blur_filter = blur
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(blur_filter.contains("split=2[bg][fg]"));
+        assert!(blur_filter.contains("gblur=sigma=35"));
+        assert!(blur_filter.contains("force_original_aspect_ratio=decrease"));
+
+        let (fill, _) = build_command(&request("fill"), &info).await.unwrap();
+        let fill_filter = fill
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(fill_filter.contains("crop=trunc"));
+        assert!(fill_filter.contains("scale=trunc(1080/2)*2:trunc(1920/2)*2"));
+
+        let (split, _) = build_command(&request("split"), &info).await.unwrap();
+        let split_filter = split
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(split_filter.contains("split=2[ra][rb]"));
+        assert!(split_filter.contains("scale=1080:576"));
+        assert!(split_filter.contains("scale=1080:1344"));
+        assert!(split_filter.contains("[top][bottom]vstack=inputs=2"));
+
+        let (squares, _) = build_command(&request("squares"), &info).await.unwrap();
+        let squares_filter = squares.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
+        assert!(squares_filter.contains("split=2[ra][rb]"));
+        assert!(squares_filter.contains("scale=1080:960"));
+        assert!(squares_filter.contains("[camera][content]vstack=inputs=2"));
+        assert!(squares.windows(2).any(|pair| pair == ["-crf", "18"]));
+        assert!(squares
+            .windows(2)
+            .any(|pair| pair == ["-preset", "ultrafast"]));
+        assert!(!squares.windows(2).any(|pair| pair == ["-qp", "0"]));
+
+        let (freecam, _) = build_command(&request("freecam"), &info).await.unwrap();
+        let freecam_filter = freecam.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
+        assert!(freecam_filter.contains("scale=832:-2"));
+        assert!(freecam_filter.contains("overlay=(W-w)*50/100:(H-h)*2/100"));
+    }
 
     #[test]
     fn new_tool_capability_parsers_match_the_used_ffmpeg_paths() {
@@ -6763,7 +7387,20 @@ mod tests {
             .unwrap()
             .unwrap()
             .path();
-        std::fs::write(&path, b"corrupt model").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match std::fs::write(&path, b"corrupt model") {
+                Ok(()) => break,
+                Err(error)
+                    if cfg!(target_os = "windows")
+                        && error.raw_os_error() == Some(32)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => panic!("test model could not be corrupted: {error}"),
+            }
+        }
         let mut detector = load_embedded_vad(&directory).unwrap();
         assert!(detector.forward_chunk(&[0.0; 512], 16_000).unwrap()[[0, 0]].is_finite());
         drop(detector);
@@ -7331,6 +7968,7 @@ mod tests {
         let tested = [
             "audio_convert",
             "blur_pixelate",
+            "clipper",
             "color",
             "compression",
             "cut",

@@ -56,6 +56,30 @@ export const tools: Tool[] = [
     ],
   },
   {
+    id: "clipper", title: "Vertical Clipper", category: "Clipper", kind: ["video"], accent: "purple",
+    description: "Turns horizontal footage into ready-to-share 9:16 layouts.",
+    detail: "Choose Original, Blur, Fill, Split, Squares or Freecam; select camera and content regions directly in the preview.",
+    fields: [
+      select("crop_mode", "Crop", "9:16", [["9:16","9:16"]]),
+      select("vertical_layout", "Vertical layout", "split", [["original","Original Size"],["blur","Blur"],["fill","Fill"],["split","Split"],["squares","Squares"],["freecam","Freecam"]]),
+      number("region_a_x", "Camera X", 72, 0, 99, 0.01, "%"), number("region_a_y", "Camera Y", 2, 0, 99, 0.01, "%"),
+      number("region_a_w", "Camera width", 26, 1, 100, 0.01, "%"), number("region_a_h", "Camera height", 30, 1, 100, 0.01, "%"),
+      number("region_b_x", "Content X", 0, 0, 99, 0.01, "%"), number("region_b_y", "Content Y", 0, 0, 99, 0.01, "%"),
+      number("region_b_w", "Content width", 100, 1, 100, 0.01, "%"), number("region_b_h", "Content height", 100, 1, 100, 0.01, "%"),
+      select("region_order", "Region order", "a_first", [["a_first","Camera above content"],["b_first","Content above camera"]]),
+      number("region_a_height", "Top region height", 30, 20, 80, 1, "%"),
+      number("freecam_x", "Camera output X", 50, 0, 100, 1, "%"), number("freecam_y", "Camera output Y", 2, 0, 100, 1, "%"),
+      number("freecam_size", "Camera output size", 77, 15, 90, 1, "%"),
+      select("fit_mode", "Fit mode", "crop", [["crop","Crop / fill"]]),
+      select("canvas_background", "Canvas background", "black", [["black","Black"],["white","White"],["custom","Custom color"]]),
+      {key:"canvas_color",label:"Custom background",type:"text",value:"#202020"},
+      number("crop_x", "Crop X", 34.1797, 0, 100, 0.01, "%"), number("crop_y", "Crop Y", 0, 0, 100, 0.01, "%"),
+      number("crop_w", "Crop width", 31.6406, 1, 100, 0.01, "%"), number("crop_h", "Crop height", 100, 1, 100, 0.01, "%"),
+      select("rotate", "Rotate", "0", [["0","0°"]]), select("flip_h", "Horizontal flip", "false", [["false","Off"]]), select("flip_v", "Vertical flip", "false", [["false","Off"]]),
+      select("size_mode", "Output size", "exact", [["exact","1080 × 1920"]]), number("size", "Pixels", 1080, 2, 7680, 2, "px"), number("output_width", "Width", 1080, 2, 7680, 2, "px"), number("output_height", "Height", 1920, 2, 7680, 2, "px"),
+    ],
+  },
+  {
     id: "upscale", title: "Upscale", category: "Upscale", kind: ["video"], accent: "green",
     description: "Raises video resolution to a standard HD, 2K, 4K or 8K target.",
     detail: "Detects the source dimensions, preserves its aspect ratio and frame rate, and uses high-quality Lanczos scaling. Audio is copied without re-encoding when the MP4 container supports it.",
@@ -240,6 +264,7 @@ export const cloneTool = (tool: Tool): Tool => ({ ...tool, fields: tool.fields.m
 
 const enText: Record<string, [string, string]> = {
   transform:["Crop, rotate, flip and resize in one workspace.","Choose a social preset or adjust the crop directly in the preview. The transformed video is encoded losslessly and audio is copied unchanged."],
+  clipper:["Turns horizontal footage into ready-to-share 9:16 layouts.","Choose Original Size, Blur, Fill, Split, Squares or Freecam; select camera and content regions directly in the preview."],
   upscale:["Raises video resolution to a standard HD, 2K, 4K or 8K target.","Detects the source dimensions, preserves its aspect ratio and frame rate, and uses high-quality Lanczos scaling. Audio is copied without re-encoding when the MP4 container supports it."],
   fps:["Changes the frame rate directly.","It does not create new motion; frames are dropped or repeated."],
   interpolation:["Raises FPS by generating blended intermediate frames.","The target must be above the source FPS, a multiple of 60, and no more than 2400."],
@@ -275,8 +300,8 @@ const enText: Record<string, [string, string]> = {
   metadata_cleaner:["Removes private and descriptive metadata from an image.","EXIF, GPS, XMP, IPTC and software/camera tags are discarded while pixel content is preserved."],
 };
 
-const trTitles: Record<string,string> = {ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",speed:"Video Hızı",stabilizer:"Video Sabitleyici",compression:"Kalite / Sıkıştırma",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",image_overlay:"Görsel / Logo Kaplama",color:"Renk Ayarı",noise:"Görsel Gürültü",blur_pixelate:"Bulanıklaştır / Pikselleştir",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",merge_videos:"Videoları Birleştir",subtitles:"Altyazılar",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_compressor:"Görsel Sıkıştırıcı",metadata_cleaner:"Metadata Temizleyici",image_potatoify:"Görsel Potatoify"};
-const trCategories: Record<string,string> = {Transform:"Dönüştürme",Upscale:"Upscale",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Utilities:"Araçlar",Audio:"Ses",Image:"Görsel"};
+const trTitles: Record<string,string> = {clipper:"Dikey Clipper",ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",speed:"Video Hızı",stabilizer:"Video Sabitleyici",compression:"Kalite / Sıkıştırma",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",image_overlay:"Görsel / Logo Kaplama",color:"Renk Ayarı",noise:"Görsel Gürültü",blur_pixelate:"Bulanıklaştır / Pikselleştir",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",merge_videos:"Videoları Birleştir",subtitles:"Altyazılar",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_compressor:"Görsel Sıkıştırıcı",metadata_cleaner:"Metadata Temizleyici",image_potatoify:"Görsel Potatoify"};
+const trCategories: Record<string,string> = {Transform:"Dönüştürme",Clipper:"Clipper",Upscale:"Upscale",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Utilities:"Araçlar",Audio:"Ses",Image:"Görsel"};
 trTitles.transform = "Dönüştür";
 const trFields: Record<string,string> = {"Target ratio":"Hedef oran",Dimension:"Boyut yönü",Pixels:"Piksel","Output resolution":"Çıktı çözünürlüğü","Compression mode":"Sıkıştırma modu","Quality / CRF":"Kalite / CRF","Quality goal":"Kalite hedefi","Sample duration":"Örnek süresi","Target FPS":"Hedef FPS",Multiplier:"Hız çarpanı","Speed mode":"Hız yöntemi",CRF:"CRF","CPU preset":"CPU ön ayarı","Target bitrate":"Hedef bitrate","Discord size limit":"Discord boyut sınırı","Video codec":"Video codec'i","Maximum resolution":"En yüksek çözünürlük","Frame rate limit":"Kare hızı sınırı","Audio bitrate":"Ses bitrate'i","Compression speed":"Sıkıştırma hızı","Video badness":"Video bozulması","Audio badness":"Ses bozulması","Scale divisor":"Ölçek böleni",Text:"Yazı",Position:"Konum",Color:"Renk","Font size":"Yazı boyutu",Opacity:"Opaklık",Contrast:"Kontrast",Saturation:"Doygunluk",Brightness:"Parlaklık",Gamma:"Gama",Hue:"Renk tonu",Temperature:"Sıcaklık",Sharpen:"Keskinlik","Gaussian Blur":"Gauss Bulanıklığı",Denoise:"Gürültü azaltma",Deband:"Bant giderme",Vignette:"Vinyet",Grayscale:"Gri tonlama",Interlace:"Tarama","Noise amount":"Gürültü miktarı",Severity:"Şiddet",Encoder:"Kodlayıcı",Quality:"Kalite","Pixel format":"Piksel formatı","Audio tracks":"Ses parçaları","Selected audio track":"Seçili ses parçası",Start:"Başlangıç",End:"Bitiş","Cut mode":"Kesim yöntemi",Container:"Kapsayıcı",Timestamp:"Zaman",Format:"Format",Duration:"Süre",Height:"Yükseklik","Maximum colors":"En fazla renk","Palette mode":"Palet yöntemi",Dithering:"Renk geçişi",Transparency:"Şeffaflık",Loop:"Tekrar","Audio format":"Ses formatı","Replacement audio":"Yeni ses dosyası","Output format":"Çıktı formatı",Badness:"Bozulma","Times to compress":"Sıkıştırma sayısı","Detection profile":"Algılama profili","Proxy resolution":"Proxy çözünürlüğü","Proxy quality":"Proxy kalitesi","Repair method":"Onarım yöntemi",Strength:"Şiddet","Overlay image":"Kaplama görseli",Size:"Boyut",Margin:"Kenar boşluğu",Mode:"Mod","Merge mode":"Birleştirme modu",Videos:"Videolar",Action:"İşlem","Subtitle file":"Altyazı dosyası","Subtitle track":"Altyazı parçası"};
 
