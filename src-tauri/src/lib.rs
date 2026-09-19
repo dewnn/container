@@ -7843,8 +7843,8 @@ mod tests {
             r"C\:\\Windows\\Fonts\\impact.ttf"
         );
         assert_eq!(
-            drawtext_escape("dean's [text], ok"),
-            r"dean\'s \[text\]\, ok"
+            drawtext_escape("user's [text], ok"),
+            r"user\'s \[text\]\, ok"
         );
     }
 
