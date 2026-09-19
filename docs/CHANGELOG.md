@@ -4,6 +4,13 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-09-20
+
+- Added optional Clipper watermarks with adjustable size and opacity, layout-aware placement for Split, Squares and Freecam, and an optional compact black separator strip.
+- Standardized watermark preview/export geometry and TikTok/YouTube Shorts safe-area behavior across vertical layouts and output resolutions.
+- Improved Cut Video with full-duration initial selection, direct H:M:S time entry, click-to-set start times and distinct click-versus-drag timeline behavior.
+- Refined the Clipper watermark controls and hardened FFmpeg text handling for punctuation and percent characters.
+
 ## [0.12.0] - 2026-09-19
 
 - Added Vertical Clipper with Original, Blur, Fill, Split, Squares and Freecam layouts, draggable camera/content regions, centering controls and faster, size-efficient exports.

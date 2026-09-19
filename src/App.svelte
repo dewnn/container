@@ -122,6 +122,9 @@
   let filmstripLoadId=0,subtitleLoadId=0;
   let toolboxTimeline: HTMLElement | null = $state(null);
   let timelineHover = $state<number|null>(null);
+  let cutStartInput = $state("0:00:00");
+  let cutEndInput = $state("0:00:10");
+  let cutTimeEditing:"start"|"end"|null=$state(null);
   let language: "tr" | "en" = $state("en");
   let theme: "dark" | "light" = $state(document.documentElement.dataset.theme === "light" ? "light" : "dark");
   let availableEncoders: string[] | null = $state(null);
@@ -334,6 +337,12 @@
     const millis = Math.floor((safe % 1) * 1000);
     return `${hours ? `${String(hours).padStart(2,"0")}:` : ""}${String(minutes).padStart(2,"0")}:${String(seconds).padStart(2,"0")}.${String(millis).padStart(3,"0")}`;
   };
+  const editableTime = (value:number) => {
+    const safe=Math.max(0,Number(value)||0),hours=Math.floor(safe/3600),minutes=Math.floor((safe%3600)/60),seconds=safe%60;
+    const secondText=Math.abs(seconds-Math.round(seconds))<.0005?String(Math.round(seconds)).padStart(2,"0"):seconds.toFixed(3).padStart(6,"0");
+    return `${hours}:${String(minutes).padStart(2,"0")}:${secondText}`;
+  };
+  const timelineTime = (value:number) => selected?.id==="cut"?editableTime(value):playerTime(value);
   function parseTimecode(value:string){
     const parts=value.trim().split(":");
     if(parts.length<1||parts.length>3||parts.some(part=>part===""||!/^\d+(?:\.\d{1,3})?$/.test(part)))return null;
@@ -345,10 +354,21 @@
   }
   function setCutTime(key:"start"|"end",value:string){
     const seconds=parseTimecode(value),duration=media?.duration??0;
-    if(seconds===null||seconds<0||seconds>duration){error=language==="tr"?"Geçerli bir zaman gir (SS, DD:SS veya SS:DD:SS.sss).":"Enter a valid time (SS, MM:SS or HH:MM:SS.sss).";return}
+    if(seconds===null||seconds<0||seconds>duration){error=language==="tr"?"Geçerli bir zaman gir (S, M:S veya H:M:S).":"Enter a valid time (S, M:S or H:M:S).";return}
     const other=toolNumber(key==="start"?"end":"start");
     if((key==="start"&&seconds>=other)||(key==="end"&&seconds<=other)){error=language==="tr"?"Bitiş zamanı başlangıçtan büyük olmalı.":"End must be greater than start.";return}
     setToolNumber(key,seconds);seekToolbox(seconds);error="";
+  }
+  function commitCutTime(key:"start"|"end"){
+    const value=key==="start"?cutStartInput:cutEndInput;
+    setCutTime(key,value);
+    const formatted=editableTime(toolNumber(key));
+    if(key==="start")cutStartInput=formatted;else cutEndInput=formatted;
+    cutTimeEditing=null;
+  }
+  function handleCutTimeKey(event:KeyboardEvent,key:"start"|"end"){
+    if(event.key==="Enter"){event.preventDefault();(event.currentTarget as HTMLInputElement).blur();return}
+    if(event.key==="Escape"){event.preventDefault();if(key==="start")cutStartInput=editableTime(toolNumber("start"));else cutEndInput=editableTime(toolNumber("end"));(event.currentTarget as HTMLInputElement).blur()}
   }
   const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
   function previewSourceDimensions(){
@@ -424,11 +444,12 @@
     }
     if (media?.duration) {
       for (const field of selected.fields) {
-        if (field.key === "end") field.value = Math.min(10, media.duration);
+        if (field.key === "end") field.value = selected.id === "cut" ? media.duration : Math.min(10, media.duration);
         if (field.key === "duration") field.value = Math.min(5, media.duration);
         if (["start", "end", "duration", "timestamp"].includes(field.key)) field.max = media.duration;
       }
     }
+    if(selected.id==="cut"){cutStartInput=editableTime(toolNumber("start"));cutEndInput=editableTime(toolNumber("end"));cutTimeEditing=null}
     const audioTrackField = selected.fields.find((item) => item.key === "audio_track");
     if (audioTrackField && media) {
       audioTrackField.options = media.audio_tracks.map((track, position) => {
@@ -484,6 +505,12 @@
   function setToolNumber(key:string,value:number){const field=toolField(key);if(field)field.value=Math.round(value*1000)/1000}
   function toolValue(key:string){return String(toolField(key)?.value??"")}
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
+  $effect(()=>{
+    if(selected?.id!=="cut")return;
+    const start=toolNumber("start"),end=toolNumber("end");
+    if(cutTimeEditing!=="start")cutStartInput=editableTime(start);
+    if(cutTimeEditing!=="end")cutEndInput=editableTime(end);
+  });
   async function loadSubtitleTracks(){
     if(!media)return;
     const path=media.path,id=++subtitleLoadId;
@@ -826,6 +853,27 @@
     const width=Math.max(15,Math.min(90,toolNumber("freecam_size"))),height=Math.min(90,width*(9/16)/(regionWidth/regionHeight));
     return {width,height,left:(100-width)*toolNumber("freecam_x")/100,top:(100-height)*toolNumber("freecam_y")/100};
   }
+  function clipperWatermarkPreviewStyle(background=false){
+    const box=verticalOutputBox();if(!box)return "display:none";
+    const layout=toolValue("vertical_layout"),outputWidth=Math.max(2,toolNumber("output_width")||1080),fontSize=Math.max(6,toolNumber("watermark_size")*box.width/outputWidth);
+    const barHeight=fontSize*1.5,safeTop=box.top+box.height*.08+barHeight/2,safeBottom=box.top+box.height*.78-barHeight/2;
+    let x=box.left+box.width/2,y=safeBottom;
+    if(layout==="split"){
+      y=box.top+box.height*toolNumber("region_a_height")/100;
+    }
+    else if(layout==="squares")y=box.top+box.height/2;
+    else if(layout==="freecam"){
+      const camera=freecamPlacement();x=box.left+box.width*(camera.left+camera.width/2)/100;y=box.top+box.height*(camera.top+camera.height)/100;
+    }
+    const camera=layout==="freecam"?freecamPlacement():null,backgroundEnabled=toolValue("watermark_background")==="true"&&["split","squares","freecam"].includes(layout);
+    const backgroundX=camera?box.left+box.width*(camera.left+camera.width/2)/100:box.left+box.width/2;
+    const backgroundWidth=camera?box.width*camera.width/100:box.width;
+    x=Math.max(box.left+box.width*.10,Math.min(box.left+box.width*.90,x));
+    y=Math.max(safeTop,Math.min(safeBottom,y));
+    if(background)return backgroundEnabled?`display:block;left:${backgroundX}px;top:${y}px;width:${backgroundWidth}px;height:${barHeight}px`:`display:none`;
+    const opacity=Math.max(.1,Math.min(1,toolNumber("watermark_opacity")/100));
+    return `left:${x}px;top:${y}px;font-size:${fontSize}px;color:rgba(255,255,255,${opacity});text-shadow:0 1px 2px rgba(0,0,0,${opacity}),0 0 3px rgba(0,0,0,${opacity})`;
+  }
   function startFreecamPlacement(event:PointerEvent,mode:"move"|"resize"){
     if(!freecamLayoutBox)return;
     event.preventDefault();event.stopPropagation();
@@ -904,18 +952,29 @@
     try{const result=await invoke<string>("compute_video_filmstrip",{path});if(id===filmstripLoadId&&media?.path===path)toolboxFilmstripUrl=result}catch(reason){if(id===filmstripLoadId&&media?.path===path){error=String(reason);reportProblem(reason)}}finally{if(id===filmstripLoadId)toolboxFilmstripLoading=false}
   }
   function timelineAt(clientX:number){if(!toolboxTimeline||!media?.duration)return 0;const rect=toolboxTimeline.getBoundingClientRect();return Math.max(0,Math.min(media.duration,(clientX-rect.left)/rect.width*media.duration))}
+  function applyTimelineClick(at:number){
+    seekToolbox(at);
+    if(selected?.id==="screenshot"){setToolNumber("timestamp",at);return}
+    if(!media?.duration||!selected)return;
+    const bounds=timelineBounds();
+    if(selected.id==="cut"){
+      setToolNumber("start",Math.max(0,Math.min(bounds.end-.01,at)));
+      return;
+    }
+    if(selected.id!=="gif")return;
+    const span=Math.max(.01,bounds.end-bounds.start),start=Math.max(0,Math.min(media.duration-span,at)),end=Math.min(media.duration,start+span);
+    setToolNumber("start",start);setToolNumber("duration",end-start);
+  }
   function seekTimeline(event:MouseEvent){
     if(performance.now()<timelineIgnoreClickUntil||(event.target as HTMLElement).closest(".timeline-selection,.timeline-point"))return;
-    const at=timelineAt(event.clientX);seekToolbox(at);
-    if(selected?.id==="screenshot"){setToolNumber("timestamp",at);return}
-    if(!media?.duration||!selected||!["cut","gif"].includes(selected.id))return;
-    const bounds=timelineBounds(),span=Math.max(.01,bounds.end-bounds.start),start=Math.max(0,Math.min(media.duration-span,at)),end=Math.min(media.duration,start+span);
-    if(selected.id==="gif"){setToolNumber("start",start);setToolNumber("duration",end-start)}else{setToolNumber("start",start);setToolNumber("end",end)}
+    applyTimelineClick(timelineAt(event.clientX));
   }
   function hoverTimeline(event:PointerEvent){if(!toolboxTimeline)return;const rect=toolboxTimeline.getBoundingClientRect();timelineHover=Math.max(0,Math.min(100,(event.clientX-rect.left)/rect.width*100))}
   function startToolTimelineDrag(event:PointerEvent,mode:"start"|"end"|"point"|"range"){
     event.preventDefault();event.stopPropagation();if(!selected||!media?.duration)return;
     const initial=timelineBounds(),pointerStart=timelineAt(event.clientX),span=initial.end-initial.start;
+    const originX=event.clientX,originY=event.clientY;
+    let dragged=mode!=="range";
     const update=(moveEvent:PointerEvent)=>{
       const raw=timelineAt(moveEvent.clientX),duration=media?.duration??0;
       const anchor=mode==="end"?initial.end:initial.start;
@@ -929,9 +988,18 @@
       else{setToolNumber("start",start);setToolNumber("end",end)}
       seekToolbox(mode==="end"?end:start);
     };
-    update(event);
-    const move=(moveEvent:PointerEvent)=>update(moveEvent);
-    const stop=()=>{timelineIgnoreClickUntil=performance.now()+250;window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop)};
+    if(mode!=="range")update(event);
+    const move=(moveEvent:PointerEvent)=>{
+      if(mode==="range"&&!dragged){
+        if(Math.hypot(moveEvent.clientX-originX,moveEvent.clientY-originY)<4)return;
+        dragged=true;
+      }
+      update(moveEvent);
+    };
+    const stop=(upEvent:PointerEvent)=>{
+      if(mode==="range"&&!dragged)applyTimelineClick(timelineAt(upEvent.clientX));
+      timelineIgnoreClickUntil=performance.now()+250;window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop)
+    };
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);window.addEventListener("pointercancel",stop)
   }
   function timelineHandleKey(event:KeyboardEvent,mode:"start"|"end"|"point"){
@@ -1118,6 +1186,16 @@
     toolboxCurrent = toolboxVideo.currentTime;
   }
 
+  function handleToolboxMetadata(){
+    toolboxMetadataVersion++;
+    syncTransformBackdrop(true);
+    if(selected?.id==="upscale"&&selected)configureUpscale(selected);
+    const duration=toolboxVideo?.duration;
+    if(!media||!duration||!Number.isFinite(duration)||duration<=0)return;
+    if(!media.duration||Math.abs(media.duration-duration)>.05)media={...media,duration};
+    if(selected)for(const field of selected.fields)if(["start","end","duration","timestamp"].includes(field.key))field.max=duration;
+  }
+
   function toggleToolboxPlayer() {
     if (!toolboxVideo) return;
     if (toolboxVideo.paused) toolboxVideo.play().catch(() => {});
@@ -1286,6 +1364,7 @@
 
   function validate(tool: Tool): string | null {
     const params = paramsFrom(tool);
+    if(tool.id==="clipper"&&params.watermark_enabled==="true"&&!params.watermark_text.trim())return language==="tr"?"Watermark açıkken bir yazı gir.":"Enter watermark text or turn the watermark off.";
     if (tool.id === "interpolation" && media?.fps) {
       const fps = Number(params.fps);
       if (fps <= media.fps || fps > 2400 || fps % 60 !== 0) return `Interpolation FPS ${media.fps.toFixed(2)} değerinden yüksek, 60'ın katı ve en fazla 2400 olmalı.`;
@@ -1762,7 +1841,7 @@
                 <video bind:this={transformBackdropVideo} class="transform-video-backdrop" style={verticalBackdropStyle()} src={mediaUrl} preload="metadata" muted tabindex="-1"></video>
               {/if}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={()=>{toolboxMetadataVersion++;syncTransformBackdrop(true);if(selected?.id==="upscale")configureUpscale(selected)}} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; syncTransformBackdrop(); }} onplay={() => {toolboxPlaying=true;syncTransformBackdrop(true);void transformBackdropVideo?.play().catch(()=>{})}} onpause={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}} onended={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}}></video>
+              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; syncTransformBackdrop(); }} onplay={() => {toolboxPlaying=true;syncTransformBackdrop(true);void transformBackdropVideo?.play().catch(()=>{})}} onpause={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}} onended={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}}></video>
               {#if selected?.id==="clipper"&&["split","squares","freecam"].includes(toolValue("vertical_layout"))}
                 <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                   {#each [{id:"a" as const,label:"CAMERA REGION"},{id:"b" as const,label:"CONTENT REGION"}] as region}
@@ -1786,6 +1865,10 @@
                     {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize crop ${handle}`} onpointerdown={(event)=>startTransformCrop(event,handle)}></button>{/each}
                   </div>
                 </div>
+              {/if}
+              {#if selected?.id==="clipper"&&toolValue("watermark_enabled")==="true"&&toolValue("watermark_text").trim()}
+                <i class="clipper-watermark-background" style={clipperWatermarkPreviewStyle(true)}></i>
+                <span class="clipper-watermark-preview" style={clipperWatermarkPreviewStyle()}>{toolValue("watermark_text")}</span>
               {/if}
               {#if selected?.id === "text"}
                 <div class="text-preview-layer">
@@ -1890,8 +1973,8 @@
 
         {#if timelineTool && media.duration}
           <div class="tool-timeline panel">
-            <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div><b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${playerTime(timelineBounds().start)} — ${playerTime(timelineBounds().end)}`}</b></header>
-            {#if selected?.id==="cut"}<div class="cut-timecodes"><label><span>START</span><input class="mono" value={playerTime(toolNumber("start"))} onchange={(event)=>setCutTime("start",event.currentTarget.value)}></label><label><span>END</span><input class="mono" value={playerTime(toolNumber("end"))} onchange={(event)=>setCutTime("end",event.currentTarget.value)}></label></div>{/if}
+            <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div><b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${timelineTime(timelineBounds().start)} — ${timelineTime(timelineBounds().end)}`}</b></header>
+            {#if selected?.id==="cut"}<div class="cut-timecodes"><label><span>START <i>H:M:S</i></span><input class="mono" bind:value={cutStartInput} onfocus={()=>cutTimeEditing="start"} onblur={()=>commitCutTime("start")} onkeydown={(event)=>handleCutTimeKey(event,"start")} placeholder="0:05:14"></label><label><span>END <i>H:M:S</i></span><input class="mono" bind:value={cutEndInput} onfocus={()=>cutTimeEditing="end"} onblur={()=>commitCutTime("end")} onkeydown={(event)=>handleCutTimeKey(event,"end")} placeholder="0:05:46"></label></div>{/if}
             <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} onpointermove={hoverTimeline} onpointerleave={()=>timelineHover=null} role="presentation">
               {#if toolboxFilmstripUrl}<img class="filmstrip" src={toolboxFilmstripUrl} alt="Video filmstrip" draggable="false">{:else}<span class="wave-loading">{toolboxFilmstripLoading ? (language==="tr"?"video kareleri hazırlanıyor…":"building video frames…") : "—"}</span>{/if}
               {#if selected?.id === "screenshot"}
@@ -1904,7 +1987,7 @@
               {#if timelineHover!==null}<i class="timeline-hover" class:right={timelineHover>85} style:left={`${timelineHover}%`}><b>{playerTime(media.duration*timelineHover/100)}</b></i>{/if}
               <em class="timeline-playhead" style:left={`${toolboxCurrent/media.duration*100}%`}></em>
             </div>
-            <div class="tool-ruler mono"><span>{playerTime(0)}</span><span>{playerTime(media.duration/4)}</span><span>{playerTime(media.duration/2)}</span><span>{playerTime(media.duration*3/4)}</span><span>{playerTime(media.duration)}</span></div>
+            <div class="tool-ruler mono"><span>{timelineTime(0)}</span><span>{timelineTime(media.duration/4)}</span><span>{timelineTime(media.duration/2)}</span><span>{timelineTime(media.duration*3/4)}</span><span>{timelineTime(media.duration)}</span></div>
           </div>
         {/if}
 
@@ -2098,6 +2181,16 @@
                     <label><span>{language==="tr"?"Kamera konumu Y":"Camera position Y"}</span><input type="range" min="0" max="100" step="1" value={toolNumber("freecam_y")} oninput={(event)=>setToolNumber("freecam_y",Number(event.currentTarget.value))}></label>
                     <label><span>{language==="tr"?"Kamera boyutu":"Camera size"}</span><input type="range" min="15" max="90" step="1" value={toolNumber("freecam_size")} oninput={(event)=>setToolNumber("freecam_size",Number(event.currentTarget.value))}><small>{toolNumber("freecam_size").toFixed(0)}%</small></label>
                   {/if}
+                  <div class="clipper-watermark-controls">
+                    <label class="watermark-toggle"><input type="checkbox" checked={toolValue("watermark_enabled")==="true"} onchange={(event)=>setToolValue("watermark_enabled",event.currentTarget.checked?"true":"false")}><span>Watermark</span></label>
+                    {#if toolValue("watermark_enabled")==="true"}
+                      {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}<label class="watermark-toggle"><input type="checkbox" checked={toolValue("watermark_background")==="true"} onchange={(event)=>setToolValue("watermark_background",event.currentTarget.checked?"true":"false")}><span>{language==="tr"?"Siyah arka plan şeridi":"Black background strip"}</span></label>{/if}
+                      <label class="watermark-text-field"><span>{language==="tr"?"Yazı":"Text"}</span><input type="text" maxlength="64" placeholder="@kanaladi" value={toolValue("watermark_text")} oninput={(event)=>setToolValue("watermark_text",event.currentTarget.value)}></label>
+                      <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("watermark_size").toFixed(0)} px</small></span><input type="range" min="18" max="160" step="1" value={toolNumber("watermark_size")} oninput={(event)=>setToolNumber("watermark_size",Number(event.currentTarget.value))}></label>
+                      <label class="watermark-slider"><span>{language==="tr"?"Saydamlık":"Opacity"}<small>{toolNumber("watermark_opacity").toFixed(0)}%</small></span><input type="range" min="10" max="100" step="5" value={toolNumber("watermark_opacity")} oninput={(event)=>setToolNumber("watermark_opacity",Number(event.currentTarget.value))}></label>
+                      <p>{language==="tr"?"Split/Squares'ta iki panelin birleşim çizgisinin tam ortasında; diğer düzenlerde TikTok ve Shorts arayüzlerinden uzak ortak güvenli alanda görünür.":"Centered exactly on the Split/Squares panel seam; other layouts use a shared TikTok/Shorts safe area."}</p>
+                    {/if}
+                  </div>
                 </section>
               {/if}
               {#if selected.id==="transform"}

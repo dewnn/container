@@ -3334,6 +3334,7 @@ fn drawtext_escape(value: &str) -> String {
         .replace(',', "\\,")
         .replace('[', "\\[")
         .replace(']', "\\]")
+        .replace('%', "\\\\%")
 }
 
 fn audio_format(format: &str) -> Result<(&'static str, Vec<String>), String> {
@@ -3651,6 +3652,135 @@ fn multi_region_layout_filter(
     }
 }
 
+fn clipper_watermark_filter(
+    params: &HashMap<String, String>,
+    layout: &str,
+    width: u64,
+    height: u64,
+    info: &MediaInfo,
+) -> Result<Option<String>, String> {
+    if !enabled(params, "watermark_enabled") {
+        return Ok(None);
+    }
+    let text = params
+        .get("watermark_text")
+        .map(|value| value.trim())
+        .unwrap_or_default();
+    if text.is_empty() {
+        return Err("Watermark text cannot be empty when watermark is enabled.".into());
+    }
+    if text.chars().count() > 64 || text.chars().any(char::is_control) {
+        return Err("Watermark text must be a single line of at most 64 characters.".into());
+    }
+    let size = check_range(
+        parse_number(params, "watermark_size")?,
+        18.0,
+        160.0,
+        "Watermark size",
+    )?;
+    let opacity = check_range(
+        parse_number(params, "watermark_opacity")?,
+        10.0,
+        100.0,
+        "Watermark opacity",
+    )? / 100.0;
+    let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    let font_dir = PathBuf::from(windows).join("Fonts");
+    let font = ["arialbd.ttf", "arial.ttf"]
+        .into_iter()
+        .map(|name| font_dir.join(name))
+        .find(|path| path.is_file())
+        .ok_or("A Windows Arial font is required for the Clipper watermark.")?;
+
+    let safe_top = height as f64 * 0.08;
+    let safe_bottom = height as f64 * 0.78;
+    let bar_height = (size * 1.5).round().max(12.0);
+    let safe_low = safe_top + bar_height / 2.0;
+    let safe_high = (safe_bottom - bar_height / 2.0).max(safe_low);
+    let background_enabled = enabled(params, "watermark_background")
+        && matches!(layout, "split" | "squares" | "freecam");
+    let (x, y, background) = match layout {
+        "split" => {
+            let seam = height as f64
+                * check_range(
+                    parse_number(params, "region_a_height")?,
+                    20.0,
+                    80.0,
+                    "Top region height",
+                )?
+                / 100.0;
+            let center = seam.clamp(safe_low, safe_high);
+            (
+                "(w-text_w)/2".into(),
+                format!("{center:.3}-text_h/2"),
+                background_enabled.then(|| {
+                    format!(
+                        "drawbox=x=0:y={:.3}:w=iw:h={bar_height:.0}:color=black:t=fill",
+                        center - bar_height / 2.0
+                    )
+                }),
+            )
+        }
+        "squares" => {
+            let center = (height as f64 / 2.0).clamp(safe_low, safe_high);
+            (
+                "(w-text_w)/2".into(),
+                format!("{center:.3}-text_h/2"),
+                background_enabled.then(|| {
+                    format!(
+                        "drawbox=x=0:y={:.3}:w=iw:h={bar_height:.0}:color=black:t=fill",
+                        center - bar_height / 2.0
+                    )
+                }),
+            )
+        }
+        "freecam" => {
+            let camera = transform_region(params, "region_a")?;
+            let size_percent = check_range(
+                parse_number(params, "freecam_size")?,
+                15.0,
+                90.0,
+                "Camera size",
+            )?;
+            let output_x = check_range(parse_number(params, "freecam_x")?, 0.0, 100.0, "Camera X")?;
+            let output_y = check_range(parse_number(params, "freecam_y")?, 0.0, 100.0, "Camera Y")?;
+            let camera_width =
+                ((width as f64 * size_percent / 100.0).round() as u64 / 2 * 2).max(2);
+            let source_width = info.width.unwrap_or(16) as f64 * camera.2 / 100.0;
+            let source_height = info.height.unwrap_or(9) as f64 * camera.3 / 100.0;
+            let camera_height =
+                (camera_width as f64 * source_height / source_width.max(1.0)).max(2.0);
+            let left = (width as f64 - camera_width as f64).max(0.0) * output_x / 100.0;
+            let top = (height as f64 - camera_height).max(0.0) * output_y / 100.0;
+            let center = (top + camera_height).clamp(safe_low, safe_high);
+            (
+                format!(
+                    "max(w*0.10\\,min({:.3}-text_w/2\\,w*0.90-text_w))",
+                    left + camera_width as f64 / 2.0
+                ),
+                format!("{center:.3}-text_h/2"),
+                background_enabled.then(|| {
+                    format!(
+                        "drawbox=x={left:.3}:y={:.3}:w={camera_width}:h={bar_height:.0}:color=black:t=fill",
+                        center - bar_height / 2.0
+                    )
+                }),
+            )
+        }
+        _ => ("(w-text_w)/2".into(), "h*0.78-text_h".into(), None),
+    };
+    let border_opacity = opacity * 0.9;
+    let shadow_opacity = opacity * 0.8;
+    let background = background
+        .map(|filter| format!("{filter},"))
+        .unwrap_or_default();
+    Ok(Some(format!(
+        "{background}drawtext=fontfile='{}':text='{}':fontcolor=white@{opacity:.3}:fontsize={size:.0}:x={x}:y={y}:borderw=3:bordercolor=black@{border_opacity:.3}:shadowx=2:shadowy=2:shadowcolor=black@{shadow_opacity:.3}",
+        drawtext_escape(&font.to_string_lossy()),
+        drawtext_escape(text)
+    )))
+}
+
 async fn build_command(
     request: &OperationRequest,
     info: &MediaInfo,
@@ -3826,6 +3956,17 @@ async fn build_command(
                     }
                 }
                 _ => return Err("Invalid output size mode.".into()),
+            }
+            if op == "clipper" && vertical_layout_active {
+                let width =
+                    check_range(parse_number(p, "output_width")?, 2.0, 7680.0, "Width")? as u64;
+                let height =
+                    check_range(parse_number(p, "output_height")?, 2.0, 7680.0, "Height")? as u64;
+                if let Some(watermark) =
+                    clipper_watermark_filter(p, vertical_layout, width, height, info)?
+                {
+                    filters.push(watermark);
+                }
             }
             if !filters.is_empty() {
                 args.extend(["-vf".into(), filters.join(",")]);
@@ -7038,6 +7179,11 @@ mod tests {
                 ("freecam_x", "50"),
                 ("freecam_y", "2"),
                 ("freecam_size", "77"),
+                ("watermark_enabled", "false"),
+                ("watermark_text", ""),
+                ("watermark_size", "32"),
+                ("watermark_opacity", "85"),
+                ("watermark_background", "false"),
             ]),
         };
         let (original, _) = build_command(&request("original"), &info).await.unwrap();
@@ -7095,6 +7241,64 @@ mod tests {
         let freecam_filter = freecam.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
         assert!(freecam_filter.contains("scale=832:-2"));
         assert!(freecam_filter.contains("overlay=(W-w)*50/100:(H-h)*2/100"));
+
+        let mut watermarked = request("split");
+        watermarked
+            .params
+            .insert("watermark_enabled".into(), "true".into());
+        watermarked
+            .params
+            .insert("watermark_text".into(), "@channel".into());
+        watermarked
+            .params
+            .insert("watermark_background".into(), "true".into());
+        let (watermarked, _) = build_command(&watermarked, &info).await.unwrap();
+        let watermark_filter = watermarked
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .unwrap()[1]
+            .as_str();
+        assert!(watermark_filter.contains("drawtext="));
+        assert!(watermark_filter.contains("text='@channel'"));
+        assert!(watermark_filter.contains("drawbox=x=0:y=552.000:w=iw:h=48:color=black:t=fill"));
+        assert!(watermark_filter.contains("y=576.000-text_h/2"));
+        assert!(watermark_filter.contains("fontcolor=white@0.850"));
+
+        let mut plain_watermark = request("squares");
+        plain_watermark
+            .params
+            .insert("watermark_enabled".into(), "true".into());
+        plain_watermark
+            .params
+            .insert("watermark_text".into(), "100% ready".into());
+        let (plain_watermark, _) = build_command(&plain_watermark, &info).await.unwrap();
+        let plain_filter = plain_watermark
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .unwrap()[1]
+            .as_str();
+        assert!(!plain_filter.contains("drawbox="));
+        assert!(plain_filter.contains(r"text='100\\% ready'"));
+        assert!(plain_filter.contains("y=960.000-text_h/2"));
+
+        let mut freecam_watermark = request("freecam");
+        freecam_watermark
+            .params
+            .insert("watermark_enabled".into(), "true".into());
+        freecam_watermark
+            .params
+            .insert("watermark_text".into(), "@channel".into());
+        freecam_watermark
+            .params
+            .insert("watermark_background".into(), "true".into());
+        let (freecam_watermark, _) = build_command(&freecam_watermark, &info).await.unwrap();
+        let freecam_watermark_filter = freecam_watermark
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .unwrap()[1]
+            .as_str();
+        assert!(freecam_watermark_filter.contains("drawbox=x=124.000:"));
+        assert!(freecam_watermark_filter.contains(":w=832:h=48:color=black:t=fill"));
     }
 
     #[test]
@@ -7846,6 +8050,7 @@ mod tests {
             drawtext_escape("user's [text], ok"),
             r"user\'s \[text\]\, ok"
         );
+        assert_eq!(drawtext_escape("100%"), r"100\\%");
     }
 
     #[test]
