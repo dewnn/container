@@ -1,11 +1,11 @@
 {
+  "version": "0.12.0",
+  "pub_date": "2026-09-19T12:38:11.8215998Z",
+  "notes": "# Changes\n\n\n- Added Vertical Clipper with Original, Blur, Fill, Split, Squares and Freecam layouts, draggable camera/content regions, centering controls and faster, size-efficient exports.\n- Added reusable project open/save support and refined the landing-page project action placement.\n- Fixed installed Windows font previews so the selected font file is loaded directly and matches FFmpeg output instead of silently retaining a fallback font.\n- Added correct Apple HEIC/HEIF tile-grid previews, dimensions and image processing so the complete oriented photo is used rather than an individual image tile.\n- Improved image workflows, preview geometry, text positioning, cut time entry and related regression coverage.\n- Updated the Rust TLS dependency to resolve the current rustls security advisory.\n",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWZHOVl4THdUV0dWRWMxVmwxb1VKMnk4SWQ4cDNyL25iQVZoZmx1SU9lL01haFlkSlU2ZTZNUUVMRHdYdnE5RzZWUFBiQlIxV05BRDhZZ2paYU1pMWdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NzM2Mzk3CWZpbGU6Q09OVEFJTkVSXzAuMTEuMV94NjQtc2V0dXAuZXhlClpSZ0RZdGdZanhLUTh1bkdiT3RDTVYzbDRIa2d5N0ZXby9uZURXUFo0MDRBaG13VGRJYWM3SXhnNlFib1RRb3libWVJeitJZ1ltMHBhTnNaR0xYaUNBPT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.11.1/CONTAINER-Setup-0.11.1-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWM0ME5yRzFBSzJVdkt4WHFDRWUydVhFOUZ2NWt5bUJoS0FueGdjQlR4SVFnMGxDVnVZV2s3MC9McXpTQSs5TWxFNGZJbittanJlR3N6UklpdzU5b3dZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODIxNDc0CWZpbGU6Q09OVEFJTkVSXzAuMTIuMF94NjQtc2V0dXAuZXhlCnlmWFNsZytmOXlCMjBrUk5veVRtTWdPcExmalpoRHMyWkhZWDBvc1JSNlc4czJnUEVLa0RvbU5zbi8xaHlmUzl2WHpoNUZ1bUlpbzJzZ2lZaEFyMUFBPT0K",
+      "url": "https://github.com/dewnn/container/releases/download/v0.12.0/CONTAINER-Setup-0.12.0-x64.exe"
     }
-  },
-  "pub_date": "2026-09-06T23:13:33.9280157Z",
-  "notes": "# Changes\n\n\n- Fixed TikTok downloads by reusing a successful link analysis instead of asking TikTok to resolve the same video again when download starts.\n- Added the completion sound to successful DWLNDR downloads and made completed downloads reveal the actual downloaded file in Explorer.\n- Refined DWLNDR source-specific quality choices, including YouTube-only codec selection and a clear automatic-quality state for sources without quality variants.\n- Redesigned DWLNDR around a compact centered link workflow with optional engine information.\n- Synced the Windows title bar and taskbar icon with the selected app theme.\n",
-  "version": "0.11.1"
+  }
 }
