@@ -1,11 +1,11 @@
 {
-  "version": "0.12.0",
-  "pub_date": "2026-09-19T12:38:11.8215998Z",
-  "notes": "# Changes\n\n\n- Added Vertical Clipper with Original, Blur, Fill, Split, Squares and Freecam layouts, draggable camera/content regions, centering controls and faster, size-efficient exports.\n- Added reusable project open/save support and refined the landing-page project action placement.\n- Fixed installed Windows font previews so the selected font file is loaded directly and matches FFmpeg output instead of silently retaining a fallback font.\n- Added correct Apple HEIC/HEIF tile-grid previews, dimensions and image processing so the complete oriented photo is used rather than an individual image tile.\n- Improved image workflows, preview geometry, text positioning, cut time entry and related regression coverage.\n- Updated the Rust TLS dependency to resolve the current rustls security advisory.\n",
+  "version": "0.13.0",
+  "pub_date": "2026-09-19T22:33:36.8052034Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWM0ME5yRzFBSzJVdkt4WHFDRWUydVhFOUZ2NWt5bUJoS0FueGdjQlR4SVFnMGxDVnVZV2s3MC9McXpTQSs5TWxFNGZJbittanJlR3N6UklpdzU5b3dZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODIxNDc0CWZpbGU6Q09OVEFJTkVSXzAuMTIuMF94NjQtc2V0dXAuZXhlCnlmWFNsZytmOXlCMjBrUk5veVRtTWdPcExmalpoRHMyWkhZWDBvc1JSNlc4czJnUEVLa0RvbU5zbi8xaHlmUzl2WHpoNUZ1bUlpbzJzZ2lZaEFyMUFBPT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.12.0/CONTAINER-Setup-0.12.0-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVR6dXpDYzZnb3d6cEtzenFmZkcwanFNV3hucWF5NGVqaXdhcXVJeGRnOFF4eEdIRW1SQyttVnhjUWlkd2hkY0hQd2xpMmtjN2hUVTlVaUZMdktDRUE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODU3MjA2CWZpbGU6Q09OVEFJTkVSXzAuMTMuMF94NjQtc2V0dXAuZXhlCnZQQkN0aXcxckp1OXhJR1dKTEF2UFRRSCs2UDE0QjlwalI3T1NvVzFVanZ2ckhhalNIT3g0UEhTU09pUnB1VkMrdEU2V2t4b01ZbTBncUt1byt4WUFBPT0K",
+      "url": "https://github.com/dewnn/container/releases/download/v0.13.0/CONTAINER-Setup-0.13.0-x64.exe"
     }
-  }
+  },
+  "notes": "# Changes\n\n\n- Added optional Clipper watermarks with adjustable size and opacity, layout-aware placement for Split, Squares and Freecam, and an optional compact black separator strip.\n- Standardized watermark preview/export geometry and TikTok/YouTube Shorts safe-area behavior across vertical layouts and output resolutions.\n- Improved Cut Video with full-duration initial selection, direct H:M:S time entry, click-to-set start times and distinct click-versus-drag timeline behavior.\n- Refined the Clipper watermark controls and hardened FFmpeg text handling for punctuation and percent characters.\n"
 }
