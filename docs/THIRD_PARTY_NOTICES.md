@@ -54,6 +54,16 @@ SmartCut uses `silero-vad-rust` 6.2.2 and embeds its Silero V6 ONNX model for lo
 - Crate repository: https://github.com/sheldonix/silero-vad-rust
 - Model project: https://github.com/snakers4/silero-vad
 
+## YuNet face detector
+
+Clipper's optional local camera-region detection uses the YuNet ONNX face
+detector from OpenCV Zoo. The model is MIT licensed; its license is reproduced
+in `face_detection_yunet-LICENSE.txt`. The bundled model SHA-256 is
+`8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`.
+
+- Model: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+- Model source: https://github.com/ShiqiYu/libfacedetection.train
+
 ## Autocut attribution
 
 The SmartCut interface and Silero-based voice-detection workflow were inspired by Mert Cobanov's Autocut project:

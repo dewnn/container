@@ -22,6 +22,13 @@ use tokio::{
 };
 use url::{Host, Url};
 
+mod auto_encoder;
+mod face_detection;
+
+use auto_encoder::{
+    auto_encoder_configured, available_encoders, fastest_h264_encoder, warm_up_auto_encoder,
+};
+
 #[cfg(target_os = "windows")]
 use std::os::windows::{fs::MetadataExt, process::CommandExt};
 
@@ -29,6 +36,33 @@ use std::os::windows::{fs::MetadataExt, process::CommandExt};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const FFMPEG_RUNTIME_VERSION: &str = env!("CONTAINER_FFMPEG_RUNTIME_VERSION");
+
+fn is_development_executable(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("container-studio-dev.exe"))
+}
+
+fn is_development_build() -> bool {
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|path| is_development_executable(&path))
+}
+
+fn app_storage_namespace() -> &'static str {
+    if is_development_build() {
+        "dev.dean.container.dev"
+    } else {
+        "dev.dean.container"
+    }
+}
+
+fn app_cache_name() -> &'static str {
+    if is_development_build() {
+        "CONTAINER DEV"
+    } else {
+        "CONTAINER"
+    }
+}
 
 // Embed the exact model used by the dependency, so released builds never
 // depend on the build machine's Cargo registry directory.
@@ -115,7 +149,7 @@ fn resolve_program(program: &str) -> PathBuf {
 fn managed_runtime_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|directory| {
         directory
-            .join("dev.dean.container")
+            .join(app_storage_namespace())
             .join("runtime")
             .join(format!("ffmpeg-{FFMPEG_RUNTIME_VERSION}"))
     })
@@ -381,7 +415,7 @@ fn materialize_bundled_downloader(source: &Path, destination: &Path) -> Result<b
 fn downloader_binary_path() -> Result<PathBuf, String> {
     let root = dirs::data_local_dir()
         .ok_or("Application data folder is unavailable.")?
-        .join("dev.dean.container")
+        .join(app_storage_namespace())
         .join("downloader");
     let destination = root.join(if cfg!(target_os = "windows") {
         "yt-dlp.exe"
@@ -1406,8 +1440,33 @@ struct FontOption {
     path: String,
 }
 
+const SOCIAL_FONT_NAMES: [&str; 10] = [
+    "Impact",
+    "Arial Black",
+    "Montserrat Black",
+    "Montserrat ExtraBold",
+    "Montserrat Bold",
+    "Montserrat SemiBold",
+    "Poppins Black",
+    "Poppins ExtraBold",
+    "Poppins Bold",
+    "Poppins SemiBold",
+];
+
+fn curate_social_fonts(fonts: Vec<FontOption>) -> Vec<FontOption> {
+    SOCIAL_FONT_NAMES
+        .iter()
+        .filter_map(|wanted| {
+            fonts
+                .iter()
+                .find(|font| font.name.eq_ignore_ascii_case(wanted))
+                .cloned()
+        })
+        .collect()
+}
+
 #[tauri::command]
-async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
+async fn list_system_fonts() -> Result<Vec<FontOption>, String> {
     let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let system_fonts = PathBuf::from(&windows).join("Fonts");
     let user_fonts =
@@ -1443,7 +1502,7 @@ async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
                     .extension()
                     .and_then(|value| value.to_str())
                     .is_some_and(|value| {
-                        matches!(value.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc")
+                        matches!(value.to_ascii_lowercase().as_str(), "ttf" | "otf")
                     });
                 if path.is_file() && supported {
                     let name = raw_name
@@ -1470,10 +1529,7 @@ async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
                     .extension()
                     .and_then(|value| value.to_str())
                     .unwrap_or("");
-                if !matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "ttf" | "otf" | "ttc"
-                ) {
+                if !matches!(extension.to_ascii_lowercase().as_str(), "ttf" | "otf") {
                     continue;
                 }
                 fonts.push(FontOption {
@@ -1489,10 +1545,7 @@ async fn list_system_fonts(app: AppHandle) -> Result<Vec<FontOption>, String> {
     }
     fonts.sort_by_key(|font| font.name.to_ascii_lowercase());
     fonts.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
-    for font in &fonts {
-        allow_asset_file(&app, Path::new(&font.path))?;
-    }
-    Ok(fonts)
+    Ok(curate_social_fonts(fonts))
 }
 
 #[tauri::command]
@@ -1519,7 +1572,7 @@ fn font_preview_data(path: String) -> Result<String, String> {
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if !matches!(extension.as_str(), "ttf" | "otf" | "ttc") {
+    if !matches!(extension.as_str(), "ttf" | "otf") {
         return Err("This installed font format cannot be previewed.".into());
     }
     let metadata = std::fs::metadata(&canonical)
@@ -1531,7 +1584,6 @@ fn font_preview_data(path: String) -> Result<String, String> {
         .map_err(|error| format!("Font file could not be read: {error}"))?;
     let mime = match extension.as_str() {
         "otf" => "font/otf",
-        "ttc" => "font/collection",
         _ => "font/ttf",
     };
     Ok(format!("data:{mime};base64,{}", BASE64.encode(bytes)))
@@ -1909,6 +1961,15 @@ async fn probe_media(path: String) -> Result<MediaInfo, String> {
     })
 }
 
+#[tauri::command]
+fn authorize_media_preview(app: AppHandle, path: String) -> Result<(), String> {
+    let media = PathBuf::from(path);
+    if !media.is_file() {
+        return Err("Preview media file was not found.".into());
+    }
+    allow_asset_file(&app, &media)
+}
+
 fn primary_tile_grid_display_dimensions(data: &Value) -> Option<(u64, u64)> {
     let groups = data["stream_groups"].as_array()?;
     let group = groups
@@ -1940,8 +2001,7 @@ fn primary_tile_grid_display_dimensions(data: &Value) -> Option<(u64, u64)> {
     Some((width, height))
 }
 
-#[tauri::command]
-fn read_project(path: String) -> Result<String, String> {
+fn read_project_contents(path: String) -> Result<String, String> {
     let path = PathBuf::from(path);
     if !path
         .extension()
@@ -1955,6 +2015,19 @@ fn read_project(path: String) -> Result<String, String> {
         return Err("The project file is invalid or too large.".into());
     }
     std::fs::read_to_string(path).map_err(|error| format!("Project could not be opened: {error}"))
+}
+
+#[tauri::command]
+fn read_project(app: AppHandle, path: String) -> Result<String, String> {
+    let contents = read_project_contents(path)?;
+    if let Some(media_path) = serde_json::from_str::<Value>(&contents)
+        .ok()
+        .and_then(|value| value["mediaPath"].as_str().map(PathBuf::from))
+        .filter(|media_path| media_path.is_file())
+    {
+        allow_asset_file(&app, &media_path)?;
+    }
+    Ok(contents)
 }
 
 #[tauri::command]
@@ -2074,64 +2147,6 @@ async fn display_dimensions(path: &Path, fallback: &MediaInfo) -> Result<(u64, u
         std::mem::swap(&mut width, &mut height);
     }
     Ok((width, height))
-}
-
-#[tauri::command]
-async fn available_encoders() -> Vec<String> {
-    let candidates = [
-        "libx264",
-        "h264_amf",
-        "h264_nvenc",
-        "h264_qsv",
-        "libx265",
-        "hevc_amf",
-        "hevc_nvenc",
-        "libvpx-vp9",
-        "libsvtav1",
-        "av1_nvenc",
-        "av1_amf",
-        "av1_qsv",
-    ];
-    let mut checks = tokio::task::JoinSet::new();
-    for encoder in candidates {
-        checks.spawn(async move {
-            let mut command = hidden_command("ffmpeg");
-            command.args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=black:s=64x64:r=1:d=1",
-                "-frames:v",
-                "1",
-                "-c:v",
-                encoder,
-                "-f",
-                "null",
-                "-",
-            ]);
-            // Capability probes are expected to fail for GPUs that are not
-            // installed. Keep those normal failures out of the user's console.
-            command.stdout(Stdio::null()).stderr(Stdio::null());
-            #[cfg(target_os = "windows")]
-            command.creation_flags(0x08000000);
-            let works = tokio::time::timeout(std::time::Duration::from_secs(8), command.status())
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .is_some_and(|status| status.success());
-            (encoder.to_string(), works)
-        });
-    }
-    let mut available = Vec::new();
-    while let Some(result) = checks.join_next().await {
-        if let Ok((encoder, true)) = result {
-            available.push(encoder);
-        }
-    }
-    available
 }
 
 #[tauri::command]
@@ -3968,6 +3983,16 @@ async fn build_command(
                     filters.push(watermark);
                 }
             }
+            if op == "clipper" {
+                // Filtered social exports must leave with a regular frame cadence.
+                // Smart-cut inputs can contain mixed packet time bases around the
+                // re-encoded boundary; allowing FFmpeg's implicit vsync here caused
+                // dropped frames and hardware-decoder-only green playback on some
+                // H.264 files.
+                if let Some(fps) = info.fps.filter(|fps| fps.is_finite() && *fps > 0.0) {
+                    filters.push(format!("fps={fps:.6}"));
+                }
+            }
             if !filters.is_empty() {
                 args.extend(["-vf".into(), filters.join(",")]);
             }
@@ -4009,6 +4034,8 @@ async fn build_command(
                     args.extend([
                         "-c:v".into(),
                         "libx264".into(),
+                        "-profile:v".into(),
+                        "high".into(),
                         "-crf".into(),
                         "18".into(),
                         "-preset".into(),
@@ -4115,6 +4142,7 @@ async fn build_command(
             } else {
                 format!("scale=trunc({target_edge}/2)*2:-2:flags=lanczos,setsar=1")
             };
+            let (_, encoder_args) = fastest_h264_encoder().await;
             args.extend([
                 "-map".into(),
                 "0:v:0".into(),
@@ -4122,15 +4150,8 @@ async fn build_command(
                 "0:a?".into(),
                 "-vf".into(),
                 filter,
-                "-c:v".into(),
-                "libx264".into(),
-                "-crf".into(),
-                "14".into(),
-                "-preset".into(),
-                "slow".into(),
-                "-pix_fmt".into(),
-                "yuv420p".into(),
             ]);
+            args.extend(encoder_args);
             let audio_copy_safe = info
                 .audio_tracks
                 .iter()
@@ -4683,7 +4704,9 @@ async fn build_command(
                 if !font.is_file() {
                     return Err("The selected font is no longer available.".into());
                 }
-                let outline = check_range(layer.outline, 0.0, 20.0, "Outline")?;
+                // CSS text stroke is centered on the glyph edge. drawtext's border expands by
+                // the supplied amount on every side, so half keeps preview/export in parity.
+                let outline = check_range(layer.outline, 0.0, 20.0, "Outline")? / 2.0;
                 let shadow = check_range(layer.shadow, 0.0, 30.0, "Shadow")?;
                 let outline_color = if layer.outline_color.is_empty() {
                     "#000000"
@@ -4695,7 +4718,8 @@ async fn build_command(
                 } else {
                     &layer.shadow_color
                 };
-                let mut filter = format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:x={x_expression}:y=h*{y:.6}-text_h/2:borderw={outline:.0}:bordercolor={}:shadowx={shadow:.0}:shadowy={shadow:.0}:shadowcolor={}@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),drawtext_escape(outline_color),drawtext_escape(shadow_color),opacity*0.75);
+                let line_spacing = size * 0.05;
+                let mut filter = format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:line_spacing={line_spacing:.3}:x={x_expression}:y=h*{y:.6}-text_h/2:borderw={outline:.3}:bordercolor={}:shadowx={shadow:.0}:shadowy={shadow:.0}:shadowcolor={}@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),drawtext_escape(outline_color),drawtext_escape(shadow_color),opacity*0.75);
                 if layer.background {
                     let background_opacity =
                         check_range(layer.background_opacity, 0.0, 100.0, "Background opacity")?
@@ -5108,15 +5132,28 @@ async fn build_command(
                 "-loglevel".into(),
                 "error".into(),
                 "-y".into(),
-                "-ss".into(),
-                format!("{start:.6}"),
-                "-i".into(),
-                request.input.clone(),
+            ];
+            match cut_mode {
+                "exact" => args.extend([
+                    "-i".into(),
+                    request.input.clone(),
+                    "-ss".into(),
+                    format!("{start:.6}"),
+                ]),
+                "lossless" | "smart" => args.extend([
+                    "-ss".into(),
+                    format!("{start:.6}"),
+                    "-i".into(),
+                    request.input.clone(),
+                ]),
+                _ => return Err("Invalid cut mode.".into()),
+            }
+            args.extend([
                 "-t".into(),
                 format!("{:.6}", end - start),
                 "-map".into(),
                 "0:v:0".into(),
-            ];
+            ]);
             match cut_mode {
                 "exact" => {
                     let crf = p
@@ -5135,7 +5172,7 @@ async fn build_command(
                     append_audio_routing(&mut args, info, p, true, "main")?;
                     extension = "mp4".into();
                 }
-                "lossless" => {
+                "lossless" | "smart" => {
                     args.extend(["-c:v".into(), "copy".into()]);
                     append_audio_routing(&mut args, info, p, false, "main")?;
                     args.extend(["-avoid_negative_ts".into(), "make_zero".into()]);
@@ -5146,7 +5183,7 @@ async fn build_command(
                         .unwrap_or("mkv")
                         .to_ascii_lowercase();
                 }
-                _ => return Err("Invalid cut mode.".into()),
+                _ => unreachable!("cut mode was validated before building arguments"),
             }
         }
         "remux" => {
@@ -5230,16 +5267,17 @@ async fn build_command(
                 info.duration.unwrap_or(86400.0),
                 "Start",
             )?;
-            let duration = check_range(
-                parse_number(p, "duration")?,
+            let end = check_range(
+                parse_number(p, "end")?,
                 0.01,
                 info.duration.unwrap_or(86400.0),
-                "Duration",
+                "End",
             )?;
-            if info
-                .duration
-                .is_some_and(|total| start + duration > total + 0.01)
-            {
+            if end <= start {
+                return Err("GIF end time must be later than its start time.".into());
+            }
+            let duration = end - start;
+            if info.duration.is_some_and(|total| end > total + 0.01) {
                 return Err("GIF range exceeds video duration.".into());
             }
             let height = check_range(parse_number(p, "height")?, 2.0, 2160.0, "Height")? as u64;
@@ -5993,6 +6031,136 @@ async fn run_ffmpeg_stage(
     Ok(())
 }
 
+#[cfg(test)]
+fn smart_cut_encoded_args(
+    request: &OperationRequest,
+    info: &MediaInfo,
+    start: f64,
+    end: f64,
+    output: &Path,
+    encoder: &str,
+) -> Result<Vec<String>, String> {
+    let mut args = vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-y".into(),
+        "-ss".into(),
+        format!("{start:.6}"),
+        "-i".into(),
+        request.input.clone(),
+        "-ss".into(),
+        "0".into(),
+        "-t".into(),
+        format!("{:.6}", end - start),
+        "-map".into(),
+        "0:v:0".into(),
+        "-c:v".into(),
+        encoder.into(),
+        "-preset".into(),
+        "veryfast".into(),
+    ];
+    if encoder == "libx265" {
+        args.extend(["-x265-params".into(), "qp=1".into()]);
+    } else {
+        args.extend(["-profile:v".into(), "high".into(), "-qp".into(), "1".into()]);
+    }
+    if let Some(pixel_format) = &info.pixel_format {
+        args.extend(["-pix_fmt".into(), pixel_format.clone()]);
+    }
+    let mp4_output = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"));
+    if info.codec == "hevc" && mp4_output {
+        args.extend(["-tag:v".into(), "hvc1".into()]);
+    }
+    append_audio_routing(&mut args, info, &request.params, false, "main")?;
+    if mp4_output {
+        args.extend(["-movflags".into(), "+faststart".into()]);
+    }
+    args.push(output.to_string_lossy().to_string());
+    Ok(args)
+}
+
+#[cfg(test)]
+async fn run_smart_cut(
+    app: Option<&AppHandle>,
+    state: &JobState,
+    request: &OperationRequest,
+    info: &MediaInfo,
+) -> Result<JobResult, String> {
+    if info.kind != "video" {
+        return Err("Smart Cut requires a video file.".into());
+    }
+    let encoder = match info.codec.as_str() {
+        "h264" => "libx264",
+        "hevc" => "libx265",
+        codec => {
+            return Err(format!(
+                "Smart Cut currently supports H.264 and HEVC video; this file uses {codec}."
+            ));
+        }
+    };
+    if request.params.get("audio_mode").map(String::as_str) == Some("merge") {
+        return Err("Smart Cut cannot merge audio tracks without re-encoding them. Choose Main, All, Selected, or None.".into());
+    }
+    let duration = info.duration.ok_or("Video duration is unavailable.")?;
+    let start = check_range(
+        parse_number(&request.params, "start")?,
+        0.0,
+        duration,
+        "Start",
+    )?;
+    let end = check_range(parse_number(&request.params, "end")?, 0.0, duration, "End")?;
+    if end <= start {
+        return Err("End must be greater than start.".into());
+    }
+    let input = PathBuf::from(&request.input);
+    let source_extension = input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mp4_safe = matches!(source_extension.as_str(), "mp4" | "mov" | "m4v")
+        && mp4_audio_stream_copy_supported(info);
+    let output_extension = if mp4_safe { "mp4" } else { "mkv" };
+    let output = unique_output(&input, "cut", output_extension)?;
+    let selected_duration = end - start;
+    let started = Instant::now();
+    let result = async {
+        // A boundary-only encode cannot be safely byte-concatenated with an
+        // arbitrary H.264/HEVC source GOP: SPS/PPS and reference-frame settings
+        // can differ even when profile and pixel format match. Such files may
+        // software-decode partially yet turn green in hardware players. Encode
+        // the selected interval as one consistent near-lossless stream instead.
+        let args = smart_cut_encoded_args(request, info, start, end, &output, encoder)?;
+        run_ffmpeg_stage(
+            app,
+            state,
+            args,
+            selected_duration,
+            &started,
+            0.0,
+            99.0,
+            "smart cut · precise source-quality encode",
+        )
+        .await?;
+        if let Some(app) = app {
+            allow_asset_file(app, &output)?;
+        }
+        Ok(JobResult {
+            output: output.to_string_lossy().to_string(),
+            elapsed: started.elapsed().as_secs_f64(),
+        })
+    }
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(&output);
+    }
+    result
+}
+
 fn cleanup_passlog(prefix: &Path) {
     for suffix in [
         "-0.log",
@@ -6421,78 +6589,6 @@ async fn require_demuxers(names: &[&str], feature: &str) -> Result<(), String> {
     }
 }
 
-async fn fastest_h264_encoder() -> (&'static str, Vec<String>) {
-    let available = available_encoders().await;
-    if available.iter().any(|encoder| encoder == "h264_nvenc") {
-        return (
-            "NVIDIA",
-            vec![
-                "-c:v".into(),
-                "h264_nvenc".into(),
-                "-preset".into(),
-                "p3".into(),
-                "-tune".into(),
-                "hq".into(),
-                "-rc".into(),
-                "vbr".into(),
-                "-cq".into(),
-                "18".into(),
-                "-b:v".into(),
-                "0".into(),
-                "-pix_fmt".into(),
-                "yuv420p".into(),
-            ],
-        );
-    }
-    if available.iter().any(|encoder| encoder == "h264_qsv") {
-        return (
-            "Intel",
-            vec![
-                "-c:v".into(),
-                "h264_qsv".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-global_quality".into(),
-                "18".into(),
-                "-pix_fmt".into(),
-                "nv12".into(),
-            ],
-        );
-    }
-    if available.iter().any(|encoder| encoder == "h264_amf") {
-        return (
-            "AMD",
-            vec![
-                "-c:v".into(),
-                "h264_amf".into(),
-                "-quality".into(),
-                "speed".into(),
-                "-rc".into(),
-                "cqp".into(),
-                "-qp_i".into(),
-                "18".into(),
-                "-qp_p".into(),
-                "18".into(),
-                "-pix_fmt".into(),
-                "nv12".into(),
-            ],
-        );
-    }
-    (
-        "CPU",
-        vec![
-            "-c:v".into(),
-            "libx264".into(),
-            "-crf".into(),
-            "16".into(),
-            "-preset".into(),
-            "ultrafast".into(),
-            "-pix_fmt".into(),
-            "yuv420p".into(),
-        ],
-    )
-}
-
 async fn run_stabilizer(
     app: Option<&AppHandle>,
     state: &JobState,
@@ -6875,6 +6971,82 @@ async fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn detect_camera_region(
+    input: String,
+    duration: f64,
+    source_width: u32,
+    source_height: u32,
+) -> Result<face_detection::CameraDetectionResult, String> {
+    let input = PathBuf::from(input);
+    if !input.is_file() || source_width == 0 || source_height == 0 {
+        return Err("Choose a valid video before detecting its camera region.".into());
+    }
+    let timestamps = face_detection::sample_timestamps(duration);
+    let mut frames = Vec::with_capacity(timestamps.len());
+    let mut extraction_errors = Vec::new();
+    for (index, timestamp) in timestamps.iter().enumerate() {
+        let output = hidden_command("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-ss"])
+            .arg(format!("{timestamp:.3}"))
+            .arg("-i")
+            .arg(&input)
+            .args([
+                "-frames:v",
+                "1",
+                "-an",
+                "-sn",
+                "-dn",
+                "-vf",
+                "scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=640:640:(ow-iw)/2:(oh-ih)/2:color=black",
+                "-pix_fmt",
+                "rgb24",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ])
+            .output()
+            .await
+            .map_err(|error| format!("Camera analysis could not start FFmpeg: {error}"))?;
+        if output.status.success() && output.stdout.len() == 640 * 640 * 3 {
+            frames.push((index, output.stdout));
+        } else {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            extraction_errors.push(if detail.is_empty() {
+                format!("No frame was available at {timestamp:.2}s.")
+            } else {
+                detail
+            });
+        }
+    }
+    if frames.is_empty() {
+        return Err(extraction_errors
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "No video frames could be analyzed.".into()));
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut detector = face_detection::YuNet::load()
+            .map_err(|error| format!("Camera detector could not initialize: {error}"))?;
+        let mut detected = Vec::with_capacity(frames.len());
+        for (index, pixels) in frames {
+            let faces = detector
+                .detect(&pixels)
+                .map_err(|error| format!("Camera detection failed: {error}"))?;
+            detected.push(face_detection::FrameFaces {
+                index,
+                faces: face_detection::normalize_faces(faces, source_width, source_height),
+            });
+        }
+        face_detection::choose_camera_region(detected, source_width, source_height).ok_or_else(|| {
+            "No stable camera face was found. Move to a section where the camera is visible or adjust Camera Region manually."
+                .to_string()
+        })
+    })
+    .await
+    .map_err(|error| format!("Camera analysis task failed: {error}"))?
+}
+
+#[tauri::command]
 fn startup_media_path() -> Option<String> {
     std::env::args_os()
         .skip(1)
@@ -6886,7 +7058,7 @@ fn startup_media_path() -> Option<String> {
 fn prepare_session_lifecycle() -> SessionLifecycle {
     let directory = dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("CONTAINER");
+        .join(app_cache_name());
     let _ = std::fs::create_dir_all(&directory);
     let marker_path = directory.join("running.lock");
     let previous_interrupted = marker_path.is_file();
@@ -6973,6 +7145,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             probe_media,
+            authorize_media_preview,
             read_project,
             write_project,
             probe_subtitles,
@@ -6990,6 +7163,8 @@ pub fn run() {
             list_system_fonts,
             font_preview_data,
             available_encoders,
+            auto_encoder_configured,
+            warm_up_auto_encoder,
             hash_file,
             list_media_files,
             compute_autocut_waveform,
@@ -7001,6 +7176,7 @@ pub fn run() {
             analyze_quality,
             estimate_image_compression,
             run_operation,
+            detect_camera_region,
             cancel_job,
             startup_media_path,
             previous_session_interrupted,
@@ -7019,7 +7195,12 @@ pub fn run() {
                 app.asset_protocol_scope().allow_file(path)?;
             }
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title("CONTAINER");
+                let title = if is_development_build() {
+                    "CONTAINER DEV"
+                } else {
+                    "CONTAINER"
+                };
+                let _ = window.set_title(title);
             }
             Ok(())
         })
@@ -7051,6 +7232,19 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn development_executable_isolated_from_the_release_identity() {
+        assert!(is_development_executable(Path::new(
+            r"C:\build\container-studio-dev.exe"
+        )));
+        assert!(is_development_executable(Path::new(
+            r"C:\build\CONTAINER-STUDIO-DEV.EXE"
+        )));
+        assert!(!is_development_executable(Path::new(
+            r"C:\Users\User\AppData\Local\CONTAINER\container-studio.exe"
+        )));
+    }
+
+    #[test]
     fn project_files_round_trip_and_reject_invalid_input() {
         let root = std::env::temp_dir().join(format!(
             "container-project-test-{}-{}",
@@ -7070,7 +7264,7 @@ mod tests {
         .unwrap();
         let saved = requested.with_extension("containerproject");
         assert_eq!(
-            read_project(saved.to_string_lossy().into_owned()).unwrap(),
+            read_project_contents(saved.to_string_lossy().into_owned()).unwrap(),
             contents
         );
         assert!(write_project(
@@ -7078,7 +7272,9 @@ mod tests {
             "not json".into()
         )
         .is_err());
-        assert!(read_project(root.join("wrong.json").to_string_lossy().into_owned()).is_err());
+        assert!(
+            read_project_contents(root.join("wrong.json").to_string_lossy().into_owned()).is_err()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -7103,6 +7299,44 @@ mod tests {
         let data = font_preview_data(font.to_string_lossy().into_owned()).unwrap();
         assert!(data.starts_with("data:font/ttf;base64,"));
         assert!(data.len() > 1_000);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn font_collections_are_not_offered_as_single_preview_faces() {
+        let windows = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+        let collection = PathBuf::from(windows).join("Fonts").join("msjhl.ttc");
+        if collection.is_file() {
+            assert!(font_preview_data(collection.to_string_lossy().into_owned()).is_err());
+        }
+    }
+
+    #[test]
+    fn social_font_list_is_small_ordered_and_excludes_unrelated_faces() {
+        let available = vec![
+            FontOption {
+                name: "Comic Sans MS".into(),
+                path: "comic.ttf".into(),
+            },
+            FontOption {
+                name: "Poppins Bold".into(),
+                path: "poppins-bold.ttf".into(),
+            },
+            FontOption {
+                name: "Impact".into(),
+                path: "impact.ttf".into(),
+            },
+            FontOption {
+                name: "Montserrat ExtraBold".into(),
+                path: "montserrat-extrabold.ttf".into(),
+            },
+        ];
+        let curated = curate_social_fonts(available);
+        let names = curated
+            .iter()
+            .map(|font| font.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Impact", "Montserrat ExtraBold", "Poppins Bold"]);
     }
 
     #[test]
@@ -7234,8 +7468,12 @@ mod tests {
         assert!(squares.windows(2).any(|pair| pair == ["-crf", "18"]));
         assert!(squares
             .windows(2)
+            .any(|pair| pair == ["-profile:v", "high"]));
+        assert!(squares
+            .windows(2)
             .any(|pair| pair == ["-preset", "ultrafast"]));
         assert!(!squares.windows(2).any(|pair| pair == ["-qp", "0"]));
+        assert!(squares_filter.contains("fps=30.000000"));
 
         let (freecam, _) = build_command(&request("freecam"), &info).await.unwrap();
         let freecam_filter = freecam.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
@@ -8632,7 +8870,7 @@ mod tests {
                 operation: "gif".into(),
                 params: values(&[
                     ("start", "0"),
-                    ("duration", "0.5"),
+                    ("end", "0.5"),
                     ("height", "160"),
                     ("fps", "10"),
                     ("max_colors", "64"),
@@ -9155,6 +9393,8 @@ mod tests {
             .args([
                 "-c:v",
                 "libx264",
+                "-profile:v",
+                "main",
                 "-g",
                 "180",
                 "-keyint_min",
@@ -9537,7 +9777,7 @@ mod tests {
                 "gif",
                 values(&[
                     ("start", "0"),
-                    ("duration", "0.3"),
+                    ("end", "0.3"),
                     ("height", "90"),
                     ("fps", "10"),
                     ("max_colors", "64"),
@@ -9562,12 +9802,12 @@ mod tests {
         ];
 
         for (operation, params) in operations {
-            let lossless_cut = operation == "cut"
-                && params
-                    .get("cut_mode")
-                    .map(String::as_str)
-                    .unwrap_or("lossless")
-                    == "lossless";
+            let cut_mode = params
+                .get("cut_mode")
+                .map(String::as_str)
+                .unwrap_or("lossless");
+            let lossless_cut = operation == "cut" && matches!(cut_mode, "lossless" | "smart");
+            let exact_cut = operation == "cut" && cut_mode == "exact";
             let request = OperationRequest {
                 input: video.to_string_lossy().to_string(),
                 operation: operation.into(),
@@ -9584,6 +9824,15 @@ mod tests {
                 assert!(
                     seek < input,
                     "fast input seeking must happen before opening the media"
+                );
+            }
+            if exact_cut {
+                assert!(args.windows(2).any(|pair| pair == ["-c:v", "libx264"]));
+                let seek = args.iter().position(|arg| arg == "-ss").unwrap();
+                let input = args.iter().position(|arg| arg == "-i").unwrap();
+                assert!(
+                    input < seek,
+                    "frame-accurate output seeking must happen after opening the media"
                 );
             }
             let status = std::process::Command::new("ffmpeg")
@@ -9728,6 +9977,198 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    #[tokio::test]
+    async fn smart_cut_is_precise_near_lossless_and_decoder_safe() {
+        let root = std::env::temp_dir().join("container_smart_cut_test");
+        assert!(root.starts_with(std::env::temp_dir()));
+        assert_eq!(
+            root.file_name().and_then(|name| name.to_str()),
+            Some("container_smart_cut_test")
+        );
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.mkv");
+        let fixture = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=30:d=12",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=12",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-g",
+                "60",
+                "-keyint_min",
+                "60",
+                "-sc_threshold",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "libopus",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(fixture.success());
+        let info = probe_media(source.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let request = OperationRequest {
+            input: source.to_string_lossy().to_string(),
+            operation: "cut".into(),
+            params: values(&[
+                ("start", "6.7"),
+                ("end", "10.7"),
+                ("cut_mode", "smart"),
+                ("audio_mode", "main"),
+            ]),
+        };
+        let state = JobState::default();
+        let result = run_smart_cut(None, &state, &request, &info).await.unwrap();
+        let output = PathBuf::from(&result.output);
+        assert_eq!(
+            output.extension().and_then(|value| value.to_str()),
+            Some("mkv")
+        );
+        let output_info = probe_media(result.output).await.unwrap();
+        assert_eq!(output_info.audio_codec.as_deref(), Some("opus"));
+        assert!(output_info
+            .duration
+            .is_some_and(|value| (3.8..=4.2).contains(&value)));
+        let profile = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=profile",
+                "-of",
+                "default=nw=1:nk=1",
+            ])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(profile.status.success());
+        assert_eq!(String::from_utf8(profile.stdout).unwrap().trim(), "High");
+        let decoded_frames = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_frames",
+                "-show_entries",
+                "stream=nb_read_frames",
+                "-of",
+                "default=nw=1:nk=1",
+            ])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(decoded_frames.status.success());
+        let decoded_frames = String::from_utf8(decoded_frames.stdout)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
+        assert!(
+            (118..=122).contains(&decoded_frames),
+            "expected about 120 decoded frames, got {decoded_frames}"
+        );
+        let null_output = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let decoded = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-xerror", "-i"])
+            .arg(&output)
+            .args(["-map", "0:v:0", "-f", "null", null_output])
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success(),
+            "smart-cut output did not decode cleanly: {}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
+
+        let raw_frames = |path: &Path, start: &str, frames: &str| {
+            let mut command = std::process::Command::new("ffmpeg");
+            command.args(["-hide_banner", "-loglevel", "error"]);
+            if start != "0" {
+                command.args(["-ss", start]);
+            }
+            let output = command
+                .arg("-i")
+                .arg(path)
+                .args([
+                    "-frames:v",
+                    frames,
+                    "-map",
+                    "0:v:0",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        let source_boundary = raw_frames(&source, "6.7", "30");
+        let output_boundary = raw_frames(&output, "0", "30");
+        assert_eq!(source_boundary.len(), output_boundary.len());
+        let mean_absolute_error = source_boundary
+            .iter()
+            .zip(&output_boundary)
+            .map(|(left, right)| left.abs_diff(*right) as u64)
+            .sum::<u64>() as f64
+            / source_boundary.len().max(1) as f64;
+        assert!(
+            mean_absolute_error < 0.5,
+            "smart-cut boundary quality regressed: MAE {mean_absolute_error:.4}"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "set CONTAINER_CAMERA_TEST_MEDIA to inspect a real video"]
+    async fn camera_detection_real_media_report() {
+        let path = std::env::var("CONTAINER_CAMERA_TEST_MEDIA")
+            .expect("CONTAINER_CAMERA_TEST_MEDIA must point to a real video");
+        let info = probe_media(path.clone()).await.unwrap();
+        let result = detect_camera_region(
+            path,
+            info.duration.unwrap(),
+            info.width.unwrap() as u32,
+            info.height.unwrap() as u32,
+        )
+        .await
+        .unwrap();
+        println!(
+            "camera x={:.3} y={:.3} w={:.3} h={:.3} confidence={:.3} samples={}/{}",
+            result.x,
+            result.y,
+            result.width,
+            result.height,
+            result.confidence,
+            result.matched_samples,
+            result.samples
+        );
+    }
+
     fn decoded_image_hash(path: &Path) -> String {
         let output = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-i"])
@@ -9862,7 +10303,7 @@ mod tests {
             .join("Fonts")
             .join("arial.ttf");
         assert!(font.is_file());
-        let text_layers = serde_json::json!([{"text":"İstanbul test","x":50,"y":50,"size":42,"color":"#ffffff","opacity":85,"align":"right","font_path":font,"outline":2,"outline_color":"#000000","shadow":2,"shadow_color":"#000000","background":true,"background_color":"#203040","background_opacity":60,"background_padding":8}]).to_string();
+        let text_layers = serde_json::json!([{"text":"İstanbul test\nönizleme ile aynı satır","x":50,"y":50,"size":42,"color":"#ffffff","opacity":85,"align":"right","font_path":font,"outline":2,"outline_color":"#000000","shadow":2,"shadow_color":"#000000","background":true,"background_color":"#203040","background_opacity":60,"background_padding":8}]).to_string();
         let text = render_request(
             &OperationRequest {
                 input: transparent.to_string_lossy().into_owned(),

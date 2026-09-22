@@ -120,6 +120,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm test:ui
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build application and full Windows setup
         run: pnpm tauri build
@@ -156,9 +157,11 @@ jobs:
           Copy-Item -LiteralPath $ytDlpSidecar.FullName -Destination (Join-Path $portableDir 'yt-dlp.exe')
           Copy-Item -LiteralPath $denoSidecar.FullName -Destination (Join-Path $portableDir 'deno.exe')
           Copy-Item -LiteralPath 'docs\THIRD_PARTY_NOTICES.md' -Destination (Join-Path $portableDir 'THIRD_PARTY_NOTICES.md')
+          Copy-Item -LiteralPath 'src-tauri\resources\FFmpeg-GPLv3.txt' -Destination (Join-Path $portableDir 'FFmpeg-GPLv3.txt')
           Copy-Item -LiteralPath 'src-tauri\resources\yt-dlp-LICENSE.txt' -Destination (Join-Path $portableDir 'yt-dlp-LICENSE.txt')
           Copy-Item -LiteralPath 'src-tauri\resources\yt-dlp-THIRD_PARTY_LICENSES.txt' -Destination (Join-Path $portableDir 'yt-dlp-THIRD_PARTY_LICENSES.txt')
           Copy-Item -LiteralPath 'src-tauri\resources\deno-LICENSE.md' -Destination (Join-Path $portableDir 'deno-LICENSE.md')
+          Copy-Item -LiteralPath 'src-tauri\resources\face_detection_yunet-LICENSE.txt' -Destination (Join-Path $portableDir 'face_detection_yunet-LICENSE.txt')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip") -CompressionLevel Optimal
 
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1

@@ -8,6 +8,7 @@
     "core:window:allow-set-icon",
     "core:window:allow-set-theme",
     "dialog:allow-open",
+    "dialog:allow-save",
     {
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [

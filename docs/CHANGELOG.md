@@ -4,6 +4,13 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-09-23
+
+- Improved interface readability, compact-window SmartCut layout and consistent Cut/GIF/overlay range controls.
+- Added crash recovery hardening, project-file launch support and an isolated CONTAINER DEV identity.
+- Added quality-gated hardware encoder tuning that is reused until FFmpeg or display hardware changes.
+- Added experimental camera-region detection for Clipper development builds, with more reliable multi-position sampling and resistance to brief or stray faces.
+
 ## [0.13.0] - 2026-09-20
 
 - Added optional Clipper watermarks with adjustable size and opacity, layout-aware placement for Split, Squares and Freecam, and an optional compact black separator strip.

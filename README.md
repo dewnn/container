@@ -43,6 +43,14 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 - One-click Output cleanup that moves generated files to the Recycle Bin
 - Built-in DWLNDR workspace with bundled yt-dlp, link analysis and cancellable progress-aware downloads
 
+### First-run encoder tuning
+
+On the first launch, CONTAINER silently tests the CPU and the hardware encoders that actually work on the current NVIDIA, Intel or AMD system. It chooses the fastest result that stays within a strict quality threshold instead of assuming that a GPU encoder is always better. The result is reused until the display hardware, driver or bundled FFmpeg version changes. Benchmark media is generated locally, deleted immediately after the test, and never uploaded.
+
+### Experimental camera-region detection
+
+Clipper development builds include an experimental automatic camera-region detector. It samples several points across the video and looks for a persistent face locally; no frames leave the computer. This feature is still work in progress and may choose the wrong region when faces move between layouts, the camera relocates during one video, or several similarly stable faces are visible. Always verify the selected Camera Region before exporting; manual placement remains available.
+
 ### SmartCut
 
 - Local Silero speech detection

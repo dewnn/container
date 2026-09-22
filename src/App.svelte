@@ -5,6 +5,7 @@
   import { invoke, convertFileSrc, isTauri } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { Image as TauriImage } from "@tauri-apps/api/image";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, save } from "@tauri-apps/plugin-dialog";
@@ -15,6 +16,8 @@
   import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
   import DownloaderWorkspace from "./lib/DownloaderWorkspace.svelte";
+  import { recoveredMediaUrl } from "./lib/recovery";
+  import { moveTimelineBoundary, type TimelineBoundary } from "./lib/timelineRange";
   import { reportProblem, type ToastDetail } from "./lib/toast";
 
   interface MediaInfo {
@@ -41,6 +44,7 @@
   interface JobResult { output: string; elapsed: number }
   interface QualityCandidate { crf: number; vmaf: number; estimated_size_mb: number; rating: string }
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
+  interface CameraDetectionResult { x:number; y:number; width:number; height:number; focal_x:number; focal_y:number; confidence:number; samples:number; matched_samples:number }
   interface FfmpegStatus { ready: boolean; ffmpeg_version: string | null; ffprobe_version: string | null }
   interface FfmpegCapabilities { vidstab:boolean; subtitles:boolean; overlay:boolean; blur:boolean; concat:boolean }
   interface DownloaderStatus { ready:boolean; version:string|null }
@@ -82,6 +86,7 @@
   let transformBackdropVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
   let toolboxCanvas: HTMLElement | null = $state(null);
+  let textPreviewCanvas: HTMLCanvasElement | null = $state(null);
   let transformCanvasWidth = $state(0);
   let transformCanvasHeight = $state(0);
   let toolboxMetadataVersion=$state(0);
@@ -98,14 +103,18 @@
   let compressionEstimateId = 0;
   let qualityAnalysis: QualityAnalysis | null = $state(null);
   let qualityAnalyzing = $state(false);
+  let cameraDetecting = $state(false);
+  let cameraDetectionMessage = $state("");
   let hashResult = $state("");
   let colorEnabled: Record<string,boolean> = $state({});
   let colorPreviewVisible = $state(true);
   let textLayers: TextLayer[] = $state([]);
   let activeTextId: number | null = $state(null);
   let systemFonts: FontOption[] = $state([]);
-  let fontsLoading = $state(false);
+  let systemFontsLoad: Promise<FontOption[]> | null = null;
   const previewFontLoads = new Map<string,Promise<string>>();
+  const fontSelectionVersions = new Map<number,number>();
+  let textMeasureCanvas: HTMLCanvasElement | null = null;
   let qualityAdvanced = $state(localStorage.getItem("container-quality-mode")==="advanced");
   let nextTextId = 1;
   let imageCompare = $state(50);
@@ -122,12 +131,14 @@
   let filmstripLoadId=0,subtitleLoadId=0;
   let toolboxTimeline: HTMLElement | null = $state(null);
   let timelineHover = $state<number|null>(null);
+  let playerSeekHover:{percent:number;time:number;precision:boolean}|null=$state(null);
   let cutStartInput = $state("0:00:00");
   let cutEndInput = $state("0:00:10");
   let cutTimeEditing:"start"|"end"|null=$state(null);
   let language: "tr" | "en" = $state("en");
   let theme: "dark" | "light" = $state(document.documentElement.dataset.theme === "light" ? "light" : "dark");
   let availableEncoders: string[] | null = $state(null);
+  let autoEncoderTuning = $state(false);
   let ffmpegStatus: FfmpegStatus | null = $state(null);
   let ffmpegCapabilities:FfmpegCapabilities|null=$state(null);
   let downloaderStatus:DownloaderStatus|null=$state(null);
@@ -137,7 +148,8 @@
   let dependencyChecking = $state(false);
   let dependencyPanel = $state(false);
   let runtimeMigrationError = $state("");
-  let appVersion = $state("0.9.3");
+  let appVersion = $state("");
+  const experimentalFeatures=$derived(appVersion.includes("-dev")||localStorage.getItem("container-experimental-tools")==="true");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let outputCleanupOpen = $state(false);
@@ -204,9 +216,9 @@
     return true;
   });
   const timelineTool = $derived.by(()=>media?.kind==="video"&&selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
-  const operationBusy=$derived(busy||qualityAnalyzing||autoCutBusy||batchBusy||downloaderBusy);
-  const canUndo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
-  const canRedo = $derived(!busy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
+  const operationBusy=$derived(busy||qualityAnalyzing||cameraDetecting||autoCutBusy||batchBusy||downloaderBusy);
+  const canUndo = $derived(!operationBusy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
+  const canRedo = $derived(!operationBusy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenDrop: UnlistenFn | null = null;
   let timelineIgnoreClickUntil = 0;
@@ -235,10 +247,15 @@
     if(!path)return;
     try{await invoke("write_project",{path,contents:JSON.stringify(session,null,2)});jobStatus=language==="tr"?"proje kaydedildi":"project saved"}catch(reason){reportProblem(reason)}
   }
+  async function loadProjectPath(path:string){
+    const saved=JSON.parse(await invoke<string>("read_project",{path}));
+    if(!validRecovery(saved))throw new Error(language==="tr"?"Geçersiz CONTAINER proje dosyası.":"Invalid CONTAINER project file.");
+    recoveryCandidate=saved;await restorePreviousSession();
+  }
   async function openProject(){
     if(operationBusy)return;
     const path=await open({multiple:false,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});if(typeof path!=="string")return;
-    try{const saved=JSON.parse(await invoke<string>("read_project",{path}));if(!validRecovery(saved))throw new Error(language==="tr"?"Geçersiz CONTAINER proje dosyası.":"Invalid CONTAINER project file.");recoveryCandidate=saved;await restorePreviousSession()}catch(reason){reportProblem(reason)}
+    try{await loadProjectPath(path)}catch(reason){reportProblem(reason)}
   }
   function discardRecovery(){localStorage.removeItem(recoveryKey);recoveryCandidate=null}
   async function cleanOutputFolder(){
@@ -259,7 +276,20 @@
     restoringSession=true;error="";
     await loadMedia(saved.mediaPath);
     if(!media){restoringSession=false;discardRecovery();return}
-    if(saved.toolbox){const preparedMediaUrl=mediaUrl;applyEditorSnapshot(saved.toolbox,"redo");mediaUrl=preparedMediaUrl;await restorePreviewFonts();resetEditorHistory()}
+    if(saved.toolbox){
+      const preparedMediaUrl=mediaUrl;
+      applyEditorSnapshot(saved.toolbox,"redo",true);
+      // Saved asset:// URLs belong to the previous WebView session. Keep the
+      // freshly authorized URL from loadMedia and make the source identity new
+      // so Chromium cannot retain the empty/failed media element from startup.
+      mediaUrl=recoveredMediaUrl(preparedMediaUrl);
+      await tick();
+      if(media?.kind==="video"){
+        toolboxVideo?.load();
+        transformBackdropVideo?.load();
+      }
+      await restorePreviewFonts();resetEditorHistory();
+    }
     workspaceMode=saved.workspaceMode;
     autoCutSession=saved.autocut;batchSession=saved.batch;
     await tick();
@@ -281,16 +311,33 @@
     editHistoryIndex=editHistory.length-1;
   }
   function flushEditorSnapshot(){const snapshot=captureEditorSnapshot();if(snapshot)commitEditorSnapshot(snapshot)}
-  function applyEditorSnapshot(snapshot:EditorSnapshot,direction:"undo"|"redo"){
+  function restoreToolSnapshot(saved:Tool|null):Tool|null{
+    if(!saved)return null;
+    const current=kindTools(activeKind).find(tool=>tool.id===saved.id);
+    if(!current)return kindTools(activeKind)[0]??null;
+    const restored=cloneEditorValue(current),savedFields=new Map(saved.fields.map(field=>[field.key,field]));
+    for(const field of restored.fields){
+      const old=savedFields.get(field.key);
+      if(old)field.value=old.value;
+    }
+    if(restored.id==="gif"&&!savedFields.has("end")){
+      const start=Number(savedFields.get("start")?.value??0),duration=Number(savedFields.get("duration")?.value??5);
+      const end=restored.fields.find(field=>field.key==="end");
+      if(end)end.value=Math.min(media?.duration??86400,start+Math.max(.01,duration));
+    }
+    return restored;
+  }
+  function applyEditorSnapshot(snapshot:EditorSnapshot,direction:"undo"|"redo",preserveLoadedMedia=false){
     historyApplying=true;
     toolboxVideo?.pause();
-    media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl;activeKind=snapshot.activeKind;
-    selected=kindTools(activeKind).some(tool=>tool.id===snapshot.selected?.id)?cloneEditorValue(snapshot.selected):kindTools(activeKind)[0]??null;
+    if(!preserveLoadedMedia){media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl}
+    activeKind=snapshot.activeKind;
+    selected=restoreToolSnapshot(snapshot.selected);
     output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
     requestAnimationFrame(()=>historyApplying=false);
   }
-  function undoEditor(){if(busy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
-  function redoEditor(){if(busy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.redo();return}if(workspaceMode==="batch"){batchWorkspace?.redo();return}if(editHistoryIndex>=editHistory.length-1)return;editHistoryIndex+=1;applyEditorSnapshot(editHistory[editHistoryIndex],"redo")}
+  function undoEditor(){if(operationBusy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
+  function redoEditor(){if(operationBusy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.redo();return}if(workspaceMode==="batch"){batchWorkspace?.redo();return}if(editHistoryIndex>=editHistory.length-1)return;editHistoryIndex+=1;applyEditorSnapshot(editHistory[editHistoryIndex],"redo")}
 
   $effect(()=>{
     const snapshot=captureEditorSnapshot();
@@ -342,7 +389,8 @@
     const secondText=Math.abs(seconds-Math.round(seconds))<.0005?String(Math.round(seconds)).padStart(2,"0"):seconds.toFixed(3).padStart(6,"0");
     return `${hours}:${String(minutes).padStart(2,"0")}:${secondText}`;
   };
-  const timelineTime = (value:number) => selected?.id==="cut"?editableTime(value):playerTime(value);
+  const rangeTimelineTool = () => ["cut","gif","image_overlay"].includes(selected?.id??"");
+  const timelineTime = (value:number) => rangeTimelineTool()?editableTime(value):playerTime(value);
   function parseTimecode(value:string){
     const parts=value.trim().split(":");
     if(parts.length<1||parts.length>3||parts.some(part=>part===""||!/^\d+(?:\.\d{1,3})?$/.test(part)))return null;
@@ -352,23 +400,35 @@
     else{if(numbers[1]>=60||numbers[2]>=60)return null;seconds=numbers[0]*3600+numbers[1]*60+numbers[2]}
     return Number.isFinite(seconds)?seconds:null;
   }
+  function setTimelineRange(start:number,end:number){
+    setToolNumber("start",start);
+    setToolNumber("end",end);
+  }
+  function setTimelineBoundary(key:TimelineBoundary,seconds:number){
+    if(!media?.duration)return;
+    const next=moveTimelineBoundary(timelineBounds(),key,seconds,media.duration);
+    setTimelineRange(next.start,next.end);
+  }
   function setCutTime(key:"start"|"end",value:string){
     const seconds=parseTimecode(value),duration=media?.duration??0;
     if(seconds===null||seconds<0||seconds>duration){error=language==="tr"?"Geçerli bir zaman gir (S, M:S veya H:M:S).":"Enter a valid time (S, M:S or H:M:S).";return}
-    const other=toolNumber(key==="start"?"end":"start");
-    if((key==="start"&&seconds>=other)||(key==="end"&&seconds<=other)){error=language==="tr"?"Bitiş zamanı başlangıçtan büyük olmalı.":"End must be greater than start.";return}
-    setToolNumber(key,seconds);seekToolbox(seconds);error="";
+    setTimelineBoundary(key,seconds);seekToolbox(seconds);error="";
   }
   function commitCutTime(key:"start"|"end"){
     const value=key==="start"?cutStartInput:cutEndInput;
     setCutTime(key,value);
-    const formatted=editableTime(toolNumber(key));
+    const bounds=timelineBounds(),formatted=editableTime(key==="start"?bounds.start:bounds.end);
     if(key==="start")cutStartInput=formatted;else cutEndInput=formatted;
     cutTimeEditing=null;
   }
   function handleCutTimeKey(event:KeyboardEvent,key:"start"|"end"){
     if(event.key==="Enter"){event.preventDefault();(event.currentTarget as HTMLInputElement).blur();return}
-    if(event.key==="Escape"){event.preventDefault();if(key==="start")cutStartInput=editableTime(toolNumber("start"));else cutEndInput=editableTime(toolNumber("end"));(event.currentTarget as HTMLInputElement).blur()}
+    if(event.key==="Escape"){event.preventDefault();const bounds=timelineBounds();if(key==="start")cutStartInput=editableTime(bounds.start);else cutEndInput=editableTime(bounds.end);(event.currentTarget as HTMLInputElement).blur()}
+  }
+  function markCutAtPlayhead(key:"start"|"end"){
+    if(!rangeTimelineTool()||!media?.duration)return;
+    const duration=media.duration,at=Math.max(0,Math.min(duration,toolboxCurrent));
+    setTimelineBoundary(key,at);error="";
   }
   const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
   function previewSourceDimensions(){
@@ -404,6 +464,30 @@
     field.options=options.length?options:[{value:String(Math.min(media?.width??4320,media?.height??4320)),label:language==="tr"?"Daha yüksek standart hedef yok":"No higher standard target"}];
     field.value=field.options[0].value;
   }
+  function configureTimelineFields(tool:Tool){
+    if(!media?.duration)return;
+    const mediaDuration=media.duration;
+    for(const field of tool.fields){
+      if(field.key==="end")field.value=["cut","image_overlay"].includes(tool.id)?mediaDuration:Math.min(5,mediaDuration);
+      if(["start","end","duration","timestamp"].includes(field.key))field.max=mediaDuration;
+    }
+    if(["cut","gif","image_overlay"].includes(tool.id)){
+      const startField=tool.fields.find(field=>field.key==="start");
+      const endField=tool.fields.find(field=>field.key==="end");
+      let start=Math.max(0,Math.min(mediaDuration,Number(startField?.value??0)));
+      let end=Number(endField?.value??mediaDuration);
+      // A five-second GIF is practically invisible on a long filmstrip and
+      // looks like a closed/disabled selection. Give every range tool a clear
+      // initial block while preserving precise short ranges the user creates.
+      const visibleSpan=Math.min(mediaDuration,Math.max(5,mediaDuration*.08));
+      if(end-start<visibleSpan){
+        end=Math.min(mediaDuration,start+visibleSpan);
+        start=Math.max(0,end-visibleSpan);
+      }
+      if(startField)startField.value=Math.round(start*1000)/1000;
+      if(endField)endField.value=Math.round(end*1000)/1000;
+    }
+  }
 
   function chooseTool(tool: Tool) {
     const changed = selected?.id !== tool.id;
@@ -419,6 +503,7 @@
     if(selected.id==="subtitles"&&media)void loadSubtitleTracks();
     if(selected.id==="text")void ensureSystemFonts();
     configureUpscale(selected);
+    configureTimelineFields(selected);
     if (selected.id === "encode" && availableEncoders) {
       const encoderField = selected.fields.find((item) => item.key === "encoder");
       if (encoderField) {
@@ -442,14 +527,7 @@
       const choices = numericPresets("frame_blend", field);
       if (field && Number(field.value) >= media.fps) field.value = choices.at(-1) ?? Math.max(1, Math.floor(media.fps / 2));
     }
-    if (media?.duration) {
-      for (const field of selected.fields) {
-        if (field.key === "end") field.value = selected.id === "cut" ? media.duration : Math.min(10, media.duration);
-        if (field.key === "duration") field.value = Math.min(5, media.duration);
-        if (["start", "end", "duration", "timestamp"].includes(field.key)) field.max = media.duration;
-      }
-    }
-    if(selected.id==="cut"){cutStartInput=editableTime(toolNumber("start"));cutEndInput=editableTime(toolNumber("end"));cutTimeEditing=null}
+    if(rangeTimelineTool()){const bounds=timelineBounds();cutStartInput=editableTime(bounds.start);cutEndInput=editableTime(bounds.end);cutTimeEditing=null}
     const audioTrackField = selected.fields.find((item) => item.key === "audio_track");
     if (audioTrackField && media) {
       audioTrackField.options = media.audio_tracks.map((track, position) => {
@@ -466,12 +544,12 @@
   function resetSelectedTool(){
     if(!selected)return;
     const source=kindTools(activeKind).find(item=>item.id===selected?.id);
-    if(source){selected=localizedTool(source,language);if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}}
+    if(source){selected=localizedTool(source,language);configureTimelineFields(selected);if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}}
     colorEnabled={};colorPreviewVisible=true;textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
   }
 
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
-  function fieldLivesOnTimeline(key:string){return ["cut","image_overlay"].includes(selected?.id??"")?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":selected?.id==="gif"?["start","duration"].includes(key):false}
+  function fieldLivesOnTimeline(key:string){return ["cut","gif","image_overlay"].includes(selected?.id??"")?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":false}
   function fieldVisible(key:string){
     if(["transform","clipper"].includes(selected?.id??"") && key!=="crf") return false;
     if(selected?.id==="color" || selected?.id==="text") return false;
@@ -495,7 +573,7 @@
       if(key==="subtitle_track")return action==="extract";
     }
     if(key==="audio_track") return String(toolField("audio_mode")?.value)==="selected";
-    if(selected?.id==="cut"&&key==="crf") return String(toolField("cut_mode")?.value)!=="lossless";
+    if(selected?.id==="cut"&&key==="crf") return false;
     if(selected?.id==="speed"&&key==="crf") return String(toolField("speed_mode")?.value)!=="lossless_video";
     if(selected?.id==="potatoify"&&["fps","video_badness","audio_badness","shrink"].includes(key)) return String(toolField("profile")?.value)==="custom";
     if(selected?.id==="image_potatoify"&&["quality","times","scale"].includes(key)) return String(toolField("profile")?.value)==="custom";
@@ -506,8 +584,8 @@
   function toolValue(key:string){return String(toolField(key)?.value??"")}
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
   $effect(()=>{
-    if(selected?.id!=="cut")return;
-    const start=toolNumber("start"),end=toolNumber("end");
+    if(!rangeTimelineTool())return;
+    const {start,end}=timelineBounds();
     if(cutTimeEditing!=="start")cutStartInput=editableTime(start);
     if(cutTimeEditing!=="end")cutEndInput=editableTime(end);
   });
@@ -600,10 +678,11 @@
 
   function activeText(){return textLayers.find(layer=>layer.id===activeTextId)??null}
   async function ensureSystemFonts(){
-    if(systemFonts.length||fontsLoading)return systemFonts;
-    fontsLoading=true;
-    try{systemFonts=await invoke<FontOption[]>("list_system_fonts")}catch(reason){error=String(reason);reportProblem(reason)}finally{fontsLoading=false}
-    return systemFonts;
+    if(systemFonts.length)return systemFonts;
+    systemFontsLoad??=invoke<FontOption[]>("list_system_fonts")
+      .then(fonts=>{systemFonts=fonts;return fonts})
+      .catch(reason=>{systemFontsLoad=null;error=String(reason);reportProblem(reason);return []});
+    return systemFontsLoad;
   }
   async function addTextLayer(){
     const fonts=await ensureSystemFonts();
@@ -615,14 +694,93 @@
     textLayers=[...textLayers,layer];activeTextId=layer.id;
   }
   function updateTextLayer(patch:Partial<TextLayer>){textLayers=textLayers.map(layer=>layer.id===activeTextId?{...layer,...patch}:layer)}
-  function removeTextLayer(id:number){textLayers=textLayers.filter(layer=>layer.id!==id);if(activeTextId===id)activeTextId=textLayers[0]?.id??null}
+  function removeTextLayer(id:number){fontSelectionVersions.delete(id);textLayers=textLayers.filter(layer=>layer.id!==id);if(activeTextId===id)activeTextId=textLayers[0]?.id??null}
   function textLayerStyle(layer:TextLayer){
     const box=mediaDisplayBox();if(!box||!media?.width)return "display:none";
     const scale=box.width/(previewSourceDimensions().width||media.width);
     const outline=Math.max(0,layer.outline*scale),shadow=Math.max(0,layer.shadow*scale),padding=Math.max(0,layer.background_padding*scale);
     const translate=layer.align==="left"?"0":layer.align==="right"?"-100%":"-50%";
-    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;transform:translate(${translate},-50%);text-align:${layer.align};font-size:${Math.max(8,layer.size*scale)}px;color:${layer.color};opacity:${layer.opacity/100};font-family:${JSON.stringify(layer.fontName)};-webkit-text-stroke:${outline}px ${layer.outline_color};paint-order:stroke fill;text-shadow:${shadow?`${shadow}px ${shadow}px ${Math.max(1,shadow*.7)}px ${layer.shadow_color}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"3px 8px"}`;
+    return `left:${(box.stageWidth-box.width)/2+box.width*layer.x/100}px;top:${(box.stageHeight-box.height)/2+box.height*layer.y/100}px;transform:translate(${translate},-50%);text-align:${layer.align};font-size:${Math.max(1,layer.size*scale)}px;color:${hexWithAlpha(layer.color,layer.opacity)};font-family:${JSON.stringify(layer.fontName)};font-weight:400;font-style:normal;-webkit-text-stroke:${outline}px ${hexWithAlpha(layer.outline_color,layer.opacity)};paint-order:stroke fill;text-shadow:${shadow?`${shadow}px ${shadow}px 0 ${hexWithAlpha(layer.shadow_color,layer.opacity*.75)}`:"none"};background:${layer.background?hexWithAlpha(layer.background_color,layer.background_opacity):"transparent"};padding:${layer.background?`${padding}px`:"0"}`;
   }
+  function textPreviewCanvasStyle(){
+    const box=mediaDisplayBox();if(!box)return "display:none";
+    return `left:${(box.stageWidth-box.width)/2}px;top:${(box.stageHeight-box.height)/2}px;width:${box.width}px;height:${box.height}px`;
+  }
+  function textLayerAvailableWidth(layer:TextLayer){
+    const sourceWidth=previewSourceDimensions().width||media?.width||1,x=Math.max(0,Math.min(1,layer.x/100));
+    const anchorWidth=layer.align==="left"?1-x:layer.align==="right"?x:2*Math.min(x,1-x);
+    const safeWidth=sourceWidth*Math.min(.9,Math.max(.05,anchorWidth));
+    const effects=(layer.background?layer.background_padding*2:0)+layer.outline+Math.max(0,layer.shadow);
+    return Math.max(layer.size,safeWidth-effects);
+  }
+  function wrappedText(layer:TextLayer){
+    textMeasureCanvas??=document.createElement("canvas");
+    const context=textMeasureCanvas.getContext("2d");
+    if(!context)return layer.text;
+    context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}`;
+    const maxWidth=textLayerAvailableWidth(layer),lines:string[]=[];
+    const fits=(value:string)=>context.measureText(value).width<=maxWidth;
+    const splitLongWord=(word:string)=>{
+      let part="";
+      for(const character of Array.from(word)){
+        const candidate=part+character;
+        if(part&&!fits(candidate)){lines.push(part);part=character}else part=candidate;
+      }
+      return part;
+    };
+    for(const paragraph of layer.text.replace(/\r\n?/g,"\n").split("\n")){
+      if(!paragraph){lines.push("");continue}
+      let line="";
+      for(const word of paragraph.trim().split(/\s+/)){
+        const candidate=line?`${line} ${word}`:word;
+        if(fits(candidate)){line=candidate;continue}
+        if(line){lines.push(line);line=""}
+        line=fits(word)?word:splitLongWord(word);
+      }
+      lines.push(line);
+    }
+    return lines.join("\n");
+  }
+  function canvasColor(color:string,opacity:number){
+    if(!/^#[0-9a-f]{6}$/i.test(color))return "rgba(0,0,0,0)";
+    const value=parseInt(color.slice(1),16),red=value>>16,green=value>>8&255,blue=value&255;
+    return `rgba(${red},${green},${blue},${Math.max(0,Math.min(100,opacity))/100})`;
+  }
+  function renderTextPreview(){
+    const canvas=textPreviewCanvas,source=previewSourceDimensions();
+    if(!canvas||selected?.id!=="text"||!source.width||!source.height)return;
+    const width=Math.max(1,Math.round(source.width)),height=Math.max(1,Math.round(source.height));
+    if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
+    const context=canvas.getContext("2d");if(!context)return;
+    context.clearRect(0,0,width,height);
+    for(const layer of textLayers){
+      const lines=wrappedText(layer).split("\n"),lineHeight=layer.size*1.05,totalHeight=lineHeight*lines.length;
+      context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}`;
+      context.textAlign=layer.align;context.textBaseline="middle";
+      const anchorX=width*layer.x/100,centerY=height*layer.y/100;
+      const widest=Math.max(0,...lines.map(line=>context.measureText(line).width));
+      const left=layer.align==="left"?anchorX:layer.align==="right"?anchorX-widest:anchorX-widest/2;
+      if(layer.background){
+        context.fillStyle=canvasColor(layer.background_color,layer.background_opacity);
+        context.fillRect(left-layer.background_padding,centerY-totalHeight/2-layer.background_padding,widest+layer.background_padding*2,totalHeight+layer.background_padding*2);
+      }
+      context.shadowOffsetX=layer.shadow;context.shadowOffsetY=layer.shadow;context.shadowBlur=0;
+      context.shadowColor=canvasColor(layer.shadow_color,layer.opacity*.75);
+      context.lineJoin="round";context.miterLimit=2;context.lineWidth=layer.outline;
+      context.strokeStyle=canvasColor(layer.outline_color,layer.opacity);
+      context.fillStyle=canvasColor(layer.color,layer.opacity);
+      for(const [index,line] of lines.entries()){
+        const y=centerY-totalHeight/2+lineHeight*(index+.5);
+        if(layer.outline>0)context.strokeText(line,anchorX,y);
+        context.fillText(line,anchorX,y);
+      }
+      context.shadowColor="transparent";
+    }
+  }
+  $effect(()=>{
+    textLayers;selected?.id;transformCanvasWidth;transformCanvasHeight;media?.width;media?.height;
+    queueMicrotask(renderTextPreview);
+  });
   function previewFontAlias(path:string){let hash=2166136261;for(const character of path){hash^=character.charCodeAt(0);hash=Math.imul(hash,16777619)}return `container-font-${(hash>>>0).toString(16)}`}
   async function loadPreviewFont(font:FontOption){
     const alias=previewFontAlias(font.path);
@@ -633,16 +791,32 @@
   async function restorePreviewFonts(){
     const layers=[...textLayers];
     const fonts=await ensureSystemFonts();
+    const fallback=fonts.find(item=>item.name.toLowerCase()==="impact")??fonts.find(item=>item.name.toLowerCase().startsWith("arial"))??fonts[0];
     const restored=await Promise.all(layers.map(async layer=>{
-      const font=fonts.find(candidate=>candidate.path.toLowerCase()===layer.font_path.toLowerCase());
-      try{return {...layer,fontName:await loadPreviewFont(font??{name:basename(layer.font_path).replace(/\.[^.]+$/,""),path:layer.font_path})}}catch(reason){reportProblem(reason);return layer}
+      const font=fonts.find(candidate=>candidate.path.toLowerCase()===layer.font_path.toLowerCase())??fallback;
+      if(!font)return layer;
+      try{return {...layer,fontName:await loadPreviewFont(font),font_path:font.path}}catch(reason){reportProblem(reason);return layer}
     }));
     if(layers.every((layer,index)=>textLayers[index]?.id===layer.id)){
       textLayers=restored;
       nextTextId=Math.max(0,...restored.map(layer=>layer.id))+1;
     }
   }
-  async function chooseTextFont(path:string){const font=systemFonts.find(item=>item.path===path);if(!font)return;try{updateTextLayer({fontName:await loadPreviewFont(font),font_path:font.path});error=""}catch(reason){error=String(reason);reportProblem(reason)}}
+  async function chooseTextFont(path:string){
+    const font=systemFonts.find(item=>item.path===path),layerId=activeTextId;
+    if(!font||layerId===null)return;
+    const version=(fontSelectionVersions.get(layerId)??0)+1;
+    fontSelectionVersions.set(layerId,version);
+    try{
+      const fontName=await loadPreviewFont(font);
+      if(fontSelectionVersions.get(layerId)!==version||!textLayers.some(layer=>layer.id===layerId))return;
+      textLayers=textLayers.map(layer=>layer.id===layerId?{...layer,fontName,font_path:font.path}:layer);
+      error="";
+    }catch(reason){
+      if(fontSelectionVersions.get(layerId)!==version)return;
+      error=String(reason);reportProblem(reason);
+    }
+  }
   function positionText(position:string){
     const layer=activeText();if(!layer)return;
     const [vertical,horizontal]=position.split("-");
@@ -744,6 +918,7 @@
   }
   const socialOutputSizes:Record<string,[number,number]>={"9:16":[1080,1920],"16:9":[1920,1080],"1:1":[1080,1080],"4:5":[1080,1350]};
   function setVerticalLayout(layout:"original"|"blur"|"fill"|"split"|"squares"|"freecam"){
+    cameraDetectionMessage="";
     setToolValue("vertical_layout",layout);
     setCropPreset("9:16",true);
     if(layout!=="fill"){
@@ -767,6 +942,25 @@
     let width=100,height=100;
     if(sourceRatio>targetRatio)width=targetRatio/sourceRatio*100;else height=sourceRatio/targetRatio*100;
     setToolNumber("region_b_x",(100-width)/2);setToolNumber("region_b_y",(100-height)/2);setToolNumber("region_b_w",width);setToolNumber("region_b_h",height);
+  }
+  async function autoDetectCamera(){
+    if(cameraDetecting||selected?.id!=="clipper"||!media?.duration)return;
+    const source=previewSourceDimensions();
+    if(!source.width||!source.height)return;
+    const mediaPath=media.path,layout=toolValue("vertical_layout");
+    if(!["split","squares","freecam"].includes(layout))return;
+    cameraDetecting=true;cameraDetectionMessage=language==="tr"?"Video örnekleniyor…":"Sampling video…";error="";
+    try{
+      const result=await invoke<CameraDetectionResult>("detect_camera_region",{input:mediaPath,duration:media.duration,sourceWidth:Math.round(source.width),sourceHeight:Math.round(source.height)});
+      if(media?.path!==mediaPath||selected?.id!=="clipper")return;
+      setToolNumber("region_a_x",result.x);setToolNumber("region_a_y",result.y);
+      setToolNumber("region_a_w",result.width);setToolNumber("region_a_h",result.height);
+      const confidence=result.confidence>=.78?(language==="tr"?"yüksek":"high"):result.confidence>=.55?(language==="tr"?"orta":"medium"):(language==="tr"?"düşük":"low");
+      cameraDetectionMessage=language==="tr"?`Kamera uygulandı · ${confidence} güven · ${result.matched_samples}/${result.samples} kare`:`Camera applied · ${confidence} confidence · ${result.matched_samples}/${result.samples} frames`;
+    }catch(reason){
+      cameraDetectionMessage=language==="tr"?"Kamera bulunamadı; manuel seçim korunuyor.":"No camera found; manual selection is unchanged.";
+      showToast(reason);
+    }finally{cameraDetecting=false}
   }
   function setSplitOrder(value:string){setToolValue("region_order",value);centerContentRegion()}
   function setSplitHeight(value:number){setToolNumber("region_a_height",value);centerContentRegion()}
@@ -943,7 +1137,6 @@
   function timelineBounds(){
     if(!selected)return {start:0,end:0};
     if(selected.id==="screenshot"){const at=toolNumber("timestamp");return {start:at,end:at}}
-    if(selected.id==="gif"){const start=toolNumber("start");return {start,end:start+toolNumber("duration")}}
     return {start:toolNumber("start"),end:toolNumber("end")};
   }
   async function loadToolboxFilmstrip(){
@@ -955,15 +1148,8 @@
   function applyTimelineClick(at:number){
     seekToolbox(at);
     if(selected?.id==="screenshot"){setToolNumber("timestamp",at);return}
-    if(!media?.duration||!selected)return;
-    const bounds=timelineBounds();
-    if(selected.id==="cut"){
-      setToolNumber("start",Math.max(0,Math.min(bounds.end-.01,at)));
-      return;
-    }
-    if(selected.id!=="gif")return;
-    const span=Math.max(.01,bounds.end-bounds.start),start=Math.max(0,Math.min(media.duration-span,at)),end=Math.min(media.duration,start+span);
-    setToolNumber("start",start);setToolNumber("duration",end-start);
+    // Range tools share Cut Video's behavior: clicking the filmstrip only
+    // seeks. IN/OUT or the green handles are the only ways to change a range.
   }
   function seekTimeline(event:MouseEvent){
     if(performance.now()<timelineIgnoreClickUntil||(event.target as HTMLElement).closest(".timeline-selection,.timeline-point"))return;
@@ -984,8 +1170,7 @@
       if(mode==="start")start=Math.min(end-.01,at);
       else if(mode==="end")end=Math.max(start+.01,at);
       else{start=Math.max(0,Math.min(duration-span,initial.start+(at-pointerStart)));end=start+span}
-      if(selected?.id==="gif"){setToolNumber("start",start);setToolNumber("duration",Math.max(.01,end-start))}
-      else{setToolNumber("start",start);setToolNumber("end",end)}
+      setTimelineRange(start,end);
       seekToolbox(mode==="end"?end:start);
     };
     if(mode!=="range")update(event);
@@ -1008,7 +1193,7 @@
     if(mode==="point"){const value=Math.max(0,Math.min(media.duration,bounds.start+delta));setToolNumber("timestamp",value);seekToolbox(value);return}
     const start=mode==="start"?Math.max(0,Math.min(bounds.end-.01,bounds.start+delta)):bounds.start;
     const end=mode==="end"?Math.min(media.duration,Math.max(start+.01,bounds.end+delta)):bounds.end;
-    if(selected?.id==="gif"){setToolNumber("start",start);setToolNumber("duration",end-start)}else{setToolNumber("start",start);setToolNumber("end",end)}
+    setTimelineRange(start,end);
     seekToolbox(mode==="start"?start:end)
   }
 
@@ -1106,9 +1291,12 @@
       }
       const previousPreview=temporaryImagePreviewPath;
       temporaryImagePreviewPath=preparedPreview;
+      const previewPath=preparedPreview||path;
+      await invoke("authorize_media_preview",{path:previewPath});
+      if(loadId!==mediaLoadId){if(preparedPreview)releaseTemporaryImagePreview(preparedPreview);return}
       media = loaded;
       activeKind = media.kind;
-      mediaUrl = convertFileSrc(preparedPreview||path);
+      mediaUrl = convertFileSrc(previewPath);
       if(previousPreview&&previousPreview!==preparedPreview)releaseTemporaryImagePreview(previousPreview);
       workspaceMode = "toolbox";
       autoCutSession = null;
@@ -1184,6 +1372,27 @@
     const duration = toolboxVideo.duration || media?.duration || 0;
     toolboxVideo.currentTime = Math.max(0, Math.min(duration, value));
     toolboxCurrent = toolboxVideo.currentTime;
+  }
+  function seekToolboxBy(seconds:number){
+    if(!toolboxVideo)return;
+    seekToolbox(toolboxVideo.currentTime+seconds);
+  }
+  function playerSeekPosition(event:PointerEvent){
+    const rect=(event.currentTarget as HTMLInputElement).getBoundingClientRect(),thumbWidth=11;
+    const visualPercent=Math.max(0,Math.min(100,(event.clientX-rect.left)/Math.max(1,rect.width)*100));
+    const valuePercent=Math.max(0,Math.min(100,(event.clientX-rect.left-thumbWidth/2)/Math.max(1,rect.width-thumbWidth)*100));
+    const time=(media?.duration??0)*valuePercent/100;
+    return {percent:visualPercent,time:event.shiftKey?Math.floor(time):time,precision:event.shiftKey};
+  }
+  function hoverPlayerSeek(event:PointerEvent){playerSeekHover=playerSeekPosition(event)}
+  function precisionPlayerSeek(event:PointerEvent){
+    if(!event.shiftKey)return;
+    event.preventDefault();event.stopPropagation();
+    const position=playerSeekPosition(event);seekToolbox(position.time);playerSeekHover=position;
+  }
+  function wheelPlayerSeek(event:WheelEvent){
+    event.preventDefault();
+    seekToolboxBy((event.deltaY>0?1:-1)*(event.ctrlKey?5:1));
   }
 
   function handleToolboxMetadata(){
@@ -1312,7 +1521,7 @@
     const params=Object.fromEntries(tool.fields.map((field) => [field.key, String(field.value)]));
     if(tool.id==="merge_videos")params.inputs=JSON.stringify(mergeInputs);
     if(tool.id==="color")for(const key of ["brightness","contrast","saturation","gamma","hue","temperature","sharpen","blur","deband","vignette"])params[`${key}_enabled`]=String(colorOn(key));
-    if(tool.id==="text")params.layers=JSON.stringify(textLayers);
+    if(tool.id==="text")params.layers=JSON.stringify(textLayers.map(layer=>({...layer,text:wrappedText(layer)})));
     return params;
   }
 
@@ -1563,7 +1772,14 @@
       try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession;else discardRecovery()}catch{discardRecovery()}
     }).catch(()=>discardRecovery());
     void getVersion().then((version) => appVersion = version).catch(() => {});
-    void invoke<string | null>("startup_media_path").then((path) => { if (path){recoveryCandidate=null;void loadMedia(path);} }).catch(() => {});
+    void invoke<string | null>("startup_media_path").then(async(path) => {
+      if(!path)return;
+      recoveryCandidate=null;
+      try{
+        if(path.toLowerCase().endsWith(".containerproject"))await loadProjectPath(path);
+        else await loadMedia(path);
+      }catch(reason){reportProblem(reason)}
+    }).catch(() => {});
     // Run both checks on every launch. The UI stays quiet unless the user
     // needs FFmpeg or a newer signed release is available.
     void (async () => {
@@ -1573,13 +1789,22 @@
       downloaderStatus=await invoke<DownloaderStatus>("downloader_status").catch(()=>({ready:false,version:null}));
       await checkForUpdates(false);
     })();
-    void invoke<string[]>("available_encoders").then((encoders) => {
-      availableEncoders = encoders;
-      if (selected?.id === "encode") {
-        const source = kindTools(activeKind).find((tool) => tool.id === "encode");
-        if (source) chooseTool(source);
+    void (async () => {
+      const configured = await invoke<boolean>("auto_encoder_configured").catch(() => true);
+      autoEncoderTuning = !configured;
+      try {
+        availableEncoders = await invoke<string[]>("available_encoders");
+        await invoke<string>("warm_up_auto_encoder");
+        if (selected?.id === "encode") {
+          const source = kindTools(activeKind).find((tool) => tool.id === "encode");
+          if (source) chooseTool(source);
+        }
+      } catch {
+        availableEncoders = null;
+      } finally {
+        autoEncoderTuning = false;
       }
-    }).catch(() => { availableEncoders = null; });
+    })();
     const playerKeys = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       // CONTAINER is a desktop editor, not a browser page. Keep the WebView
@@ -1605,8 +1830,10 @@
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag && ["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
       if (event.code === "Space") { event.preventDefault(); toggleToolboxPlayer(); }
-      else if (event.key === "ArrowLeft") seekToolbox(toolboxCurrent - 5);
-      else if (event.key === "ArrowRight") seekToolbox(toolboxCurrent + 5);
+      else if (rangeTimelineTool() && key === "i") { event.preventDefault(); markCutAtPlayhead("start"); }
+      else if (rangeTimelineTool() && key === "o") { event.preventDefault(); markCutAtPlayhead("end"); }
+      else if (event.key === "ArrowLeft") seekToolboxBy(-5);
+      else if (event.key === "ArrowRight") seekToolboxBy(5);
     };
     const blockBrowserMenu = (event: MouseEvent) => event.preventDefault();
     const toastEvent=(event:Event)=>{const detail=(event as CustomEvent<ToastDetail>).detail;if(detail?.message)showToast(detail.message,detail.kind??"error")};
@@ -1669,7 +1896,6 @@
       const context=canvas.getContext("2d");
       if(!context)throw new Error("Window icon could not be prepared.");
       context.drawImage(logo,0,0,64,64);
-      const { Image: TauriImage }=await import("@tauri-apps/api/image");
       const icon=await TauriImage.new(new Uint8Array(context.getImageData(0,0,64,64).data.buffer),64,64);
       try{await appWindow.setIcon(icon)}finally{await icon.close()}
     }catch(error){reportProblem(error)}
@@ -1751,6 +1977,12 @@
     <DownloaderWorkspace {language} onbusychange={(value:boolean)=>downloaderBusy=value} />
   {:else if !media}
     <section class="landing">
+      {#if autoEncoderTuning}
+        <div class="first-run-tuning" role="status" aria-live="polite">
+          <i aria-hidden="true"></i>
+          <div><b>{language==="tr"?"PERFORMANS AYARLANIYOR":"TUNING PERFORMANCE"}</b><span>{language==="tr"?"Kısa ve sessizdir; yalnızca ekran kartı veya FFmpeg değişince tekrarlanır.":"A short silent test; it repeats only when the GPU or FFmpeg changes."}</span></div>
+        </div>
+      {/if}
       {#if recoveryCandidate}
         <section class="recovery-card panel">
           <div><span>↻</span><div><h3>{language==="tr"?"ÖNCEKİ ÇALIŞMA BULUNDU":"PREVIOUS WORK FOUND"}</h3><p><b>{basename(recoveryCandidate.mediaPath)}</b> · {new Date(recoveryCandidate.savedAt).toLocaleString(language==="tr"?"tr-TR":"en-US")}</p></div></div>
@@ -1872,10 +2104,11 @@
               {/if}
               {#if selected?.id === "text"}
                 <div class="text-preview-layer">
+                  <canvas class="text-preview-canvas" bind:this={textPreviewCanvas} style={textPreviewCanvasStyle()}></canvas>
                   {#each textLayers as layer (layer.id)}
                     <button class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} onclick={()=>activeTextId=layer.id} onpointerdown={(event)=>startTextDrag(event,layer)}>
                       <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i>
-                      <span>{layer.text}</span>
+                      <span>{wrappedText(layer)}</span>
                       <i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
                     </button>
                   {/each}
@@ -1897,10 +2130,11 @@
               {/if}
               </div>
               <div class="ac-controls">
-                <input class="player-seek" style={`--seek-pct:${media.duration ? Math.min(100, toolboxCurrent / media.duration * 100) : 0}%`} aria-label="Video position" type="range" min="0" max={media.duration ?? 0} step="0.01" value={toolboxCurrent} oninput={(event) => seekToolbox(Number(event.currentTarget.value))}>
-                <button onclick={() => seekToolbox(toolboxCurrent - 15)} title="15 seconds back">−15</button>
+                {#if playerSeekHover}<span class="player-seek-tooltip mono" class:precision={playerSeekHover.precision} style:left={`${playerSeekHover.percent}%`}>{playerTime(playerSeekHover.time)}</span>{/if}
+                <input class="player-seek" style={`--seek-pct:${media.duration ? Math.min(100, toolboxCurrent / media.duration * 100) : 0}%`} aria-label="Video position" type="range" min="0" max={media.duration ?? 0} step="0.01" value={toolboxCurrent} onpointerdown={precisionPlayerSeek} onpointermove={hoverPlayerSeek} onpointerleave={()=>playerSeekHover=null} onwheel={wheelPlayerSeek} oninput={(event) => seekToolbox(Number(event.currentTarget.value))}>
+                <button onclick={() => seekToolboxBy(-5)} title="5 seconds back">−5</button>
                 <button class="play" onclick={toggleToolboxPlayer} title="Play / Pause">{toolboxPlaying ? "Ⅱ" : "▶"}</button>
-                <button onclick={() => seekToolbox(toolboxCurrent + 15)} title="15 seconds forward">+15</button>
+                <button onclick={() => seekToolboxBy(5)} title="5 seconds forward">+5</button>
                 <span class="ac-time mono">{playerTime(toolboxCurrent)} <i>/</i> {playerTime(media.duration ?? 0)}</span>
                 <input class="volume" aria-label="Volume" type="range" min="0" max="1" step="0.05" bind:value={toolboxVolume} oninput={() => { if (toolboxVideo) toolboxVideo.volume = toolboxVolume; }}>
                 <button onclick={fullscreenToolboxPlayer} title="Fullscreen">⛶</button>
@@ -1924,9 +2158,10 @@
                 {/if}
                 {#if selected.id === "text"}
                   <div class="text-preview-layer">
+                    <canvas class="text-preview-canvas" bind:this={textPreviewCanvas} style={textPreviewCanvasStyle()}></canvas>
                     {#each textLayers as layer (layer.id)}
                       <button class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} onclick={()=>activeTextId=layer.id} onpointerdown={(event)=>startTextDrag(event,layer)}>
-                        <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i><span>{layer.text}</span><i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
+                        <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i><span>{wrappedText(layer)}</span><i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
                       </button>
                     {/each}
                   </div>
@@ -1973,8 +2208,8 @@
 
         {#if timelineTool && media.duration}
           <div class="tool-timeline panel">
-            <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div><b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${timelineTime(timelineBounds().start)} — ${timelineTime(timelineBounds().end)}`}</b></header>
-            {#if selected?.id==="cut"}<div class="cut-timecodes"><label><span>START <i>H:M:S</i></span><input class="mono" bind:value={cutStartInput} onfocus={()=>cutTimeEditing="start"} onblur={()=>commitCutTime("start")} onkeydown={(event)=>handleCutTimeKey(event,"start")} placeholder="0:05:14"></label><label><span>END <i>H:M:S</i></span><input class="mono" bind:value={cutEndInput} onfocus={()=>cutTimeEditing="end"} onblur={()=>commitCutTime("end")} onkeydown={(event)=>handleCutTimeKey(event,"end")} placeholder="0:05:46"></label></div>{/if}
+            <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div>{#if selected?.id==="cut"}<span class="timeline-current mono"><i>▶</i> {language==="tr"?"KONUM":"PLAYHEAD"} {editableTime(toolboxCurrent)}</span>{/if}<b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${timelineTime(timelineBounds().start)} — ${timelineTime(timelineBounds().end)}`}</b></header>
+            {#if rangeTimelineTool()}<div class="cut-timecodes"><div class="cut-timecode"><span>START <i>H:M:S</i></span><input aria-label={language==="tr"?"Başlangıç zamanı":"Start time"} class="mono" bind:value={cutStartInput} onfocus={()=>cutTimeEditing="start"} onblur={()=>commitCutTime("start")} onkeydown={(event)=>handleCutTimeKey(event,"start")} placeholder="0:05:14"><button onclick={()=>markCutAtPlayhead("start")} title={language==="tr"?"Geçerli oynatma zamanını başlangıç yap (I)":"Set IN to current playhead time (I)"}><b>IN</b><kbd>I</kbd></button></div><div class="cut-timecode"><span>END <i>H:M:S</i></span><input aria-label={language==="tr"?"Bitiş zamanı":"End time"} class="mono" bind:value={cutEndInput} onfocus={()=>cutTimeEditing="end"} onblur={()=>commitCutTime("end")} onkeydown={(event)=>handleCutTimeKey(event,"end")} placeholder="0:05:46"><button onclick={()=>markCutAtPlayhead("end")} title={language==="tr"?"Geçerli oynatma zamanını bitiş yap (O)":"Set OUT to current playhead time (O)"}><b>OUT</b><kbd>O</kbd></button></div><small class="cut-seek-help mono">{language==="tr"?"PLAYER ÇUBUĞU: tekerlek ±1 sn · Ctrl+tekerlek ±5 sn · Shift+tık tam saniye":"PLAYER BAR: wheel ±1 sec · Ctrl+wheel ±5 sec · Shift+click whole second"}</small></div>{/if}
             <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} onpointermove={hoverTimeline} onpointerleave={()=>timelineHover=null} role="presentation">
               {#if toolboxFilmstripUrl}<img class="filmstrip" src={toolboxFilmstripUrl} alt="Video filmstrip" draggable="false">{:else}<span class="wave-loading">{toolboxFilmstripLoading ? (language==="tr"?"video kareleri hazırlanıyor…":"building video frames…") : "—"}</span>{/if}
               {#if selected?.id === "screenshot"}
@@ -2009,7 +2244,7 @@
         {#if selected}
           <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={resetSelectedTool}>{t("defaults")}</button></div>
           <div class="selected-title"><span class="index mono">{String(kindTools(activeKind).findIndex((tool) => tool.id === selected?.id) + 1).padStart(2,"0")}</span><div><h2>{selected.title}</h2><p>{selected.description}</p></div></div>
-          {#if !["transform","text","color","merge_videos"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
+          {#if !["transform","clipper","cut","text","color","merge_videos"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
           {#if selected.id === "merge_videos"}
             <div class="merge-list">
               <button class="merge-add" onclick={addMergeVideos}>＋ {language==="tr"?"VİDEO EKLE":"ADD VIDEOS"}</button>
@@ -2114,13 +2349,13 @@
             <div class="quality-guide">
               <h4>{language === "tr" ? "KAYNAK VE CODEC REHBERİ" : "SOURCE & CODEC GUIDE"}</h4>
               <p><b>{language === "tr" ? "Kaynak:" : "Source:"}</b> {media.pixel_format ?? "unknown"}{media.bits_per_raw_sample ? ` · ${media.bits_per_raw_sample}-bit` : ""}{media.color_transfer ? ` · ${media.color_transfer}` : ""}</p>
-              <p><b>Quality / {encoderQualityMode()} {toolNumber("crf")}:</b> {language==="tr"?(encoderQualityMode()==="CRF"&&toolNumber("crf")===0?"CPU kodlamada gerçek kayıpsız; dosya çok büyük olur.":"Yüksek kalite ayarıdır, gerçek kayıpsız değildir. Sayı düştükçe kalite ve dosya boyutu artar."):(encoderQualityMode()==="CRF"&&toolNumber("crf")===0?"Truly lossless for CPU encoding; file size will be very large.":"A high-quality setting, not mathematically lossless. Lower values increase quality and file size.")}</p>
+              <p><b>{encoderQualityMode()} {toolNumber("crf")}:</b> {language==="tr"?(encoderQualityMode()==="CRF"&&toolNumber("crf")===0?"CPU'da kayıpsız; dosya çok büyük.":"Düşük değer = daha temiz ve daha büyük dosya."):(encoderQualityMode()==="CRF"&&toolNumber("crf")===0?"Lossless on CPU; very large file.":"Lower value = cleaner picture and larger file.")}</p>
               <ul>
-                <li><b>H.264</b><span>{language === "tr" ? "En uyumlu ve çoğu kullanım için en güvenli seçim." : "Most compatible and the safest choice for general use."}</span></li>
-                <li><b>HEVC</b><span>{language === "tr" ? "Aynı kalitede daha küçük olabilir; eski cihazlarda destek zayıftır." : "Can be smaller at the same quality, but older devices may not support it."}</span></li>
-                <li><b>VP9 / AV1</b><span>{language === "tr" ? "Daha verimli fakat CPU ile oldukça yavaştır. MKV çıktısı kullanılır." : "More efficient but much slower on CPU. Output uses MKV."}</span></li>
+                <li><b>H.264</b><span>{language === "tr" ? "En uyumlu seçenek." : "Best compatibility."}</span></li>
+                <li><b>HEVC</b><span>{language === "tr" ? "Daha küçük; eski cihaz desteği zayıf." : "Smaller; weaker legacy support."}</span></li>
+                <li><b>VP9 / AV1</b><span>{language === "tr" ? "Verimli; CPU'da yavaş." : "Efficient; slow on CPU."}</span></li>
               </ul>
-              <small>{language === "tr" ? "Listede yalnızca bu bilgisayarda gerçek bir test karesi kodlayabilen encoder’lar gösterilir. Auto, 10-bit HEVC/VP9/AV1 kaynağını mümkün olduğunda 10-bit korur; H.264 için uyumlu 8-bit 4:2:0 kullanır." : "Only encoders that successfully encode a real test frame on this PC are shown. Auto preserves 10-bit for HEVC/VP9/AV1 when possible and uses compatible 8-bit 4:2:0 for H.264."}</small>
+              <small>{language === "tr" ? "Yalnızca bu bilgisayarda testten geçen encoder’lar listelenir. Auto uyumlu bit derinliğini korur." : "Only encoders verified on this PC are listed. Auto preserves compatible bit depth."}</small>
             </div>
           {/if}
           {#if selected.id === "upscale" && media.width && media.height}
@@ -2150,6 +2385,12 @@
                     <button class:active={toolValue("vertical_layout")==="squares"} onclick={()=>setVerticalLayout("squares")}>SQUARES</button>
                     <button class:active={toolValue("vertical_layout")==="freecam"} onclick={()=>setVerticalLayout("freecam")}>FREECAM</button>
                   </div>
+                  {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
+                    {#if experimentalFeatures}
+                      <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title="Experimental feature">EXPERIMENTAL</em></button>
+                      {#if cameraDetectionMessage}<p class="auto-camera-result">{cameraDetectionMessage}</p>{/if}
+                    {/if}
+                  {/if}
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
                     {@const contentTarget=contentTargetDimensions()}
                     <button class="center-content" onclick={centerContentRegion}>◎ {language==="tr"?"İÇERİĞİ ORTALA":"CENTER CONTENT"} · {contentTarget.width}×{contentTarget.height}</button>

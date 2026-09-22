@@ -219,19 +219,17 @@
 <section class="ac-layout">
   <aside class="ac-side ac-left">
     <div class="ac-card">
-        <header><div><h3>{t("detection")}</h3><p>{t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing||exporting}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
+        <header><div><h3>{t("detection")}</h3><p class:auto-result={!!autoSummary} title={autoSummary?`AUTO · ${autoSummary}`:t("silenceParams")}>{autoSummary?`AUTO · ${autoSummary}`:t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing||exporting}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
       <div class="ac-fields">
         <div class="ac-presets"><button class:active={preset==="natural"} onclick={()=>applyPreset("natural")}>{language==="tr"?"DOĞAL":"NATURAL"}</button><button class:active={preset==="balanced"} onclick={()=>applyPreset("balanced")}>{language==="tr"?"DENGELİ":"BALANCED"}</button><button class:active={preset==="tight"} onclick={()=>applyPreset("tight")}>{language==="tr"?"SIKI":"TIGHT"}</button><button class:active={preset==="auto"} onclick={autoTune} disabled={autoTuning||analyzing||exporting}>AUTO</button></div>
         <label><span>{language==="tr"?"EN AZ DURAKLAMA":"MINIMUM PAUSE"} <b>{Math.round(minimumPause*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minimumPause,.15,1.5)}`} min="0.15" max="1.5" step="0.025" bind:value={minimumPause} oninput={()=>preset="custom"}></label>
         <label><span>{language==="tr"?"KONUŞMADAN ÖNCE KORU":"KEEP BEFORE SPEECH"} <b>{Math.round(keepBeforeSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepBeforeSpeech,0,.5)}`} min="0" max="0.5" step="0.01" bind:value={keepBeforeSpeech} oninput={()=>preset="custom"}></label>
         <label><span>{language==="tr"?"KONUŞMADAN SONRA KORU":"KEEP AFTER SPEECH"} <b>{Math.round(keepAfterSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepAfterSpeech,0,.6)}`} min="0" max="0.6" step="0.01" bind:value={keepAfterSpeech} oninput={()=>preset="custom"}></label>
-        <p class="ac-help">{language==="tr"?"Kısa doğal duraklamalar korunur. Kelime sonlarına, başlangıçlardan biraz daha fazla nefes payı bırakılır.":"Short natural pauses stay intact. Word endings receive slightly more breathing room than beginnings."}</p>
         <details class="ac-advanced"><summary>{language==="tr"?"GELİŞMİŞ ALGILAMA":"ADVANCED DETECTION"}</summary><div>
           <label><span>{t("threshold")} <b>{threshold.toFixed(2)}</b></span><input type="range" style={`--range-pct:${rangePct(threshold,.05,.95)}`} min="0.05" max="0.95" step="0.01" bind:value={threshold} oninput={()=>preset="custom"}></label>
           <label><span>{t("minSilence")} <b>{Math.round(minSilence*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minSilence,.05,.5)}`} min="0.05" max="0.5" step="0.01" bind:value={minSilence} oninput={()=>preset="custom"}></label>
           <label><span>{t("minSpeech")} <b>{Math.round(minSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minSpeech,.05,.5)}`} min="0.05" max="0.5" step="0.01" bind:value={minSpeech} oninput={()=>preset="custom"}></label>
         </div></details>
-        {#if autoSummary}<p class="auto-summary">AUTO · {autoSummary}</p>{/if}
         <button class="ac-secondary listen" onclick={chooseAnalysis}>{analysisInput?`${t("listen")}: ${base(analysisInput)}`:t("listen")}</button>
         {#if analysisInput}<button class="clear-source" onclick={()=>analysisInput=""}>{t("camera")}</button>{/if}
         <button class="ac-primary" onclick={()=>analyze()} disabled={analyzing||autoTuning||exporting}>{analyzing?t("analyzing"):t("detect")}</button>

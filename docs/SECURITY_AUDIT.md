@@ -1,6 +1,6 @@
 # Security audit
 
-Review date: 2026-09-05
+Review date: 2026-09-23
 
 This document records security checks performed for CONTAINER. It is not a guarantee that software can never contain a vulnerability.
 
@@ -33,14 +33,17 @@ This document records security checks performed for CONTAINER. It is not a guara
 - Update packages are signed with a dedicated Tauri updater key; only its public verification key is committed.
 - Lockfiles are committed for pnpm and Cargo.
 - The production npm dependency audit reported no known vulnerabilities on the review date.
+- The Rust dependency audit reported no known vulnerabilities on the review date. It reports six unmaintained transitive crates; these are maintenance warnings rather than known vulnerabilities and remain tracked through Tauri's dependency tree.
 - Dependabot's `glib` 0.18 advisory was reviewed and dismissed as not used: `cargo tree --target x86_64-pc-windows-msvc` confirms the affected Linux GTK dependency is absent from CONTAINER's Windows build graph.
+- Optional camera-region analysis uses the bundled MIT-licensed YuNet model entirely in memory; sampled frames are piped from FFmpeg and are not written or uploaded.
+- First-run encoder tuning uses locally generated benchmark media, removes its temporary directory after measurement, and caches only the selected profile and hardware/FFmpeg fingerprint.
 
 ## Repository checks
 
 - Common API-token/private-key patterns: none found.
 - Unignored files larger than 10 MB: none found.
 - Frontend type/diagnostic check: 0 errors and 0 warnings.
-- Rust tests: 41 passed, 0 failed; the opt-in real-media VAD parity report is intentionally ignored unless its media path is supplied.
+- Rust tests: 70 passed, 0 failed; the opt-in real-media camera and VAD parity reports are intentionally ignored unless their media paths are supplied.
 - Clean Windows release build and NSIS packaging: passed.
 
 Security reports should use GitHub's private vulnerability reporting and avoid attaching private media or personal paths.

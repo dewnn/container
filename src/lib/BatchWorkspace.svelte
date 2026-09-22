@@ -46,7 +46,7 @@
   async function addFiles(){const result=await open({multiple:true,filters:[{name:"Media",extensions:["mp4","mkv","mov","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","ogg","jpg","jpeg","png","webp"]}]});if(Array.isArray(result))addPaths(result)}
   async function addFolder(){const folder=await open({directory:true,multiple:false});if(typeof folder==="string")addPaths(await invoke<string[]>("list_media_files",{folder,recursive}))}
   function chooseTool(event:Event){const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??batchTools()[0]}
-  function visible(field:Field){return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&String(selected.fields.find(item=>item.key==="cut_mode")?.value)==="lossless")}
+  function visible(field:Field){return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&["lossless","smart"].includes(String(selected.fields.find(item=>item.key==="cut_mode")?.value)))}
   async function start(){
     if(running||!items.length)return;armCompletionSound();running=true;cancelAll=false;aggregate=0;let completed=0;
     let unlisten:UnlistenFn|null=null;
