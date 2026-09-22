@@ -1,11 +1,11 @@
 {
+  "version": "0.14.1",
+  "notes": "# Changes\n\n\n- Made Clipper's experimental Auto Camera control available in production builds with its WIP label and documentation.\n- Isolated CONTAINER DEV from the production updater channel so test builds no longer offer stable releases as updates.\n",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.14.0/CONTAINER-Setup-0.14.0-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWFVRXJRYnpvZEoyQWF6NjVJVjFCZ3Rrd1FVN2pQVnYrVDZyZnV5eXluOUs1WHdhNTkydm51VTR3U0NDTHdhRWNNeEpJcitEMDRTbkxhb2laQnFGSHdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTEyNjQ5CWZpbGU6Q09OVEFJTkVSXzAuMTQuMF94NjQtc2V0dXAuZXhlCkZaSXlZTHRYeEVLUnhvMDNMdXNGY0l0dDl5Uk9LRHpoRU1pNHg2b0tHNUtCMDFnY1EyVHJDTERkY2M3MC8reTMxdDBVUXpYN2VnRDJCcE9vUjJaaUNBPT0K"
+      "url": "https://github.com/dewnn/container/releases/download/v0.14.1/CONTAINER-Setup-0.14.1-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWZjTmhYcDFoZnFYZEEwaUVKOEc4SEd4aVFFYzNiUFJqbTg4STV0akFzZm1ET21PWnZnQW9pN1NQTUZ1YkRBMVRpNWNCamM1dWcyenBTMmhlZjZXM2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTE1MDA1CWZpbGU6Q09OVEFJTkVSXzAuMTQuMV94NjQtc2V0dXAuZXhlCnpoejZ6NFpUbWRzT1BOakhjak5VR0FQSXI0WFI1ZUhjQ3BFUVQwZjNCYnBLNmFvVFBJakpScE5pRS96RndNVERWc0NmTUZwQzBSOFZKRGNkeXRTcUFnPT0K"
     }
   },
-  "pub_date": "2026-09-22T21:31:07.5814990Z",
-  "version": "0.14.0",
-  "notes": "# Changes\n\n\n- Improved interface readability, compact-window SmartCut layout and consistent Cut/GIF/overlay range controls.\n- Added crash recovery hardening, project-file launch support and an isolated CONTAINER DEV identity.\n- Added quality-gated hardware encoder tuning that is reused until FFmpeg or display hardware changes.\n- Added experimental camera-region detection for Clipper development builds, with more reliable multi-position sampling and resistance to brief or stray faces.\n"
+  "pub_date": "2026-09-22T22:10:23.5697980Z"
 }
