@@ -9,7 +9,8 @@ const devConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.dev.conf.j
 
 const contracts: Array<[string, boolean]> = [
   ["DEV uses an isolated application identifier", devConfig.identifier === "dev.dean.container.dev"],
-  ["camera detection is guarded as experimental", app.includes("{#if experimentalFeatures}")],
+  ["camera detection ships visibly with an experimental label", !app.includes("{#if experimentalFeatures}") && app.includes("AUTO-DETECT CAMERA") && app.includes(">EXPERIMENTAL</em>")],
+  ["DEV builds never query or offer the production updater", app.includes("updatesAllowedForVersion(appVersion)") && app.includes("{#if updaterEnabled}")],
   ["recovery uses a freshly authorized media URL", app.includes("recoveredMediaUrl(preparedMediaUrl)")],
   ["compact SmartCut layout has a 900px breakpoint", css.includes("@media(max-height:900px)")],
   ["compact SmartCut layout has a 700px breakpoint", css.includes("@media(max-height:700px)")],

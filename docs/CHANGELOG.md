@@ -4,6 +4,11 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] - 2026-09-23
+
+- Made Clipper's experimental Auto Camera control available in production builds with its WIP label and documentation.
+- Isolated CONTAINER DEV from the production updater channel so test builds no longer offer stable releases as updates.
+
 ## [0.14.0] - 2026-09-23
 
 - Improved interface readability, compact-window SmartCut layout and consistent Cut/GIF/overlay range controls.

@@ -17,6 +17,7 @@
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
   import DownloaderWorkspace from "./lib/DownloaderWorkspace.svelte";
   import { recoveredMediaUrl } from "./lib/recovery";
+  import { updatesAllowedForVersion } from "./lib/releaseChannel";
   import { moveTimelineBoundary, type TimelineBoundary } from "./lib/timelineRange";
   import { reportProblem, type ToastDetail } from "./lib/toast";
 
@@ -149,7 +150,7 @@
   let dependencyPanel = $state(false);
   let runtimeMigrationError = $state("");
   let appVersion = $state("");
-  const experimentalFeatures=$derived(appVersion.includes("-dev")||localStorage.getItem("container-experimental-tools")==="true");
+  const updaterEnabled=$derived(updatesAllowedForVersion(appVersion));
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let outputCleanupOpen = $state(false);
@@ -1720,6 +1721,8 @@
 
   async function checkForUpdates(manual = true) {
     if (updateChecking || updateInstalling) return;
+    if (!appVersion) appVersion = await getVersion().catch(() => "");
+    if (!updatesAllowedForVersion(appVersion)) return;
     if (manual) updatePanel = true;
     updateChecking = true;
     updateStatus = language === "tr" ? "Güncellemeler denetleniyor…" : "Checking for updates…";
@@ -1925,7 +1928,7 @@
         <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
         {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
         <div class="project-actions landing-project-actions"><button onclick={openProject} disabled={operationBusy}>{language==="tr"?"PROJE AÇ":"OPEN PROJECT"}</button></div>
-        <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
+        {#if updaterEnabled}<button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>{/if}
       </div>
     {/if}
   </header>
@@ -2386,10 +2389,8 @@
                     <button class:active={toolValue("vertical_layout")==="freecam"} onclick={()=>setVerticalLayout("freecam")}>FREECAM</button>
                   </div>
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
-                    {#if experimentalFeatures}
-                      <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title="Experimental feature">EXPERIMENTAL</em></button>
-                      {#if cameraDetectionMessage}<p class="auto-camera-result">{cameraDetectionMessage}</p>{/if}
-                    {/if}
+                    <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title="Experimental feature">EXPERIMENTAL</em></button>
+                    {#if cameraDetectionMessage}<p class="auto-camera-result">{cameraDetectionMessage}</p>{/if}
                   {/if}
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
                     {@const contentTarget=contentTargetDimensions()}

@@ -49,7 +49,7 @@ On the first launch, CONTAINER silently tests the CPU and the hardware encoders 
 
 ### Experimental camera-region detection
 
-Clipper development builds include an experimental automatic camera-region detector. It samples several points across the video and looks for a persistent face locally; no frames leave the computer. This feature is still work in progress and may choose the wrong region when faces move between layouts, the camera relocates during one video, or several similarly stable faces are visible. Always verify the selected Camera Region before exporting; manual placement remains available.
+Clipper includes an experimental automatic camera-region detector. It samples several points across the video and looks for a persistent face locally; no frames leave the computer. This feature is still work in progress and may choose the wrong region when faces move between layouts, the camera relocates during one video, or several similarly stable faces are visible. Always verify the selected Camera Region before exporting; manual placement remains available.
 
 ### SmartCut
 
