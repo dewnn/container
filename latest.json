@@ -1,11 +1,11 @@
 {
-  "version": "0.13.0",
-  "pub_date": "2026-09-19T22:33:36.8052034Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVR6dXpDYzZnb3d6cEtzenFmZkcwanFNV3hucWF5NGVqaXdhcXVJeGRnOFF4eEdIRW1SQyttVnhjUWlkd2hkY0hQd2xpMmtjN2hUVTlVaUZMdktDRUE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODU3MjA2CWZpbGU6Q09OVEFJTkVSXzAuMTMuMF94NjQtc2V0dXAuZXhlCnZQQkN0aXcxckp1OXhJR1dKTEF2UFRRSCs2UDE0QjlwalI3T1NvVzFVanZ2ckhhalNIT3g0UEhTU09pUnB1VkMrdEU2V2t4b01ZbTBncUt1byt4WUFBPT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.13.0/CONTAINER-Setup-0.13.0-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.14.0/CONTAINER-Setup-0.14.0-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWFVRXJRYnpvZEoyQWF6NjVJVjFCZ3Rrd1FVN2pQVnYrVDZyZnV5eXluOUs1WHdhNTkydm51VTR3U0NDTHdhRWNNeEpJcitEMDRTbkxhb2laQnFGSHdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTEyNjQ5CWZpbGU6Q09OVEFJTkVSXzAuMTQuMF94NjQtc2V0dXAuZXhlCkZaSXlZTHRYeEVLUnhvMDNMdXNGY0l0dDl5Uk9LRHpoRU1pNHg2b0tHNUtCMDFnY1EyVHJDTERkY2M3MC8reTMxdDBVUXpYN2VnRDJCcE9vUjJaaUNBPT0K"
     }
   },
-  "notes": "# Changes\n\n\n- Added optional Clipper watermarks with adjustable size and opacity, layout-aware placement for Split, Squares and Freecam, and an optional compact black separator strip.\n- Standardized watermark preview/export geometry and TikTok/YouTube Shorts safe-area behavior across vertical layouts and output resolutions.\n- Improved Cut Video with full-duration initial selection, direct H:M:S time entry, click-to-set start times and distinct click-versus-drag timeline behavior.\n- Refined the Clipper watermark controls and hardened FFmpeg text handling for punctuation and percent characters.\n"
+  "pub_date": "2026-09-22T21:31:07.5814990Z",
+  "version": "0.14.0",
+  "notes": "# Changes\n\n\n- Improved interface readability, compact-window SmartCut layout and consistent Cut/GIF/overlay range controls.\n- Added crash recovery hardening, project-file launch support and an isolated CONTAINER DEV identity.\n- Added quality-gated hardware encoder tuning that is reused until FFmpeg or display hardware changes.\n- Added experimental camera-region detection for Clipper development builds, with more reliable multi-position sampling and resistance to brief or stray faces.\n"
 }
