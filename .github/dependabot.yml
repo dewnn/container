@@ -30,6 +30,10 @@ updates:
       - dependency-name: "*"
         update-types:
           - version-update:semver-major
+      # silero-vad-rust 6.2.2 requires the rc.10 API and ndarray 0.16.
+      - dependency-name: ort
+        versions:
+          - ">= 2.0.0-rc.11"
   - package-ecosystem: github-actions
     directory: /
     schedule:
