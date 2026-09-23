@@ -75,6 +75,11 @@ export const tools: Tool[] = [
       number("watermark_size", "Watermark size", 32, 18, 160, 1, "px"),
       number("watermark_opacity", "Watermark opacity", 85, 10, 100, 5, "%"),
       select("watermark_background", "Watermark background", "false", [["false","Off"],["true","On"]]),
+      select("social_tag_enabled", "Social Tag", "false", [["false","Off"],["true","On"]]),
+      select("social_tag_platform", "Social Tag platform", "kick", [["kick","Kick"],["twitch","Twitch"]]),
+      {key:"social_tag_username",label:"Social Tag username",type:"text",value:""},
+      select("social_tag_style", "Social Tag style", "boxed", [["boxed","Kick badge"],["plain","Kick wordmark"]]),
+      number("social_tag_size", "Social Tag size", 36, 20, 96, 1, "px"),
       select("fit_mode", "Fit mode", "crop", [["crop","Crop / fill"]]),
       select("canvas_background", "Canvas background", "black", [["black","Black"],["white","White"],["custom","Custom color"]]),
       {key:"canvas_color",label:"Custom background",type:"text",value:"#202020"},
@@ -326,6 +331,14 @@ export function localizedTool(tool: Tool, language: "tr"|"en"): Tool {
   Object.assign(optionNames,{Light:"Hafif",Strong:"Güçlü",Blur:"Bulanıklaştır",Pixelate:"Pikselleştir",Add:"Ekle",Burn:"Görüntüye işle",Extract:"Çıkar",Remove:"Kaldır","Re-encode":"Yeniden kodla","MKV / preserves styling":"MKV / biçimi korur","MP4 / compatible":"MP4 / uyumlu"});
   Object.assign(trFields,{"Quality profile":"Kalite profili"});
   copy.fields=copy.fields.map(field=>({...field,label:trFields[field.label]??field.label,options:field.options?.map(option=>({...option,label:optionNames[option.label]??option.label}))}));
+  return copy;
+}
+export function preserveToolValues(fresh: Tool, previous: Tool): Tool {
+  const values = new Map(previous.fields.map(field => [field.key, field.value]));
+  const copy = cloneTool(fresh);
+  for (const field of copy.fields) {
+    if (values.has(field.key)) field.value = values.get(field.key)!;
+  }
   return copy;
 }
 export const localizedForKind = (kind: MediaKind, language:"tr"|"en") => tools.filter(tool=>tool.kind.includes(kind)).map(tool=>localizedTool(tool,language));

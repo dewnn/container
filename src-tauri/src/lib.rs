@@ -2017,17 +2017,92 @@ fn read_project_contents(path: String) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("Project could not be opened: {error}"))
 }
 
+fn project_relative_path(project: &Path, resource: &Path) -> Option<String> {
+    let base = project.parent()?.canonicalize().ok()?;
+    let source = resource.canonicalize().ok()?;
+    let base_parts: Vec<_> = base.components().collect();
+    let source_parts: Vec<_> = source.components().collect();
+    if base_parts.first() != source_parts.first() {
+        return None;
+    }
+    let common = base_parts
+        .iter()
+        .zip(&source_parts)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..base_parts.len() {
+        relative.push("..");
+    }
+    for component in source_parts.iter().skip(common) {
+        relative.push(component.as_os_str());
+    }
+    Some(relative.to_string_lossy().into_owned())
+}
+
+fn replace_project_path(value: &mut Value, previous: &str, replacement: &str) {
+    match value {
+        Value::String(text) if text == previous => *text = replacement.to_string(),
+        Value::Array(items) => {
+            for item in items {
+                replace_project_path(item, previous, replacement);
+            }
+        }
+        Value::Object(fields) => {
+            for item in fields.values_mut() {
+                replace_project_path(item, previous, replacement);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_project_resources(project: &Path, value: &mut Value) {
+    let references: Vec<(String, String)> = value["resources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|resource| {
+            Some((
+                resource["path"].as_str()?.to_string(),
+                resource["relativePath"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    let Some(parent) = project.parent() else {
+        return;
+    };
+    for (original, relative) in references {
+        let relative = Path::new(&relative);
+        if relative.is_absolute() {
+            continue;
+        }
+        let candidate = parent.join(relative);
+        if candidate.is_file() {
+            replace_project_path(value, &original, &candidate.to_string_lossy());
+        }
+    }
+}
+
 #[tauri::command]
 fn read_project(app: AppHandle, path: String) -> Result<String, String> {
-    let contents = read_project_contents(path)?;
-    if let Some(media_path) = serde_json::from_str::<Value>(&contents)
-        .ok()
-        .and_then(|value| value["mediaPath"].as_str().map(PathBuf::from))
+    let contents = read_project_contents(path.clone())?;
+    let mut value: Value =
+        serde_json::from_str(&contents).map_err(|_| "The project data is invalid.".to_string())?;
+    resolve_project_resources(Path::new(&path), &mut value);
+    if let Some(media_path) = value["mediaPath"]
+        .as_str()
+        .map(PathBuf::from)
         .filter(|media_path| media_path.is_file())
     {
         allow_asset_file(&app, &media_path)?;
     }
-    Ok(contents)
+    serde_json::to_string(&value).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn project_media_available(path: String) -> bool {
+    PathBuf::from(path).is_file()
 }
 
 #[tauri::command]
@@ -2035,7 +2110,7 @@ fn write_project(path: String, contents: String) -> Result<(), String> {
     if contents.len() > 5 * 1024 * 1024 {
         return Err("The project data is too large.".into());
     }
-    serde_json::from_str::<Value>(&contents)
+    let mut value = serde_json::from_str::<Value>(&contents)
         .map_err(|_| "The project data is invalid.".to_string())?;
     let mut path = PathBuf::from(path);
     if !path
@@ -2045,7 +2120,20 @@ fn write_project(path: String, contents: String) -> Result<(), String> {
     {
         path.set_extension("containerproject");
     }
-    std::fs::write(path, contents).map_err(|error| format!("Project could not be saved: {error}"))
+    if let Some(resources) = value.get_mut("resources").and_then(Value::as_array_mut) {
+        for resource in resources {
+            if let Some(source) = resource["path"].as_str() {
+                if let Some(relative) = project_relative_path(&path, Path::new(source)) {
+                    resource["relativePath"] = Value::String(relative);
+                }
+            }
+        }
+    }
+    let serialized = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    if serialized.len() > 5 * 1024 * 1024 {
+        return Err("The project data is too large.".into());
+    }
+    std::fs::write(path, serialized).map_err(|error| format!("Project could not be saved: {error}"))
 }
 
 fn classify_media_kind(
@@ -3796,6 +3884,261 @@ fn clipper_watermark_filter(
     )))
 }
 
+fn clipper_social_tag_filter(
+    params: &HashMap<String, String>,
+    layout: &str,
+    width: u64,
+    height: u64,
+    info: &MediaInfo,
+) -> Result<Option<String>, String> {
+    if !enabled(params, "social_tag_enabled") {
+        return Ok(None);
+    }
+    let username = params
+        .get("social_tag_username")
+        .map(|value| value.trim())
+        .unwrap_or_default();
+    let length = username.chars().count();
+    if length == 0 || length > 32 || username.chars().any(char::is_control) {
+        return Err("Social Tag username must be one line of 1 to 32 characters.".into());
+    }
+    let style = params
+        .get("social_tag_style")
+        .map(String::as_str)
+        .unwrap_or("boxed");
+    if !matches!(style, "boxed" | "plain") {
+        return Err("Invalid Social Tag style.".into());
+    }
+    let platform = params
+        .get("social_tag_platform")
+        .map(String::as_str)
+        .unwrap_or("kick");
+    if !matches!(platform, "kick" | "twitch") {
+        return Err("Invalid Social Tag platform.".into());
+    }
+    let requested = check_range(
+        parse_number(params, "social_tag_size")?,
+        20.0,
+        96.0,
+        "Social Tag size",
+    )?;
+    let units: f64 = username
+        .chars()
+        .map(|letter| match letter {
+            'i' | 'l' | 'I' | '1' | '.' | ',' | ':' | '!' | '|' => 0.35,
+            'm' | 'w' | 'M' | 'W' | '@' => 0.9,
+            'A'..='Z' => 0.72,
+            _ => 0.59,
+        })
+        .sum();
+    let mut camera_left = 0.0;
+    let mut camera_top = 0.0;
+    let mut camera_width = width as f64;
+    let mut camera_bottom = height as f64;
+    let mut seam = height as f64 * 0.78;
+    match layout {
+        "split" => {
+            let top_percent = check_range(
+                parse_number(params, "region_a_height")?,
+                20.0,
+                80.0,
+                "Top region height",
+            )?;
+            seam = ((height as f64 * top_percent / 100.0).round() as u64 / 2 * 2) as f64;
+            if params.get("region_order").map(String::as_str) == Some("b_first") {
+                camera_top = seam;
+                camera_bottom = height as f64;
+            } else {
+                camera_bottom = seam;
+            }
+        }
+        "squares" => {
+            seam = (height / 2 / 2 * 2) as f64;
+            camera_bottom = seam;
+        }
+        "freecam" => {
+            let camera = transform_region(params, "region_a")?;
+            let percent = check_range(
+                parse_number(params, "freecam_size")?,
+                15.0,
+                90.0,
+                "Camera size",
+            )?;
+            let x = check_range(parse_number(params, "freecam_x")?, 0.0, 100.0, "Camera X")?;
+            let y = check_range(parse_number(params, "freecam_y")?, 0.0, 100.0, "Camera Y")?;
+            camera_width = ((width as f64 * percent / 100.0).round() as u64 / 2 * 2) as f64;
+            let source_width = info.width.unwrap_or(16) as f64 * camera.2 / 100.0;
+            let source_height = info.height.unwrap_or(9) as f64 * camera.3 / 100.0;
+            let camera_height =
+                ((camera_width * source_height / source_width.max(1.0)).round() as u64 / 2 * 2)
+                    .max(2) as f64;
+            camera_left = (width as f64 - camera_width).max(0.0) * x / 100.0;
+            camera_top = (height as f64 - camera_height).max(0.0) * y / 100.0;
+            camera_bottom = camera_top + camera_height;
+            seam = camera_bottom;
+        }
+        _ => {}
+    }
+    let anchor_x = if style == "boxed" {
+        camera_left
+    } else if layout == "freecam" {
+        camera_left + camera_width / 2.0
+    } else {
+        width as f64 / 2.0
+    };
+    let available = if style == "boxed" {
+        (width as f64 - anchor_x).max(24.0)
+    } else {
+        width as f64 * 0.84
+    };
+    let fitted_units = units * if style == "boxed" { 1.1 } else { 1.0 };
+    let size = requested.min(available / (fitted_units + 2.4));
+    let side = (size * 1.5).round().max(8.0);
+    let gap = if style == "plain" { size * 0.22 } else { 0.0 };
+    let padding = (size * 0.34).round().max(2.0);
+    let text_width = units * size * if style == "boxed" { 1.1 } else { 1.0 };
+    let total_width = side + gap + text_width + if style == "boxed" { padding * 2.0 } else { 0.0 };
+    let x = if style == "boxed" {
+        anchor_x.min((width as f64 - total_width).max(0.0))
+    } else {
+        (anchor_x - total_width / 2.0).max(0.0)
+    }
+    .round();
+    let center_y = if style == "boxed" {
+        (camera_bottom - side / 2.0).max(camera_top + side / 2.0)
+    } else {
+        seam
+    };
+    let y = (center_y - side / 2.0).round();
+    let font_dir = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+        .join("Fonts");
+    let font = ["ariblk.ttf", "arialbd.ttf"]
+        .into_iter()
+        .map(|name| font_dir.join(name))
+        .find(|path| path.is_file())
+        .ok_or("A bold Windows font is required for Social Tag.")?;
+    let mut filters = Vec::new();
+    if style == "boxed" {
+        let icon_background = if platform == "twitch" {
+            "white"
+        } else {
+            "0x53fc19"
+        };
+        let plate_color = if platform == "twitch" {
+            "0x9146ff"
+        } else {
+            "black@0.88"
+        };
+        filters.push(format!(
+            "drawbox=x={x:.0}:y={y:.0}:w={side:.0}:h={side:.0}:color={icon_background}:t=fill"
+        ));
+        filters.push(format!(
+            "drawbox=x={:.0}:y={y:.0}:w={:.0}:h={side:.0}:color={plate_color}:t=fill",
+            x + side,
+            (total_width - side).round()
+        ));
+    }
+    if platform == "twitch" {
+        // 24x24 even-odd mask rasterized from the supplied Twitch SVG path.
+        const TWITCH_RECTS: [(f64, f64, f64, f64); 16] = [
+            (2.0, 0.0, 23.0, 2.0),
+            (10.0, 6.0, 12.0, 13.0),
+            (16.0, 6.0, 18.0, 13.0),
+            (21.0, 2.0, 23.0, 14.0),
+            (20.0, 14.0, 23.0, 15.0),
+            (19.0, 15.0, 23.0, 16.0),
+            (1.0, 2.0, 4.0, 17.0),
+            (18.0, 16.0, 22.0, 17.0),
+            (12.0, 17.0, 21.0, 18.0),
+            (11.0, 18.0, 20.0, 19.0),
+            (1.0, 17.0, 9.0, 20.0),
+            (10.0, 19.0, 19.0, 20.0),
+            (1.0, 20.0, 18.0, 21.0),
+            (6.0, 21.0, 12.0, 22.0),
+            (6.0, 22.0, 11.0, 23.0),
+            (6.0, 23.0, 10.0, 24.0),
+        ];
+        let mark_side = side * if style == "boxed" { 0.80 } else { 0.84 };
+        let mark_x = x + (side - mark_side) / 2.0;
+        let mark_y = y + (side - mark_side) / 2.0;
+        let cell = mark_side / 24.0;
+        for (x0, y0, x1, y1) in TWITCH_RECTS {
+            let left = (mark_x + x0 * cell).round();
+            let right = (mark_x + x1 * cell).round();
+            let top = (mark_y + y0 * cell).round();
+            let bottom = (mark_y + y1 * cell).round();
+            filters.push(format!(
+                "drawbox=x={left:.0}:y={top:.0}:w={:.0}:h={:.0}:color=0x9146ff:t=fill",
+                (right - left + 1.0).max(1.0),
+                (bottom - top + 1.0).max(1.0)
+            ));
+        }
+    } else {
+        // Exact 8x9 grid of the supplied Kick SVG path (the SVG background is omitted).
+        let rows = [
+            "11100111", "11101111", "11111111", "11111110", "11111100", "11111110", "11111111",
+            "11101111", "11100111",
+        ];
+        let mark_height = side * if style == "boxed" { 0.72 } else { 0.84 };
+        let mark_width = mark_height * 8.0 / 9.0;
+        let mark_x = x + (side - mark_width) / 2.0;
+        let mark_y = y + (side - mark_height) / 2.0;
+        let cell = mark_height / 9.0;
+        let color = if style == "boxed" {
+            "0x050805"
+        } else {
+            "0x53fc19"
+        };
+        filters.push(format!(
+            "drawbox=x={:.0}:y={:.0}:w={:.0}:h={:.0}:color={color}:t=fill",
+            mark_x.round(),
+            mark_y.round(),
+            ((mark_x + 3.0 * cell).round() - mark_x.round()).max(1.0),
+            ((mark_y + mark_height).round() - mark_y.round()).max(1.0)
+        ));
+        for (row, pixels) in rows.iter().enumerate() {
+            let bytes = pixels.as_bytes();
+            let mut column = 3;
+            while column < bytes.len() {
+                if bytes[column] != b'1' {
+                    column += 1;
+                    continue;
+                }
+                let start = column;
+                while column < bytes.len() && bytes[column] == b'1' {
+                    column += 1;
+                }
+                let left = (mark_x + start as f64 * cell).round();
+                let right = (mark_x + column as f64 * cell).round();
+                let top = (mark_y + row as f64 * cell).round();
+                let bottom = (mark_y + (row + 1) as f64 * cell).round();
+                filters.push(format!(
+                    "drawbox=x={left:.0}:y={top:.0}:w={:.0}:h={:.0}:color={color}:t=fill",
+                    (right - left + 1.0).max(1.0),
+                    (bottom - top + 1.0).max(1.0)
+                ));
+            }
+        }
+    }
+    let text_x = x + side + gap + if style == "boxed" { padding } else { 0.0 };
+    let text_y = if style == "boxed" {
+        format!("{y:.0}+({side:.0}-text_h)/2")
+    } else {
+        format!("{center_y:.0}-text_h/2")
+    };
+    let outline = if style == "boxed" {
+        "".to_string()
+    } else {
+        ":borderw=3:bordercolor=black@0.95:shadowx=2:shadowy=2:shadowcolor=black@0.9".into()
+    };
+    filters.push(format!(
+        "drawtext=fontfile='{}':text='{}':fontcolor=white:fontsize={size:.0}:x={text_x:.0}:y={text_y}{outline}",
+        drawtext_escape(&font.to_string_lossy()),
+        drawtext_escape(username)
+    ));
+    Ok(Some(filters.join(",")))
+}
+
 async fn build_command(
     request: &OperationRequest,
     info: &MediaInfo,
@@ -3981,6 +4324,11 @@ async fn build_command(
                     clipper_watermark_filter(p, vertical_layout, width, height, info)?
                 {
                     filters.push(watermark);
+                }
+                if let Some(social_tag) =
+                    clipper_social_tag_filter(p, vertical_layout, width, height, info)?
+                {
+                    filters.push(social_tag);
                 }
             }
             if op == "clipper" {
@@ -7028,6 +7376,7 @@ async fn detect_camera_region(
         let mut detector = face_detection::YuNet::load()
             .map_err(|error| format!("Camera detector could not initialize: {error}"))?;
         let mut detected = Vec::with_capacity(frames.len());
+        let mut rgb_samples = Vec::with_capacity(frames.len());
         for (index, pixels) in frames {
             let faces = detector
                 .detect(&pixels)
@@ -7036,11 +7385,13 @@ async fn detect_camera_region(
                 index,
                 faces: face_detection::normalize_faces(faces, source_width, source_height),
             });
+            rgb_samples.push(pixels);
         }
-        face_detection::choose_camera_region(detected, source_width, source_height).ok_or_else(|| {
+        let region = face_detection::choose_camera_region(detected, source_width, source_height).ok_or_else(|| {
             "No stable camera face was found. Move to a section where the camera is visible or adjust Camera Region manually."
                 .to_string()
-        })
+        })?;
+        Ok(face_detection::refine_camera_region(region, &rgb_samples, source_width, source_height))
     })
     .await
     .map_err(|error| format!("Camera analysis task failed: {error}"))?
@@ -7148,6 +7499,7 @@ pub fn run() {
             authorize_media_preview,
             read_project,
             write_project,
+            project_media_available,
             probe_subtitles,
             ffmpeg_status,
             ffmpeg_capabilities,
@@ -7263,9 +7615,10 @@ mod tests {
         )
         .unwrap();
         let saved = requested.with_extension("containerproject");
+        let read = read_project_contents(saved.to_string_lossy().into_owned()).unwrap();
         assert_eq!(
-            read_project_contents(saved.to_string_lossy().into_owned()).unwrap(),
-            contents
+            serde_json::from_str::<Value>(&read).unwrap(),
+            serde_json::from_str::<Value>(contents).unwrap()
         );
         assert!(write_project(
             root.join("invalid").to_string_lossy().into_owned(),
@@ -7276,6 +7629,82 @@ mod tests {
             read_project_contents(root.join("wrong.json").to_string_lossy().into_owned()).is_err()
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relocated_project_resolves_source_and_sidecar_relative_to_project() {
+        let root = std::env::temp_dir().join(format!(
+            "container-portable-project-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let original = root.join("original");
+        let moved = root.join("moved");
+        std::fs::create_dir_all(original.join("media")).unwrap();
+        let source = original.join("media").join("clip.mp4");
+        let overlay = original.join("media").join("logo.png");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&overlay, b"logo").unwrap();
+        let project = original.join("edit.containerproject");
+        let contents = serde_json::json!({
+            "version":1,"mediaPath":source.to_string_lossy(),
+            "toolbox":{"selected":{"fields":[{"key":"image_path","value":overlay.to_string_lossy()}]}},
+            "resources":[
+                {"label":"Source media","path":source.to_string_lossy()},
+                {"label":"Overlay image","path":overlay.to_string_lossy()}
+            ]
+        });
+        write_project(project.to_string_lossy().into_owned(), contents.to_string()).unwrap();
+        let stored: Value = serde_json::from_str(
+            &read_project_contents(project.to_string_lossy().into_owned()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored["resources"][0]["relativePath"], "media\\clip.mp4");
+        std::fs::rename(&original, &moved).unwrap();
+        let moved_project = moved.join("edit.containerproject");
+        let mut restored: Value = serde_json::from_str(
+            &read_project_contents(moved_project.to_string_lossy().into_owned()).unwrap(),
+        )
+        .unwrap();
+        resolve_project_resources(&moved_project, &mut restored);
+        assert_eq!(
+            restored["mediaPath"],
+            moved
+                .join("media")
+                .join("clip.mp4")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            restored["toolbox"]["selected"]["fields"][0]["value"],
+            moved
+                .join("media")
+                .join("logo.png")
+                .to_string_lossy()
+                .as_ref()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_project_media_can_be_detected_before_restore() {
+        let path = std::env::temp_dir().join(format!(
+            "container-project-media-{}-{}.mp4",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!project_media_available(
+            path.to_string_lossy().into_owned()
+        ));
+        std::fs::write(&path, b"test media placeholder").unwrap();
+        assert!(project_media_available(path.to_string_lossy().into_owned()));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -7537,6 +7966,302 @@ mod tests {
             .as_str();
         assert!(freecam_watermark_filter.contains("drawbox=x=124.000:"));
         assert!(freecam_watermark_filter.contains(":w=832:h=48:color=black:t=fill"));
+    }
+
+    #[tokio::test]
+    async fn social_tag_renders_both_styles_and_long_names() {
+        let info = MediaInfo {
+            path: "source.mp4".into(),
+            name: "source.mp4".into(),
+            kind: "video".into(),
+            duration: Some(1.0),
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            codec: "h264".into(),
+            audio_codec: None,
+            audio_tracks: Vec::new(),
+            pixel_format: Some("yuv420p".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        for (platform, style, username, size) in [
+            ("kick", "plain", "Example", "36"),
+            ("kick", "boxed", "OHNEPIXEL", "36"),
+            ("kick", "boxed", "batuhanfurkan5", "20"),
+            ("kick", "boxed", "a_very_long_kick_username_12345", "36"),
+            ("twitch", "plain", "ohnePixel", "36"),
+            ("twitch", "boxed", "OHNEPIXEL", "36"),
+            ("twitch", "boxed", "OHNEPIXEL", "50"),
+        ] {
+            let params = values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_platform", platform),
+                ("social_tag_username", username),
+                ("social_tag_style", style),
+                ("social_tag_size", size),
+                ("region_a_height", "30"),
+                ("region_order", "a_first"),
+            ]);
+            let filter = clipper_social_tag_filter(&params, "split", 360, 640, &info)
+                .unwrap()
+                .unwrap();
+            assert!(filter.contains(&format!("text='{username}'")));
+            assert_eq!(
+                filter.contains("color=black@0.88"),
+                style == "boxed" && platform == "kick"
+            );
+            assert_eq!(filter.contains("borderw=3"), style == "plain");
+            assert!(filter.contains(if platform == "kick" {
+                "0x53fc19"
+            } else {
+                "0x9146ff"
+            }));
+            if style == "plain" {
+                assert!(filter.contains("y=192-text_h/2"));
+            } else {
+                assert!(filter.starts_with("drawbox=x=0:"));
+                let mut segments = filter.split(',');
+                let icon = segments.next().unwrap();
+                let plate = segments.next().unwrap();
+                for key in ["y=", "h="] {
+                    let value = icon.split(':').find(|part| part.starts_with(key)).unwrap();
+                    assert!(plate.split(':').any(|part| part == value));
+                }
+            }
+            let snapshot = std::env::var_os("CONTAINER_SOCIAL_TAG_SNAPSHOT_DIR")
+                .map(PathBuf::from)
+                .map(|directory| {
+                    directory.join(format!("social-{platform}-{style}-{username}-{size}.png"))
+                });
+            let mut command = hidden_command("ffmpeg");
+            command
+                .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+                .arg("color=c=0x303844:s=360x640:r=1:d=1")
+                .args([
+                    "-vf",
+                    &format!("drawbox=x=0:y=192:w=360:h=448:color=white:t=fill,{filter}"),
+                    "-frames:v",
+                    "1",
+                ]);
+            if let Some(path) = snapshot.as_ref() {
+                command.arg(path);
+            } else {
+                command.args(["-f", "null", "-"]);
+            }
+            let output = command.output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{platform} {style} Social Tag FFmpeg render failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let base = [
+            ("social_tag_enabled", "true"),
+            ("social_tag_username", "Example"),
+            ("social_tag_style", "plain"),
+            ("social_tag_size", "56"),
+            ("region_a_height", "30"),
+            ("region_order", "b_first"),
+        ];
+        let reversed_split = clipper_social_tag_filter(&values(&base), "split", 360, 640, &info)
+            .unwrap()
+            .unwrap();
+        assert!(reversed_split.contains("y=192-text_h/2"));
+        let squares = clipper_social_tag_filter(&values(&base), "squares", 360, 640, &info)
+            .unwrap()
+            .unwrap();
+        assert!(squares.contains("y=320-text_h/2"));
+        let freecam = clipper_social_tag_filter(
+            &values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_username", "Example"),
+                ("social_tag_style", "boxed"),
+                ("social_tag_size", "56"),
+                ("region_a_x", "0"),
+                ("region_a_y", "0"),
+                ("region_a_w", "50"),
+                ("region_a_h", "50"),
+                ("freecam_x", "50"),
+                ("freecam_y", "2"),
+                ("freecam_size", "50"),
+            ]),
+            "freecam",
+            360,
+            640,
+            &info,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(freecam.starts_with("drawbox=x=90:"));
+    }
+
+    #[test]
+    fn social_tag_export_geometry_matches_preview_fixtures() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/social-tag-geometry.json"
+        ))
+        .unwrap();
+        let info = MediaInfo {
+            path: "source.mp4".into(),
+            name: "source.mp4".into(),
+            kind: "video".into(),
+            duration: Some(1.0),
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            codec: "h264".into(),
+            audio_codec: None,
+            audio_tracks: Vec::new(),
+            pixel_format: Some("yuv420p".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        for fixture in fixtures.as_array().unwrap() {
+            let layout = fixture["layout"].as_str().unwrap();
+            let style = fixture["style"].as_str().unwrap();
+            let params = values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_platform", "kick"),
+                ("social_tag_username", fixture["username"].as_str().unwrap()),
+                ("social_tag_style", style),
+                ("social_tag_size", "36"),
+                ("region_a_height", "30"),
+                ("region_order", "a_first"),
+                ("region_a_x", "0"),
+                ("region_a_y", "0"),
+                ("region_a_w", "50"),
+                ("region_a_h", "50"),
+                ("freecam_size", "50"),
+                ("freecam_x", "50"),
+                ("freecam_y", "2"),
+            ]);
+            let filter = clipper_social_tag_filter(&params, layout, 360, 640, &info)
+                .unwrap()
+                .unwrap();
+            let x = fixture["x"].as_i64().unwrap();
+            let y = fixture["y"].as_i64().unwrap();
+            let side = fixture["side"].as_i64().unwrap();
+            let font_size = fixture["fontSize"].as_i64().unwrap();
+            assert!(
+                filter.contains(&format!("fontsize={font_size}:")),
+                "{layout}/{style}: {filter}"
+            );
+            if style == "boxed" {
+                assert!(
+                    filter.starts_with(&format!("drawbox=x={x}:y={y}:w={side}:h={side}:")),
+                    "{layout}/{style}: {filter}"
+                );
+            } else {
+                let expected_text_x =
+                    (x as f64 + side as f64 + font_size as f64 * 0.22).round() as i64;
+                let expected_center_y = y + side / 2;
+                assert!(
+                    filter.contains(&format!(
+                        ":x={expected_text_x}:y={expected_center_y}-text_h/2"
+                    )),
+                    "{layout}/{style}: {filter}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn boxed_social_tag_render_uses_the_preview_badge_bounds() {
+        let info = MediaInfo {
+            path: "source.mp4".into(),
+            name: "source.mp4".into(),
+            kind: "video".into(),
+            duration: Some(1.0),
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            codec: "h264".into(),
+            audio_codec: None,
+            audio_tracks: Vec::new(),
+            pixel_format: Some("yuv420p".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        for platform in ["kick", "twitch"] {
+            let params = values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_platform", platform),
+                ("social_tag_username", "Example"),
+                ("social_tag_style", "boxed"),
+                ("social_tag_size", "36"),
+                ("region_a_height", "30"),
+                ("region_order", "a_first"),
+            ]);
+            let filter = clipper_social_tag_filter(&params, "split", 360, 640, &info)
+                .unwrap()
+                .unwrap();
+            let output = hidden_command("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=0x303844:s=360x640:r=1:d=1",
+                ])
+                .args([
+                    "-vf",
+                    &format!("{filter},format=rgb24"),
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{platform}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout.len(), 360 * 640 * 3);
+            let colored: Vec<(usize, usize)> = output
+                .stdout
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .enumerate()
+                .filter_map(|(index, rgb)| {
+                    let badge = if platform == "kick" {
+                        rgb[0] > 55 && rgb[0] < 115 && rgb[1] > 180 && rgb[2] < 70
+                    } else {
+                        index % 360 < 54 && rgb.iter().all(|channel| *channel > 225)
+                    };
+                    badge.then_some((index % 360, index / 360))
+                })
+                .collect();
+            assert!(!colored.is_empty(), "{platform} badge color is missing");
+            assert_eq!(colored.iter().map(|point| point.0).min(), Some(0));
+            assert_eq!(colored.iter().map(|point| point.1).min(), Some(138));
+            assert_eq!(colored.iter().map(|point| point.0).max(), Some(53));
+            assert_eq!(colored.iter().map(|point| point.1).max(), Some(191));
+        }
     }
 
     #[test]

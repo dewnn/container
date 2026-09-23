@@ -8,17 +8,24 @@
   import { Image as TauriImage } from "@tauri-apps/api/image";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { open, save } from "@tauri-apps/plugin-dialog";
+  import { confirm, open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { armCompletionSound, playCompletionSound } from "./lib/completionSound";
   import { check, Update } from "@tauri-apps/plugin-updater";
-  import { localizedForSection, localizedTool, type Field, type MediaKind, type Tool } from "./lib/tools";
+  import { localizedForSection, localizedTool, preserveToolValues, type Field, type MediaKind, type Tool } from "./lib/tools";
+  import { isTextEditingTarget } from "./lib/editorInput";
+  import { startupAction } from "./lib/startupRecovery";
+  import { projectResources, replaceProjectResource, type ProjectResource } from "./lib/projectResources";
+  import { socialTagGeometry } from "./lib/socialTagGeometry";
   import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
   import DownloaderWorkspace from "./lib/DownloaderWorkspace.svelte";
   import { recoveredMediaUrl } from "./lib/recovery";
+  import { updatesAllowedForVersion } from "./lib/releaseChannel";
   import { moveTimelineBoundary, type TimelineBoundary } from "./lib/timelineRange";
   import { reportProblem, type ToastDetail } from "./lib/toast";
+  import kickMark from "./assets/kick-mark.svg";
+  import twitchMark from "./assets/twitch-mark.svg";
 
   interface MediaInfo {
     path: string;
@@ -52,8 +59,10 @@
   interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
-  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean> }
-  interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown }
+  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean>; mergeInputs?:string[] }
+  interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown; resources?:ProjectResource[] }
+
+  const mediaDialogFilters=[{name:"Media",extensions:["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif","heic","heif"]}];
 
   let media: MediaInfo | null = $state(null);
   let mediaUrl = $state("");
@@ -79,6 +88,8 @@
   let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
   let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
   let recoveryCandidate:RecoverySession|null=$state(null);
+  let projectFilesOpen=$state(false);
+  let projectFileChecks:{resource:ProjectResource;exists:boolean}[]=$state([]);
   let restoringSession=$state(false);
   let autoCutCanUndo=$state(false),autoCutCanRedo=$state(false);
   let batchCanUndo=$state(false),batchCanRedo=$state(false);
@@ -149,7 +160,7 @@
   let dependencyPanel = $state(false);
   let runtimeMigrationError = $state("");
   let appVersion = $state("");
-  const experimentalFeatures=$derived(appVersion.includes("-dev")||localStorage.getItem("container-experimental-tools")==="true");
+  const updaterEnabled=$derived(updatesAllowedForVersion(appVersion));
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let outputCleanupOpen = $state(false);
@@ -243,19 +254,39 @@
   }
   async function saveProject(){
     const session=currentSession();if(!session||operationBusy)return;
+    session.resources=projectResources(session);
     const path=await save({defaultPath:`${media?.name.replace(/\.[^.]+$/,"")||"project"}.containerproject`,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});
     if(!path)return;
-    try{await invoke("write_project",{path,contents:JSON.stringify(session,null,2)});jobStatus=language==="tr"?"proje kaydedildi":"project saved"}catch(reason){reportProblem(reason)}
+    try{
+      const checks=await inspectProjectFiles(session);
+      if(checks.some(item=>!item.exists)){
+        projectFileChecks=checks;projectFilesOpen=true;
+        const proceed=await confirm(language==="tr"?"Bazı kaynak dosyalar bulunamadı. Projeyi yine de kaydetmek ister misin?":"Some source files are missing. Save the project anyway?",{title:language==="tr"?"Eksik proje dosyaları":"Missing project files",kind:"warning"});
+        if(!proceed)return;
+      }
+      await invoke("write_project",{path,contents:JSON.stringify(session,null,2)});
+      jobStatus=language==="tr"?"proje kaydedildi":"project saved";
+    }catch(reason){reportProblem(reason)}
+  }
+  async function inspectProjectFiles(session:RecoverySession){
+    return Promise.all(projectResources(session).map(async resource=>({resource,exists:await invoke<boolean>("project_media_available",{path:resource.path}).catch(()=>false)})));
   }
   async function loadProjectPath(path:string){
     const saved=JSON.parse(await invoke<string>("read_project",{path}));
     if(!validRecovery(saved))throw new Error(language==="tr"?"Geçersiz CONTAINER proje dosyası.":"Invalid CONTAINER project file.");
     recoveryCandidate=saved;await restorePreviousSession();
   }
+  async function openIncomingPath(path:string){
+    if(operationBusy)return;
+    try{
+      if(path.toLowerCase().endsWith(".containerproject"))await loadProjectPath(path);
+      else await loadMedia(path);
+    }catch(reason){reportProblem(reason)}
+  }
   async function openProject(){
     if(operationBusy)return;
     const path=await open({multiple:false,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});if(typeof path!=="string")return;
-    try{await loadProjectPath(path)}catch(reason){reportProblem(reason)}
+    await openIncomingPath(path);
   }
   function discardRecovery(){localStorage.removeItem(recoveryKey);recoveryCandidate=null}
   async function cleanOutputFolder(){
@@ -272,35 +303,68 @@
     }catch(reason){outputCleanupMessage="";reportProblem(reason)}finally{outputCleaning=false}
   }
   async function restorePreviousSession(){
-    const saved=recoveryCandidate;if(!saved||restoringSession)return;
+    let saved=recoveryCandidate;if(!saved||restoringSession)return;
     restoringSession=true;error="";
-    await loadMedia(saved.mediaPath);
-    if(!media){restoringSession=false;discardRecovery();return}
-    if(saved.toolbox){
-      const preparedMediaUrl=mediaUrl;
-      applyEditorSnapshot(saved.toolbox,"redo",true);
-      // Saved asset:// URLs belong to the previous WebView session. Keep the
-      // freshly authorized URL from loadMedia and make the source identity new
-      // so Chromium cannot retain the empty/failed media element from startup.
-      mediaUrl=recoveredMediaUrl(preparedMediaUrl);
-      await tick();
-      if(media?.kind==="video"){
-        toolboxVideo?.load();
-        transformBackdropVideo?.load();
+    try{
+      let restoredPath=saved.mediaPath;
+      const sourceAvailable=await invoke<boolean>("project_media_available",{path:saved.mediaPath});
+      if(!sourceAvailable){
+        const missingMessage=language==="tr"
+          ? `Bu projenin kaynak dosyası taşınmış veya silinmiş:\n${saved.mediaPath}\n\nProjeyi geri yüklemek için dosyanın yeni konumunu seçmek ister misin?`
+          : `This project's source file was moved or deleted:\n${saved.mediaPath}\n\nWould you like to choose its new location and restore the project?`;
+        const locate=await confirm(missingMessage,{title:language==="tr"?"Kaynak dosya bulunamadı":"Source file not found",kind:"warning",okLabel:language==="tr"?"DOSYAYI BUL":"LOCATE FILE",cancelLabel:language==="tr"?"İPTAL":"CANCEL"});
+        if(!locate){
+          error=language==="tr"?"Proje açılamadı: kaynak medya taşınmış veya silinmiş.":"Project could not be opened because its source media was moved or deleted.";
+          jobStatus="source missing";
+          return;
+        }
+        const replacement=await open({multiple:false,filters:mediaDialogFilters});
+        if(typeof replacement!=="string"){
+          error=language==="tr"?"Yeni kaynak dosya seçilmedi. Proje değiştirilmedi.":"No replacement source was selected. The project was not changed.";
+          jobStatus="source missing";
+          return;
+        }
+        saved=replaceProjectResource(saved,saved.mediaPath,replacement);
+        recoveryCandidate=saved;
+        restoredPath=replacement;
       }
-      await restorePreviewFonts();resetEditorHistory();
-    }
-    workspaceMode=saved.workspaceMode;
-    autoCutSession=saved.autocut;batchSession=saved.batch;
-    await tick();
-    if(saved.workspaceMode==="autocut"&&saved.autocut)autoCutWorkspace?.restoreSession(saved.autocut);
-    if(saved.workspaceMode==="batch"&&saved.batch)batchWorkspace?.restoreSession(saved.batch);
-    restoringSession=false;recoveryCandidate=null;persistRecovery();
+      for(const resource of projectResources(saved).filter(item=>item.path!==restoredPath)){
+        if(await invoke<boolean>("project_media_available",{path:resource.path}))continue;
+        const locate=await confirm(language==="tr"?`${resource.label} bulunamadı:\n${resource.path}\n\nYeni konumunu seçmek ister misin?`:`${resource.label} was not found:\n${resource.path}\n\nChoose its new location?`,{title:language==="tr"?"Eksik proje kaynağı":"Missing project resource",kind:"warning",okLabel:language==="tr"?"DOSYAYI BUL":"LOCATE FILE",cancelLabel:language==="tr"?"İPTAL":"CANCEL"});
+        if(!locate){error=language==="tr"?"Proje açılmadı: gerekli kaynak dosyası eksik.":"Project was not opened because a required source file is missing.";return}
+        const replacement=await open({multiple:false});
+        if(typeof replacement!=="string"){error=language==="tr"?"Yeni kaynak dosya seçilmedi.":"No replacement source was selected.";return}
+        saved=replaceProjectResource(saved,resource.path,replacement);
+        recoveryCandidate=saved;
+      }
+      if(!await loadMedia(restoredPath))return;
+      saved.mediaPath=restoredPath;
+      if(saved.toolbox){
+        const preparedMediaUrl=mediaUrl;
+        applyEditorSnapshot(saved.toolbox,"redo",true);
+        // Saved asset:// URLs belong to the previous WebView session. Keep the
+        // freshly authorized URL from loadMedia and make the source identity new
+        // so Chromium cannot retain the empty/failed media element from startup.
+        mediaUrl=recoveredMediaUrl(preparedMediaUrl);
+        await tick();
+        if(media?.kind==="video"){
+          toolboxVideo?.load();
+          transformBackdropVideo?.load();
+        }
+        await restorePreviewFonts();resetEditorHistory();
+      }
+      workspaceMode=saved.workspaceMode;
+      autoCutSession=saved.autocut;batchSession=saved.batch;
+      await tick();
+      if(saved.workspaceMode==="autocut"&&saved.autocut)autoCutWorkspace?.restoreSession(saved.autocut);
+      if(saved.workspaceMode==="batch"&&saved.batch)batchWorkspace?.restoreSession(saved.batch);
+      recoveryCandidate=null;persistRecovery();
+    }catch(reason){reportProblem(reason)}finally{restoringSession=false}
   }
 
   function captureEditorSnapshot():EditorSnapshot|null{
     if(!media)return null;
-    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields});
+    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields,mergeInputs});
   }
   function snapshotSignature(snapshot:EditorSnapshot){return JSON.stringify(snapshot)}
   function resetEditorHistory(){const snapshot=captureEditorSnapshot();editHistory=snapshot?[snapshot]:[];editHistoryIndex=snapshot?0:-1}
@@ -315,16 +379,13 @@
     if(!saved)return null;
     const current=kindTools(activeKind).find(tool=>tool.id===saved.id);
     if(!current)return kindTools(activeKind)[0]??null;
-    const restored=cloneEditorValue(current),savedFields=new Map(saved.fields.map(field=>[field.key,field]));
-    for(const field of restored.fields){
-      const old=savedFields.get(field.key);
-      if(old)field.value=old.value;
-    }
+    const restored=preserveToolValues(current,saved),savedFields=new Map(saved.fields.map(field=>[field.key,field]));
     if(restored.id==="gif"&&!savedFields.has("end")){
       const start=Number(savedFields.get("start")?.value??0),duration=Number(savedFields.get("duration")?.value??5);
       const end=restored.fields.find(field=>field.key==="end");
       if(end)end.value=Math.min(media?.duration??86400,start+Math.max(.01,duration));
     }
+    populateAudioTrackOptions(restored,true);
     return restored;
   }
   function applyEditorSnapshot(snapshot:EditorSnapshot,direction:"undo"|"redo",preserveLoadedMedia=false){
@@ -333,7 +394,7 @@
     if(!preserveLoadedMedia){media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl}
     activeKind=snapshot.activeKind;
     selected=restoreToolSnapshot(snapshot.selected);
-    output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
+    output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);mergeInputs=cloneEditorValue(snapshot.mergeInputs??(media?[media.path]:[]));toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
     requestAnimationFrame(()=>historyApplying=false);
   }
   function undoEditor(){if(operationBusy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
@@ -489,6 +550,28 @@
     }
   }
 
+  function populateAudioTrackOptions(tool:Tool,preserveValue=false){
+    const field=tool.fields.find(item=>item.key==="audio_track");
+    if(!field||!media)return;
+    const previous=String(field.value);
+    field.options=media.audio_tracks.map((track,position)=>{
+      const languageLabel=track.language?` · ${track.language.toUpperCase()}`:"";
+      const channelLabel=track.channel_layout??(track.channels?`${track.channels} ch`:"audio");
+      const bitrateLabel=track.bitrate?` · ${Math.round(track.bitrate/1000)} kbps`:"";
+      const defaultLabel=track.is_default?(language==="tr"?" · varsayılan":" · default"):"";
+      return {value:String(track.index),label:`${language==="tr"?"Parça":"Track"} ${position+1} · ${track.codec.toUpperCase()} · ${channelLabel}${languageLabel}${bitrateLabel}${defaultLabel}`};
+    });
+    if(!preserveValue||!field.options.some(option=>option.value===previous))field.value=field.options[0]?.value??previous;
+  }
+
+  function restrictEncoderOptions(tool:Tool){
+    if(tool.id!=="encode"||!availableEncoders)return;
+    const field=tool.fields.find(item=>item.key==="encoder");
+    if(!field)return;
+    field.options=(field.options??[]).filter(option=>availableEncoders!.includes(option.value));
+    if(!field.options.some(option=>option.value===String(field.value)))field.value=field.options[0]?.value??"libx264";
+  }
+
   function chooseTool(tool: Tool) {
     const changed = selected?.id !== tool.id;
     if(changed){
@@ -504,15 +587,7 @@
     if(selected.id==="text")void ensureSystemFonts();
     configureUpscale(selected);
     configureTimelineFields(selected);
-    if (selected.id === "encode" && availableEncoders) {
-      const encoderField = selected.fields.find((item) => item.key === "encoder");
-      if (encoderField) {
-        encoderField.options = (encoderField.options ?? []).filter((option) => availableEncoders!.includes(option.value));
-        if (!encoderField.options.some((option) => option.value === String(encoderField.value))) {
-          encoderField.value = encoderField.options[0]?.value ?? "libx264";
-        }
-      }
-    }
+    restrictEncoderOptions(selected);
     error = "";
     output = "";
     renderedImageSize = 0;
@@ -528,17 +603,7 @@
       if (field && Number(field.value) >= media.fps) field.value = choices.at(-1) ?? Math.max(1, Math.floor(media.fps / 2));
     }
     if(rangeTimelineTool()){const bounds=timelineBounds();cutStartInput=editableTime(bounds.start);cutEndInput=editableTime(bounds.end);cutTimeEditing=null}
-    const audioTrackField = selected.fields.find((item) => item.key === "audio_track");
-    if (audioTrackField && media) {
-      audioTrackField.options = media.audio_tracks.map((track, position) => {
-        const languageLabel = track.language ? ` · ${track.language.toUpperCase()}` : "";
-        const channelLabel = track.channel_layout ?? (track.channels ? `${track.channels} ch` : "audio");
-        const bitrateLabel = track.bitrate ? ` · ${Math.round(track.bitrate / 1000)} kbps` : "";
-        const defaultLabel = track.is_default ? (language === "tr" ? " · varsayılan" : " · default") : "";
-        return { value:String(track.index), label:`${language === "tr" ? "Parça" : "Track"} ${position + 1} · ${track.codec.toUpperCase()} · ${channelLabel}${languageLabel}${bitrateLabel}${defaultLabel}` };
-      });
-      if (audioTrackField.options.length) audioTrackField.value = audioTrackField.options[0].value;
-    }
+    populateAudioTrackOptions(selected);
     if (["cut","screenshot","gif","image_overlay"].includes(selected.id)) void loadToolboxFilmstrip();
   }
   function resetSelectedTool(){
@@ -547,7 +612,6 @@
     if(source){selected=localizedTool(source,language);configureTimelineFields(selected);if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}}
     colorEnabled={};colorPreviewVisible=true;textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
   }
-
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
   function fieldLivesOnTimeline(key:string){return ["cut","gif","image_overlay"].includes(selected?.id??"")?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":false}
   function fieldVisible(key:string){
@@ -1068,6 +1132,16 @@
     const opacity=Math.max(.1,Math.min(1,toolNumber("watermark_opacity")/100));
     return `left:${x}px;top:${y}px;font-size:${fontSize}px;color:rgba(255,255,255,${opacity});text-shadow:0 1px 2px rgba(0,0,0,${opacity}),0 0 3px rgba(0,0,0,${opacity})`;
   }
+  function socialTagPreviewStyle(){
+    const box=verticalOutputBox();if(!box)return "display:none";
+    const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
+    const geometry=socialTagGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:toolValue("social_tag_style")==="plain"?"plain":"boxed",username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")});
+    const scaleX=box.width/width,scaleY=box.height/height;
+    const boxed=toolValue("social_tag_style")==="boxed";
+    const left=box.left+(boxed?geometry.x:geometry.anchorX)*scaleX;
+    const top=box.top+geometry.centerY*scaleY;
+    return `left:${left}px;top:${top}px;font-size:${geometry.fontSize*scaleX}px;max-width:${box.left+box.width-left}px`;
+  }
   function startFreecamPlacement(event:PointerEvent,mode:"move"|"resize"){
     if(!freecamLayoutBox)return;
     event.preventDefault();event.stopPropagation();
@@ -1254,7 +1328,7 @@
   async function selectMedia() {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Media", extensions: ["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif","heic","heif"] }],
+      filters: mediaDialogFilters,
     });
     if (typeof path === "string") await loadMedia(path);
   }
@@ -1265,38 +1339,39 @@
     void invoke<boolean>("remove_image_preview",{path}).catch(reportProblem);
   }
 
-  async function loadMedia(path: string) {
-    if (operationBusy) return;
+  async function loadMedia(path: string):Promise<boolean> {
+    if (operationBusy) return false;
     const loadId=++mediaLoadId;
     const dependency = ffmpegStatus ?? await refreshFfmpegStatus();
-    if(loadId!==mediaLoadId)return;
+    if(loadId!==mediaLoadId)return false;
     if (!dependency.ready) {
       dependencyPanel = true;
       error = language === "tr" ? "FFmpeg ve FFprobe bulunamadı. Devam etmek için ikisini PATH içine kur." : "FFmpeg and FFprobe were not found. Install both on PATH to continue.";
       jobStatus = "ffmpeg missing";
-      return;
+      return false;
     }
     error = "";
-    output = "";
     jobStatus = "probing media";
     let preparedPreview="";
     try {
       const loaded=await invoke<MediaInfo>("probe_media", { path });
-      if(loadId!==mediaLoadId)return;
+      if(loadId!==mediaLoadId)return false;
       const extension=path.split(".").pop()?.toLowerCase()??"";
       if(loaded.kind==="image"&&["heic","heif"].includes(extension)){
         jobStatus=language==="tr"?"HEIC önizleme hazırlanıyor":"preparing HEIC preview";
         preparedPreview=await invoke<string>("prepare_image_preview",{path});
-        if(loadId!==mediaLoadId){releaseTemporaryImagePreview(preparedPreview);return}
+        if(loadId!==mediaLoadId){releaseTemporaryImagePreview(preparedPreview);return false}
       }
-      const previousPreview=temporaryImagePreviewPath;
-      temporaryImagePreviewPath=preparedPreview;
       const previewPath=preparedPreview||path;
       await invoke("authorize_media_preview",{path:previewPath});
-      if(loadId!==mediaLoadId){if(preparedPreview)releaseTemporaryImagePreview(preparedPreview);return}
+      if(loadId!==mediaLoadId){if(preparedPreview)releaseTemporaryImagePreview(preparedPreview);return false}
+      const nextMediaUrl=convertFileSrc(previewPath);
+      const previousPreview=temporaryImagePreviewPath;
+      temporaryImagePreviewPath=preparedPreview;
       media = loaded;
       activeKind = media.kind;
-      mediaUrl = convertFileSrc(previewPath);
+      mediaUrl = nextMediaUrl;
+      output = "";
       if(previousPreview&&previousPreview!==preparedPreview)releaseTemporaryImagePreview(previousPreview);
       workspaceMode = "toolbox";
       autoCutSession = null;
@@ -1319,16 +1394,14 @@
       progress = 0;
       jobStatus = "ready";
       resetEditorHistory();
+      return true;
     } catch (reason) {
       if(preparedPreview)releaseTemporaryImagePreview(preparedPreview);
-      if(loadId!==mediaLoadId)return;
-      media = null;
-      selected = null;
-      editHistory = [];
-      editHistoryIndex = -1;
+      if(loadId!==mediaLoadId)return false;
       error = String(reason);
-      jobStatus = "error";
+      jobStatus = media?"ready":"error";
       reportProblem(reason);
+      return false;
     }
   }
 
@@ -1574,6 +1647,7 @@
   function validate(tool: Tool): string | null {
     const params = paramsFrom(tool);
     if(tool.id==="clipper"&&params.watermark_enabled==="true"&&!params.watermark_text.trim())return language==="tr"?"Watermark açıkken bir yazı gir.":"Enter watermark text or turn the watermark off.";
+    if(tool.id==="clipper"&&params.social_tag_enabled==="true"&&(!params.social_tag_username.trim()||Array.from(params.social_tag_username.trim()).length>32||/[\r\n]/.test(params.social_tag_username)))return language==="tr"?"Social Tag için tek satırda en fazla 32 karakterlik bir kullanıcı adı gir.":"Enter a Social Tag username of up to 32 characters on one line.";
     if (tool.id === "interpolation" && media?.fps) {
       const fps = Number(params.fps);
       if (fps <= media.fps || fps > 2400 || fps % 60 !== 0) return `Interpolation FPS ${media.fps.toFixed(2)} değerinden yüksek, 60'ın katı ve en fazla 2400 olmalı.`;
@@ -1720,6 +1794,8 @@
 
   async function checkForUpdates(manual = true) {
     if (updateChecking || updateInstalling) return;
+    if (!appVersion) appVersion = await getVersion().catch(() => "");
+    if (!updatesAllowedForVersion(appVersion)) return;
     if (manual) updatePanel = true;
     updateChecking = true;
     updateStatus = language === "tr" ? "Güncellemeler denetleniyor…" : "Checking for updates…";
@@ -1767,19 +1843,24 @@
     theme=document.documentElement.dataset.theme==="light"?"light":"dark";
     void syncWindowTheme(theme);
     try{const savedFavorites=JSON.parse(localStorage.getItem("container-favorites")??"[]");if(Array.isArray(savedFavorites))favoriteIds=savedFavorites.filter(value=>typeof value==="string")}catch{favoriteIds=[]}
-    void invoke<boolean>("previous_session_interrupted").then((interrupted)=>{
-      if(!interrupted){discardRecovery();return}
-      try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession;else discardRecovery()}catch{discardRecovery()}
-    }).catch(()=>discardRecovery());
     void getVersion().then((version) => appVersion = version).catch(() => {});
-    void invoke<string | null>("startup_media_path").then(async(path) => {
-      if(!path)return;
-      recoveryCandidate=null;
-      try{
-        if(path.toLowerCase().endsWith(".containerproject"))await loadProjectPath(path);
-        else await loadMedia(path);
-      }catch(reason){reportProblem(reason)}
-    }).catch(() => {});
+    void (async()=>{
+      const initialMediaLoadId=mediaLoadId;
+      const [path,interrupted]=await Promise.all([
+        invoke<string|null>("startup_media_path").catch(()=>null),
+        invoke<boolean>("previous_session_interrupted").catch(()=>false),
+      ]);
+      // A user-selected or dropped file wins if it arrived while startup checks ran.
+      if(mediaLoadId!==initialMediaLoadId||media||restoringSession)return;
+      const action=startupAction(path,interrupted);
+      if(action==="open-path"&&path){
+        recoveryCandidate=null;
+        await openIncomingPath(path);
+        return;
+      }
+      if(action==="discard-recovery"){discardRecovery();return}
+      try{const savedSession=JSON.parse(localStorage.getItem(recoveryKey)??"null");if(validRecovery(savedSession))recoveryCandidate=savedSession;else discardRecovery()}catch{discardRecovery()}
+    })();
     // Run both checks on every launch. The UI stays quiet unless the user
     // needs FFmpeg or a newer signed release is available.
     void (async () => {
@@ -1795,10 +1876,7 @@
       try {
         availableEncoders = await invoke<string[]>("available_encoders");
         await invoke<string>("warm_up_auto_encoder");
-        if (selected?.id === "encode") {
-          const source = kindTools(activeKind).find((tool) => tool.id === "encode");
-          if (source) chooseTool(source);
-        }
+        if(selected?.id==="encode")restrictEncoderOptions(selected);
       } catch {
         availableEncoders = null;
       } finally {
@@ -1807,6 +1885,8 @@
     })();
     const playerKeys = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
+      const target=event.target as HTMLElement|null;
+      const editingText=isTextEditingTarget(target?.tagName,target?.isContentEditable??false);
       // CONTAINER is a desktop editor, not a browser page. Keep the WebView
       // find overlay and next/previous-find navigation out of the UI.
       if ((event.ctrlKey || event.metaKey) && !event.altKey && ["f", "g"].includes(key)) {
@@ -1820,6 +1900,7 @@
         return;
       }
       if (!media) return;
+      if(editingText)return;
       if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redoEditor(); else undoEditor();
@@ -1827,8 +1908,6 @@
       }
       if (workspaceMode !== "toolbox") return;
       if (media.kind !== "video" || event.ctrlKey || event.altKey || event.metaKey) return;
-      const tag = (document.activeElement as HTMLElement | null)?.tagName;
-      if (tag && ["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
       if (event.code === "Space") { event.preventDefault(); toggleToolboxPlayer(); }
       else if (rangeTimelineTool() && key === "i") { event.preventDefault(); markCutAtPlayhead("start"); }
       else if (rangeTimelineTool() && key === "o") { event.preventDefault(); markCutAtPlayhead("end"); }
@@ -1860,7 +1939,7 @@
       if (event.payload.type === "drop") {
         dragActive = false;
         const path = event.payload.paths[0];
-        if (path) loadMedia(path);
+        if (path) void openIncomingPath(path);
       }
     }).then((fn) => {if(disposed)fn();else unlistenDrop=fn});
 
@@ -1869,9 +1948,9 @@
 
   function setLanguage(next:"tr"|"en"){
     if(next===language)return;
-    const selectedId=selected?.id;
+    const previous=selected;
     language=next; localStorage.setItem("container-language",next); document.documentElement.lang=next;
-    if(selectedId){const translated=kindTools(activeKind).find(tool=>tool.id===selectedId);if(translated)chooseTool(translated)}
+    if(previous){selected=restoreToolSnapshot(previous);if(selected)restrictEncoderOptions(selected)}
   }
   function setTheme(next:"dark"|"light"){
     if(next===theme)return;
@@ -1925,7 +2004,7 @@
         <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
         {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
         <div class="project-actions landing-project-actions"><button onclick={openProject} disabled={operationBusy}>{language==="tr"?"PROJE AÇ":"OPEN PROJECT"}</button></div>
-        <button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>
+        {#if updaterEnabled}<button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>{/if}
       </div>
     {/if}
   </header>
@@ -1946,6 +2025,19 @@
           <button class="ghost" onclick={() => checkForUpdates(true)} disabled={updateChecking || updateInstalling}>{language === "tr" ? "TEKRAR DENE" : "CHECK AGAIN"}</button>
           {#if availableUpdate}<button class="install-update" onclick={installAvailableUpdate} disabled={updateInstalling}>{updateInstalling ? (language === "tr" ? "KURULUYOR…" : "INSTALLING…") : (language === "tr" ? "İNDİR VE GÜNCELLE" : "DOWNLOAD & UPDATE")}</button>{/if}
         </footer>
+      </dialog>
+    </div>
+  {/if}
+
+  {#if projectFilesOpen}
+    <div class="update-layer project-files-layer">
+      <button class="update-backdrop" aria-label={language==="tr"?"Proje dosyaları penceresini kapat":"Close project files"} onclick={()=>projectFilesOpen=false}></button>
+      <dialog class="update-dialog project-files-dialog panel" open aria-labelledby="project-files-title">
+        <header><div><span class="status-dot"></span><h2 id="project-files-title">{language==="tr"?"PROJE DOSYALARI":"PROJECT FILES"}</h2></div><button aria-label={language==="tr"?"Kapat":"Close"} onclick={()=>projectFilesOpen=false}>×</button></header>
+        <p>{language==="tr"?"Proje dosyası medya içermez. Projeyi başka yere taşıyacaksan kaynakları aynı klasör düzeniyle yanında tut; kayıt sırasında göreli yollar da saklanır.":"Project files do not contain media. Keep the sources in the same folder layout when moving a project; relative paths are saved as a fallback."}</p>
+        <div class="project-file-list">{#each projectFileChecks as item}<div><b class:missing={!item.exists}>{item.exists?"✓":"!"}</b><span><strong>{item.resource.label}</strong><small title={item.resource.path}>{item.resource.path}</small></span></div>{/each}</div>
+        {#if projectFileChecks.some(item=>!item.exists)}<p class="project-files-warning">{language==="tr"?"Eksik dosyaları yeniden bağlamadan bu proje tam olarak işlenemez.":"Missing files must be relinked before the project can be processed completely."}</p>{/if}
+        <footer><button class="ghost" onclick={()=>projectFilesOpen=false}>{language==="tr"?"KAPAT":"CLOSE"}</button></footer>
       </dialog>
     </div>
   {/if}
@@ -2101,6 +2193,12 @@
               {#if selected?.id==="clipper"&&toolValue("watermark_enabled")==="true"&&toolValue("watermark_text").trim()}
                 <i class="clipper-watermark-background" style={clipperWatermarkPreviewStyle(true)}></i>
                 <span class="clipper-watermark-preview" style={clipperWatermarkPreviewStyle()}>{toolValue("watermark_text")}</span>
+              {/if}
+              {#if selected?.id==="clipper"&&toolValue("social_tag_enabled")==="true"&&toolValue("social_tag_username").trim()}
+                <div class="clipper-social-tag" class:boxed={toolValue("social_tag_style")==="boxed"} class:twitch={toolValue("social_tag_platform")==="twitch"} style={socialTagPreviewStyle()}>
+                  <span class="clipper-social-icon"><img src={toolValue("social_tag_platform")==="twitch"?twitchMark:kickMark} alt="" /></span>
+                  <span class="clipper-social-name">{toolValue("social_tag_username").trim()}</span>
+                </div>
               {/if}
               {#if selected?.id === "text"}
                 <div class="text-preview-layer">
@@ -2386,10 +2484,8 @@
                     <button class:active={toolValue("vertical_layout")==="freecam"} onclick={()=>setVerticalLayout("freecam")}>FREECAM</button>
                   </div>
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
-                    {#if experimentalFeatures}
-                      <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title="Experimental feature">EXPERIMENTAL</em></button>
-                      {#if cameraDetectionMessage}<p class="auto-camera-result">{cameraDetectionMessage}</p>{/if}
-                    {/if}
+                    <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title="Experimental feature">EXPERIMENTAL</em></button>
+                    {#if cameraDetectionMessage}<p class="auto-camera-result">{cameraDetectionMessage}</p>{/if}
                   {/if}
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
                     {@const contentTarget=contentTargetDimensions()}
@@ -2430,6 +2526,15 @@
                       <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("watermark_size").toFixed(0)} px</small></span><input type="range" min="18" max="160" step="1" value={toolNumber("watermark_size")} oninput={(event)=>setToolNumber("watermark_size",Number(event.currentTarget.value))}></label>
                       <label class="watermark-slider"><span>{language==="tr"?"Saydamlık":"Opacity"}<small>{toolNumber("watermark_opacity").toFixed(0)}%</small></span><input type="range" min="10" max="100" step="5" value={toolNumber("watermark_opacity")} oninput={(event)=>setToolNumber("watermark_opacity",Number(event.currentTarget.value))}></label>
                       <p>{language==="tr"?"Split/Squares'ta iki panelin birleşim çizgisinin tam ortasında; diğer düzenlerde TikTok ve Shorts arayüzlerinden uzak ortak güvenli alanda görünür.":"Centered exactly on the Split/Squares panel seam; other layouts use a shared TikTok/Shorts safe area."}</p>
+                    {/if}
+                  </div>
+                  <div class="clipper-watermark-controls">
+                    <label class="watermark-toggle"><input type="checkbox" checked={toolValue("social_tag_enabled")==="true"} onchange={(event)=>setToolValue("social_tag_enabled",event.currentTarget.checked?"true":"false")}><span>Social Tag</span></label>
+                    {#if toolValue("social_tag_enabled")==="true"}
+                      <label class="watermark-text-field"><span>{language==="tr"?"Platform":"Platform"}</span><select value={toolValue("social_tag_platform")} onchange={(event)=>setToolValue("social_tag_platform",event.currentTarget.value)}><option value="kick">Kick</option><option value="twitch">Twitch</option></select></label>
+                      <label class="watermark-text-field"><span>{language==="tr"?"Kullanıcı adı":"Username"}</span><input type="text" maxlength="32" placeholder="kanaladi" value={toolValue("social_tag_username")} oninput={(event)=>setToolValue("social_tag_username",event.currentTarget.value)}></label>
+                      <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>setToolValue("social_tag_style",event.currentTarget.value)}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option></select></label>
+                      <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("social_tag_size").toFixed(0)} px</small></span><input type="range" min="20" max="96" step="1" value={toolNumber("social_tag_size")} oninput={(event)=>setToolNumber("social_tag_size",Number(event.currentTarget.value))}></label>
                     {/if}
                   </div>
                 </section>
