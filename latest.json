@@ -1,11 +1,11 @@
 {
-  "version": "0.14.1",
-  "notes": "# Changes\n\n\n- Made Clipper's experimental Auto Camera control available in production builds with its WIP label and documentation.\n- Isolated CONTAINER DEV from the production updater channel so test builds no longer offer stable releases as updates.\n",
+  "notes": "# Changes\n\n\n- Added Kick/Twitch Social Tags to Clipper.\n- Improved experimental Auto Camera boundaries.\n- Improved project opening, recovery and missing-file warnings.\n- Fixed compact editor layouts and streamlined the header.\n- Corrected the Windows installer publisher to `dewn`.\n",
+  "pub_date": "2026-09-23T15:24:44.3252637Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.14.1/CONTAINER-Setup-0.14.1-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWZjTmhYcDFoZnFYZEEwaUVKOEc4SEd4aVFFYzNiUFJqbTg4STV0akFzZm1ET21PWnZnQW9pN1NQTUZ1YkRBMVRpNWNCamM1dWcyenBTMmhlZjZXM2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTE1MDA1CWZpbGU6Q09OVEFJTkVSXzAuMTQuMV94NjQtc2V0dXAuZXhlCnpoejZ6NFpUbWRzT1BOakhjak5VR0FQSXI0WFI1ZUhjQ3BFUVQwZjNCYnBLNmFvVFBJakpScE5pRS96RndNVERWc0NmTUZwQzBSOFZKRGNkeXRTcUFnPT0K"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVlBSFYzV1lZVGw4bmNSa3JXaEFxcXRVMEx5U3o4VmpBZUpxRjRQZ3pBMEhRaHRHYnFZTWVGMUJaLzZVLzJ3K3NZRHdFenVyTU1oejM1NmZKZ1VDUlFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTc3MDY5CWZpbGU6Q09OVEFJTkVSXzAuMTUuMF94NjQtc2V0dXAuZXhlCktLQ29KU05mV0piaXgzWnF6S0xmTmhJQWNvWHFidWY4VlNteXJPdEFKd09PUXJJVDhINHpyZ3IwclJINU9WbXE4UXJOWjdPdEJsZ3dIVHBMdFhhK0FBPT0K",
+      "url": "https://github.com/dewnn/container/releases/download/v0.15.0/CONTAINER-Setup-0.15.0-x64.exe"
     }
   },
-  "pub_date": "2026-09-22T22:10:23.5697980Z"
+  "version": "0.15.0"
 }
