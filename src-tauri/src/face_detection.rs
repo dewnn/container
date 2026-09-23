@@ -392,6 +392,225 @@ pub fn choose_camera_region(
     })
 }
 
+// Face geometry provides a useful first crop, but not the edges of a webcam
+// overlay. Look for persistent straight boundaries around that crop in the
+// already decoded frames. No corner or aspect ratio is assumed here.
+pub fn refine_camera_region(
+    mut region: CameraDetectionResult,
+    rgb_frames: &[Vec<u8>],
+    source_width: u32,
+    source_height: u32,
+) -> CameraDetectionResult {
+    if rgb_frames.is_empty() || source_width == 0 || source_height == 0 {
+        return region;
+    }
+    let frames: Vec<&[u8]> = rgb_frames
+        .iter()
+        .filter(|frame| frame.len() == INPUT_SIZE * INPUT_SIZE * 3)
+        .map(Vec::as_slice)
+        .collect();
+    if frames.is_empty() {
+        return region;
+    }
+    let face_x = region.focal_x / 100.0;
+    let face_y = region.focal_y / 100.0;
+    let left = region.x / 100.0;
+    let top = region.y / 100.0;
+    let right = (region.x + region.width) / 100.0;
+    let bottom = (region.y + region.height) / 100.0;
+    let geometry = SampleGeometry::new(source_width, source_height);
+    let horizontal_start = left + 0.02;
+    let horizontal_end = right - 0.02;
+    let best_top = find_boundary(
+        &frames,
+        geometry,
+        true,
+        (top - 0.13).max(0.0),
+        (face_y - 0.025).min(top + 0.13),
+        horizontal_start,
+        horizontal_end,
+        top,
+    );
+    let best_bottom = find_boundary(
+        &frames,
+        geometry,
+        true,
+        (face_y + 0.025).max(bottom - 0.13),
+        (bottom + 0.13).min(1.0),
+        horizontal_start,
+        horizontal_end,
+        bottom,
+    );
+    let y1 = best_top.unwrap_or(top);
+    let y2 = if bottom > 0.975 && best_bottom.is_none_or(|edge| edge > 0.99) {
+        1.0
+    } else {
+        best_bottom.unwrap_or(bottom)
+    };
+    let vertical_start = y1 + 0.02;
+    let vertical_end = y2 - 0.02;
+    let best_left = find_boundary(
+        &frames,
+        geometry,
+        false,
+        (left - 0.13).max(0.0),
+        (face_x - 0.025).min(left + 0.13),
+        vertical_start,
+        vertical_end,
+        left,
+    );
+    let best_right = find_boundary(
+        &frames,
+        geometry,
+        false,
+        (face_x + 0.025).max(right - 0.13),
+        (right + 0.13).min(1.0),
+        vertical_start,
+        vertical_end,
+        right,
+    );
+    let left_attached =
+        left < 0.015 && boundary_strength(&frames, geometry, true, y1, 0.005, 0.035) >= 11.0;
+    let right_attached =
+        right > 0.985 && boundary_strength(&frames, geometry, true, y1, 0.965, 0.995) >= 11.0;
+    let x1 = if left_attached {
+        0.0
+    } else {
+        best_left.unwrap_or(left)
+    };
+    let x2 = if right_attached || (right > 0.995 && best_right.is_none_or(|edge| edge > 0.98)) {
+        1.0
+    } else {
+        best_right.unwrap_or(right)
+    };
+    // A texture edge inside the camera can be stronger than its actual border.
+    // Reject implausibly small or large boxes and keep the face-only fallback.
+    if x2 - x1 < 0.11 || y2 - y1 < 0.10 || x2 - x1 > 0.65 || y2 - y1 > 0.75 {
+        return region;
+    }
+    region.x = x1 * 100.0;
+    region.y = y1 * 100.0;
+    region.width = (x2 - x1) * 100.0;
+    region.height = (y2 - y1) * 100.0;
+    region
+}
+
+#[derive(Clone, Copy)]
+struct SampleGeometry {
+    scaled_width: f32,
+    scaled_height: f32,
+    pad_x: f32,
+    pad_y: f32,
+}
+
+impl SampleGeometry {
+    fn new(source_width: u32, source_height: u32) -> Self {
+        let scale =
+            (INPUT_SIZE as f32 / source_width as f32).min(INPUT_SIZE as f32 / source_height as f32);
+        let scaled_width = source_width as f32 * scale;
+        let scaled_height = source_height as f32 * scale;
+        Self {
+            scaled_width,
+            scaled_height,
+            pad_x: (INPUT_SIZE as f32 - scaled_width) / 2.0,
+            pad_y: (INPUT_SIZE as f32 - scaled_height) / 2.0,
+        }
+    }
+
+    fn color(self, frame: &[u8], x: f32, y: f32) -> [u8; 3] {
+        let px = (self.pad_x + x.clamp(0.0, 1.0) * self.scaled_width)
+            .round()
+            .clamp(0.0, (INPUT_SIZE - 1) as f32) as usize;
+        let py = (self.pad_y + y.clamp(0.0, 1.0) * self.scaled_height)
+            .round()
+            .clamp(0.0, (INPUT_SIZE - 1) as f32) as usize;
+        let offset = (py * INPUT_SIZE + px) * 3;
+        [frame[offset], frame[offset + 1], frame[offset + 2]]
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_boundary(
+    frames: &[&[u8]],
+    geometry: SampleGeometry,
+    horizontal: bool,
+    start: f32,
+    end: f32,
+    line_start: f32,
+    line_end: f32,
+    expected: f32,
+) -> Option<f32> {
+    if start >= end || line_start >= line_end {
+        return None;
+    }
+    let resolution = if horizontal {
+        geometry.scaled_height
+    } else {
+        geometry.scaled_width
+    };
+    let first = (start * resolution).ceil() as usize;
+    let last = (end * resolution).floor() as usize;
+    let mut candidates = Vec::new();
+    for index in first..=last {
+        let position = index as f32 / resolution;
+        if !(0.004..=0.996).contains(&position) {
+            continue;
+        }
+        let strength =
+            boundary_strength(frames, geometry, horizontal, position, line_start, line_end);
+        // A small prior favours the existing face-based estimate when several
+        // similarly strong UI lines appear near the camera.
+        let rank = strength - (position - expected).abs() * 35.0;
+        candidates.push((position, strength, rank));
+    }
+    let &(position, strength, _) = candidates
+        .iter()
+        .max_by(|left, right| left.2.total_cmp(&right.2))?;
+    (strength >= 11.0).then_some(position)
+}
+
+fn boundary_strength(
+    frames: &[&[u8]],
+    geometry: SampleGeometry,
+    horizontal: bool,
+    position: f32,
+    line_start: f32,
+    line_end: f32,
+) -> f32 {
+    let resolution = if horizontal {
+        geometry.scaled_height
+    } else {
+        geometry.scaled_width
+    };
+    let mut frame_scores = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut sum = 0.0;
+        for sample in 0..24 {
+            let along = line_start + (line_end - line_start) * (sample as f32 + 0.5) / 24.0;
+            let delta = 1.5 / resolution;
+            let (before, after) = if horizontal {
+                (
+                    geometry.color(frame, along, position - delta),
+                    geometry.color(frame, along, position + delta),
+                )
+            } else {
+                (
+                    geometry.color(frame, position - delta, along),
+                    geometry.color(frame, position + delta, along),
+                )
+            };
+            sum += before
+                .iter()
+                .zip(after)
+                .map(|(a, b)| a.abs_diff(b) as f32)
+                .sum::<f32>()
+                / 3.0;
+        }
+        frame_scores.push(sum / 24.0);
+    }
+    median(frame_scores.into_iter())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +720,67 @@ mod tests {
         let result = choose_camera_region(frames, 1920, 1080).unwrap();
         assert!(result.focal_x < 12.0);
         assert!(result.focal_y < 16.0);
+    }
+
+    fn synthetic_camera_frame(rect: (f32, f32, f32, f32), frame_index: usize) -> Vec<u8> {
+        let mut rgb = vec![0_u8; INPUT_SIZE * INPUT_SIZE * 3];
+        for y in 140..500 {
+            for x in 0..640 {
+                let nx = x as f32 / 640.0;
+                let ny = (y - 140) as f32 / 360.0;
+                let inside = nx >= rect.0 && nx < rect.2 && ny >= rect.1 && ny < rect.3;
+                let offset = (y * INPUT_SIZE + x) * 3;
+                let moving = ((x + frame_index * 9) % 43) as u8;
+                let base = if inside { 105 } else { 24 };
+                rgb[offset] = base + moving / 4;
+                rgb[offset + 1] = base + moving / 5;
+                rgb[offset + 2] = base + moving / 6;
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn border_refinement_works_in_different_positions_and_aspect_ratios() {
+        let cases = [
+            (0.06, 0.08, 0.29, 0.31),
+            (0.70, 0.06, 0.96, 0.29),
+            (0.11, 0.72, 0.35, 0.96),
+            (0.81, 0.75, 1.0, 1.0),
+            (0.39, 0.41, 0.62, 0.68),
+        ];
+        for rect in cases {
+            let frames: Vec<_> = (0..3)
+                .map(|index| synthetic_camera_frame(rect, index))
+                .collect();
+            let focal_x = (rect.0 + rect.2) / 2.0;
+            let focal_y = (rect.1 + rect.3) / 2.0;
+            let initial = CameraDetectionResult {
+                x: ((rect.0 - 0.035).max(0.0)) * 100.0,
+                y: ((rect.1 - 0.035).max(0.0)) * 100.0,
+                width: ((rect.2 + 0.035).min(1.0) - (rect.0 - 0.035).max(0.0)) * 100.0,
+                height: ((rect.3 + 0.035).min(1.0) - (rect.1 - 0.035).max(0.0)) * 100.0,
+                focal_x: focal_x * 100.0,
+                focal_y: focal_y * 100.0,
+                confidence: 0.9,
+                samples: 3,
+                matched_samples: 3,
+            };
+            let result = refine_camera_region(initial, &frames, 1920, 1080);
+            assert!(
+                (result.x / 100.0 - rect.0).abs() < 0.012,
+                "left: {result:?}"
+            );
+            assert!((result.y / 100.0 - rect.1).abs() < 0.012, "top: {result:?}");
+            assert!(
+                ((result.x + result.width) / 100.0 - rect.2).abs() < 0.012,
+                "right: {result:?}"
+            );
+            assert!(
+                ((result.y + result.height) / 100.0 - rect.3).abs() < 0.012,
+                "bottom: {result:?}"
+            );
+        }
     }
 
     #[test]

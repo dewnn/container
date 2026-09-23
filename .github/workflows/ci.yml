@@ -81,6 +81,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test:ui
+      - run: pnpm exec playwright install chromium --with-deps
+      - run: pnpm test:e2e
       - run: pnpm build
 
   rust:

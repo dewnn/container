@@ -1,0 +1,7 @@
+[
+  {"layout":"split","style":"boxed","username":"Example","x":0,"y":138,"side":54,"fontSize":36},
+  {"layout":"split","style":"plain","username":"Example","x":71,"y":165,"side":54,"fontSize":36},
+  {"layout":"squares","style":"boxed","username":"OHNEPIXEL","x":0,"y":266,"side":54,"fontSize":36},
+  {"layout":"freecam","style":"boxed","username":"Example","x":90,"y":57,"side":54,"fontSize":36},
+  {"layout":"freecam","style":"plain","username":"Example","x":71,"y":84,"side":54,"fontSize":36}
+]

@@ -28,38 +28,28 @@ Processing happens locally. CONTAINER does not upload your video, audio or image
 
 ### Toolbox
 
-- Context-aware Video, Audio and Image categories with persistent favorites
-- Ratio/crop, resize, FPS conversion, frame interpolation and frame blending
-- Duplicate-frame removal, speed control and bitrate/quality controls
-- Discord size-targeted compression and smart quality analysis
-- Text overlays, color controls, noise, distortion and creative effects
-- Cut, screenshot and GIF tools with precise visual timeline selection
-- Audio extraction, replacement, removal and processing
-- Social-media image crops (1:1, 4:5, 9:16, 16:9, 1.91:1, 2:3 and more) with lossless PNG or high-quality JPEG output
-- Image conversion, scaling, quality reduction and before/after preview
-- Hardware encoder detection with safe CPU fallback
-- Batch workspace for repeated jobs
-- Automatic work recovery after an unexpected shutdown
-- One-click Output cleanup that moves generated files to the Recycle Bin
-- Built-in DWLNDR workspace with bundled yt-dlp, link analysis and cancellable progress-aware downloads
+- Video, audio and image tools with favorites and batch processing
+- Crop, resize, speed, quality and color controls
+- Cut, screenshot, GIF, subtitle and overlay tools
+- Clipper layouts with optional Kick/Twitch Social Tags
+- Image editing and social-media crops
+- Hardware encoding with a safe CPU fallback
+- Work recovery and Output cleanup
+- Built-in DWLNDR with bundled yt-dlp
 
 ### First-run encoder tuning
 
-On the first launch, CONTAINER silently tests the CPU and the hardware encoders that actually work on the current NVIDIA, Intel or AMD system. It chooses the fastest result that stays within a strict quality threshold instead of assuming that a GPU encoder is always better. The result is reused until the display hardware, driver or bundled FFmpeg version changes. Benchmark media is generated locally, deleted immediately after the test, and never uploaded.
+On first launch, CONTAINER quietly tests available CPU and GPU encoders and chooses the fastest option that meets its quality threshold. The result is reused until the hardware, driver or bundled FFmpeg changes. Test media stays local and is deleted afterward.
 
 ### Experimental camera-region detection
 
-Clipper includes an experimental automatic camera-region detector. It samples several points across the video and looks for a persistent face locally; no frames leave the computer. This feature is still work in progress and may choose the wrong region when faces move between layouts, the camera relocates during one video, or several similarly stable faces are visible. Always verify the selected Camera Region before exporting; manual placement remains available.
+Clipper's Auto Camera is still experimental and can choose the wrong region, especially when the camera moves or multiple faces appear. Check its selection before exporting; manual placement remains available. Detection runs locally.
 
 ### SmartCut
 
-- Local Silero speech detection
-- Automatic settings based on the selected recording
-- Editable keep regions and cut-skipping preview
-- Timeline navigation and external microphone/audio analysis
-- MP4 export with quality and resolution presets
-- FCPXML 1.11 timeline export
-- Linked camera/audio tracks aligned from embedded timecode
+- Local speech detection with editable keep regions
+- Timeline preview and external audio analysis
+- MP4 and FCPXML export, including linked camera/audio tracks
 
 ## Download
 
@@ -68,25 +58,21 @@ Windows builds are published on the repository's **Releases** page:
 - `CONTAINER-Setup-<version>-x64.exe` — recommended installer
 - `CONTAINER-Portable-<version>-x64.zip` — portable folder (extract before running)
 
-The Setup build also adds **Send to → CONTAINER** to Windows Explorer. Right-click a video, audio file or image and send it directly to CONTAINER. The shortcut is removed when the app is uninstalled; the Portable build does not modify this menu.
+Setup adds **Send to → CONTAINER** in Windows Explorer; Portable does not change this menu.
 
 ## FFmpeg included
 
-Windows packages include the tested FFmpeg 9.0.1 full build and FFprobe. Users do not need to install FFmpeg, edit `PATH`, or run a package-manager command. The installer is the recommended download; the portable ZIP must be extracted with all files kept together.
-
-Installed builds preserve this verified FFmpeg runtime separately from the app. Setup, in-app updates and Portable downloads include the tested media tools so every installation remains self-contained.
+Windows packages include FFmpeg and FFprobe; no separate installation or `PATH` setup is needed. Keep all Portable ZIP files together after extraction.
 
 The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
 
 ## yt-dlp included
 
-Windows packages include a checksum-verified official yt-dlp build. DWLNDR works without a separate download and uses CONTAINER's bundled FFmpeg for video/audio merging. Because supported websites change frequently, the included build can still be replaced from the DWLNDR screen with a newer official executable.
-
-FFmpeg, FFprobe and yt-dlp versions used by builds are pinned together in `config/bundled-tools.env`, preventing CI and release packages from silently drifting to untested binaries.
+Windows packages include yt-dlp for DWLNDR. If a website changes, yt-dlp can be updated from the DWLNDR screen.
 
 ## Updates
 
-Installed builds check for updates in the background when CONTAINER starts, without sending media or analytics. Updates can also be checked manually from the app and are verified before installation. The signed Setup package is used for in-app updates, so GitHub Releases do not expose a separate automatic-update executable. Portable builds should be replaced manually.
+Installed builds check for verified updates without uploading media or analytics. Portable builds must be replaced manually.
 
 ## Privacy and safety
 
