@@ -19,6 +19,9 @@
   import { socialTagGeometry } from "./lib/socialTagGeometry";
   import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
+  import StageHistoryControl from "./lib/StageHistory.svelte";
+  import { toolSummary, toolCategory } from "./lib/toolSummaries";
+  import { startStages, checkpointStage, continueStage, validStages, type StageHistory } from "./lib/stageHistory";
   import DownloaderWorkspace from "./lib/DownloaderWorkspace.svelte";
   import { recoveredMediaUrl } from "./lib/recovery";
   import { updatesAllowedForVersion } from "./lib/releaseChannel";
@@ -59,8 +62,10 @@
   interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
-  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean>; mergeInputs?:string[] }
-  interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown; resources?:ProjectResource[] }
+  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; outputSettingsKey?:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean>; mergeInputs?:string[] }
+  interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown; resources?:ProjectResource[]; stageHistory?:StageHistory<RecoverySession> }
+  let stageHistory:StageHistory<RecoverySession>|null=$state(null);
+  let stageNavigating=$state(false);
 
   const mediaDialogFilters=[{name:"Media",extensions:["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif","heic","heif"]}];
 
@@ -72,6 +77,9 @@
   let dragActive = $state(false);
   let error = $state("");
   let output = $state("");
+  let outputSettingsKey=$state("");
+  const outputStale=$derived(!!output&&outputSettingsKey!==renderSettingsKey());
+  function renderSettingsKey(){return media&&selected?JSON.stringify({source:media.path,operation:selected.id,params:paramsFrom(selected)}):""}
   let progress = $state(0);
   let jobStatus = $state("ready");
   let speed = $state("—");
@@ -227,13 +235,14 @@
     return true;
   });
   const timelineTool = $derived.by(()=>media?.kind==="video"&&selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
-  const operationBusy=$derived(busy||qualityAnalyzing||cameraDetecting||autoCutBusy||batchBusy||downloaderBusy);
+  const operationBusy=$derived(busy||qualityAnalyzing||cameraDetecting||autoCutBusy||batchBusy||downloaderBusy||restoringSession||stageNavigating);
   const canUndo = $derived(!operationBusy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
   const canRedo = $derived(!operationBusy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenDrop: UnlistenFn | null = null;
   let timelineIgnoreClickUntil = 0;
   let mediaLoadId = 0;
+  let workspaceSwitchId = 0;
 
   function cloneEditorValue<T>(value:T):T{return JSON.parse(JSON.stringify(value)) as T}
 
@@ -244,17 +253,17 @@
     return candidate.version===1&&typeof candidate.savedAt==="number"&&typeof candidate.mediaPath==="string"&&candidate.mediaPath.length>0&&["toolbox","autocut","batch"].includes(candidate.workspaceMode??"");
   }
   function persistRecovery(){
-    if(!media||restoringSession)return;
-    const value:RecoverySession={version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode,toolbox:captureEditorSnapshot(),autocut:autoCutSession,batch:batchSession};
-    localStorage.setItem(recoveryKey,JSON.stringify(value));
+    if(!media||restoringSession||stageNavigating)return;
+    const value=currentSession();
+    try{localStorage.setItem(recoveryKey,JSON.stringify(value))}catch{showToast(language==="tr"?"Otomatik kayıt alanı dolu. Projeyi dosya olarak kaydet.":"Recovery storage is full. Save your project to a file.","info")}
   }
-  function currentSession():RecoverySession|null{
+  function currentSession(includeStages=true):RecoverySession|null{
     if(!media)return null;
-    return {version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode,toolbox:captureEditorSnapshot(),autocut:autoCutSession,batch:batchSession};
+    return {version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode,toolbox:captureEditorSnapshot(),autocut:workspaceMode==="autocut"&&autoCutWorkspace?autoCutWorkspace.exportSession():autoCutSession,batch:workspaceMode==="batch"&&batchWorkspace?batchWorkspace.exportSession():batchSession,...(includeStages&&stageHistory?{stageHistory:cloneEditorValue(stageHistory)}:{})};
   }
   async function saveProject(){
     const session=currentSession();if(!session||operationBusy)return;
-    session.resources=projectResources(session);
+    session.resources=projectResources(session,true);
     const path=await save({defaultPath:`${media?.name.replace(/\.[^.]+$/,"")||"project"}.containerproject`,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});
     if(!path)return;
     try{
@@ -337,7 +346,7 @@
         saved=replaceProjectResource(saved,resource.path,replacement);
         recoveryCandidate=saved;
       }
-      if(!await loadMedia(restoredPath))return;
+      if(!await loadMedia(restoredPath,true))return;
       saved.mediaPath=restoredPath;
       if(saved.toolbox){
         const preparedMediaUrl=mediaUrl;
@@ -346,6 +355,10 @@
         // freshly authorized URL from loadMedia and make the source identity new
         // so Chromium cannot retain the empty/failed media element from startup.
         mediaUrl=recoveredMediaUrl(preparedMediaUrl);
+        renderedImageUrl="";
+        if(media?.kind==="image"&&output){
+          try{await invoke("authorize_media_preview",{path:output});renderedImageUrl=recoveredMediaUrl(convertFileSrc(output))}catch{ /* A missing old output must not prevent restoring its editable source. */ }
+        }
         await tick();
         if(media?.kind==="video"){
           toolboxVideo?.load();
@@ -358,13 +371,15 @@
       await tick();
       if(saved.workspaceMode==="autocut"&&saved.autocut)autoCutWorkspace?.restoreSession(saved.autocut);
       if(saved.workspaceMode==="batch"&&saved.batch)batchWorkspace?.restoreSession(saved.batch);
-      recoveryCandidate=null;persistRecovery();
-    }catch(reason){reportProblem(reason)}finally{restoringSession=false}
+      stageHistory=validStages(saved.stageHistory,validRecovery)?saved.stageHistory:startStages(currentSession(false)!,stageLabel());
+      recoveryCandidate=null;
+      return true;
+    }catch(reason){reportProblem(reason)}finally{restoringSession=false;persistRecovery()}
   }
 
   function captureEditorSnapshot():EditorSnapshot|null{
     if(!media)return null;
-    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields,mergeInputs});
+    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,outputSettingsKey,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields,mergeInputs});
   }
   function snapshotSignature(snapshot:EditorSnapshot){return JSON.stringify(snapshot)}
   function resetEditorHistory(){const snapshot=captureEditorSnapshot();editHistory=snapshot?[snapshot]:[];editHistoryIndex=snapshot?0:-1}
@@ -394,7 +409,7 @@
     if(!preserveLoadedMedia){media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl}
     activeKind=snapshot.activeKind;
     selected=restoreToolSnapshot(snapshot.selected);
-    output=snapshot.output;renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);mergeInputs=cloneEditorValue(snapshot.mergeInputs??(media?[media.path]:[]));toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
+    output=snapshot.output;outputSettingsKey=snapshot.outputSettingsKey??"";renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);mergeInputs=cloneEditorValue(snapshot.mergeInputs??(media?[media.path]:[]));toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
     requestAnimationFrame(()=>historyApplying=false);
   }
   function undoEditor(){if(operationBusy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
@@ -854,6 +869,7 @@
   }
   async function restorePreviewFonts(){
     const layers=[...textLayers];
+    if(!layers.length)return;
     const fonts=await ensureSystemFonts();
     const fallback=fonts.find(item=>item.name.toLowerCase()==="impact")??fonts.find(item=>item.name.toLowerCase().startsWith("arial"))??fonts[0];
     const restored=await Promise.all(layers.map(async layer=>{
@@ -1135,12 +1151,15 @@
   function socialTagPreviewStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
     const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
-    const geometry=socialTagGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:toolValue("social_tag_style")==="plain"?"plain":"boxed",username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")});
-    const scaleX=box.width/width,scaleY=box.height/height;
     const boxed=toolValue("social_tag_style")==="boxed";
-    const left=box.left+(boxed?geometry.x:geometry.anchorX)*scaleX;
+    const position=toolValue(boxed?"social_tag_boxed_position":"social_tag_plain_position") as "left"|"center"|"right";
+    const geometry=socialTagGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:boxed?"boxed":"plain",position,username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")});
+    const scaleX=box.width/width,scaleY=box.height/height;
+    const left=box.left+geometry.anchorX*scaleX;
     const top=box.top+geometry.centerY*scaleY;
-    return `left:${left}px;top:${top}px;font-size:${geometry.fontSize*scaleX}px;max-width:${box.left+box.width-left}px`;
+    const shift=position==="left"?"0":position==="right"?"-100%":"-50%";
+    const available=position==="left"?box.left+box.width-left:position==="right"?left-box.left:2*Math.min(left-box.left,box.left+box.width-left);
+    return `left:${left}px;top:${top}px;font-size:${geometry.fontSize*scaleX}px;max-width:${Math.max(0,available)}px;transform:translate(${shift},-50%)`;
   }
   function startFreecamPlacement(event:PointerEvent,mode:"move"|"resize"){
     if(!freecamLayoutBox)return;
@@ -1279,11 +1298,22 @@
     const first=kindTools(kind)[0];
     if(first)chooseTool(first);else selected=null;
   }
-  function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
-    if(mode!==workspaceMode&&operationBusy)return;
+  function captureWorkspaceSessions(){
+    if(workspaceMode==="autocut"&&autoCutWorkspace)autoCutSession=autoCutWorkspace.exportSession();
+    if(workspaceMode==="batch"&&batchWorkspace)batchSession=batchWorkspace.exportSession();
+  }
+  async function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
+    if(mode===workspaceMode||operationBusy)return;
+    captureWorkspaceSessions();
+    const switchId=++workspaceSwitchId,loadId=mediaLoadId;
+    const session=mode==="autocut"?autoCutSession:mode==="batch"?batchSession:null;
     downloaderOpen=false;
-    if(mode!==workspaceMode&&workspaceMode==="toolbox")resetSelectedTool();
+    toolboxVideo?.pause();
     workspaceMode=mode;
+    await tick();
+    if(switchId!==workspaceSwitchId||loadId!==mediaLoadId||workspaceMode!==mode)return;
+    if(session&&mode==="autocut")autoCutWorkspace?.restoreSession(session);
+    if(session&&mode==="batch")batchWorkspace?.restoreSession(session);
   }
   function encoderQualityMode(){
     const encoder=toolValue("encoder");
@@ -1339,8 +1369,8 @@
     void invoke<boolean>("remove_image_preview",{path}).catch(reportProblem);
   }
 
-  async function loadMedia(path: string):Promise<boolean> {
-    if (operationBusy) return false;
+  async function loadMedia(path: string,internal=false):Promise<boolean> {
+    if (operationBusy&&!internal) return false;
     const loadId=++mediaLoadId;
     const dependency = ffmpegStatus ?? await refreshFfmpegStatus();
     if(loadId!==mediaLoadId)return false;
@@ -1369,6 +1399,7 @@
       const previousPreview=temporaryImagePreviewPath;
       temporaryImagePreviewPath=preparedPreview;
       media = loaded;
+      mergeInputs=[];
       activeKind = media.kind;
       mediaUrl = nextMediaUrl;
       output = "";
@@ -1394,6 +1425,7 @@
       progress = 0;
       jobStatus = "ready";
       resetEditorHistory();
+      if(!internal)stageHistory=startStages(currentSession(false)!,stageLabel());
       return true;
     } catch (reason) {
       if(preparedPreview)releaseTemporaryImagePreview(preparedPreview);
@@ -1433,11 +1465,28 @@
     editHistory = [];
     editHistoryIndex = -1;
     autoCutSession=null;batchSession=null;discardRecovery();
+    stageHistory=null;
   }
 
-  async function continueEditingOutput(){
-    if(!output||operationBusy)return;
-    await loadMedia(output);
+  function stageLabel(){return workspaceMode==="autocut"?"SmartCut":workspaceMode==="batch"?"Batch":selected?.title??media?.name??"Media"}
+  async function continueEditingOutput(path=output){
+    if(!path||operationBusy)return;
+    if(workspaceMode==="toolbox"&&outputStale){showToast(language==="tr"?"Ayarlar değişti. Devam etmeden önce yeniden işle.":"Settings changed. Render again before continuing.","info");return}
+    const session=currentSession(false);if(!session)return;
+    const previous=checkpointStage(stageHistory,session,stageLabel());
+    stageNavigating=true;
+    try{
+      if(await loadMedia(path,true))stageHistory=continueStage(previous,currentSession(false)!,stageLabel());
+    }finally{stageNavigating=false;persistRecovery()}
+  }
+  async function selectStage(id:number){
+    if(operationBusy||!stageHistory||id===stageHistory.current)return;
+    const target=stageHistory.entries.find(entry=>entry.id===id),session=currentSession(false);
+    if(!target||!session)return;
+    const next=checkpointStage(stageHistory,session,stageLabel(),id);next.current=id;
+    const previousCandidate=recoveryCandidate;
+    recoveryCandidate={...cloneEditorValue(target.session),stageHistory:next};
+    if(!await restorePreviousSession())recoveryCandidate=previousCandidate;
   }
 
   function seekToolbox(value: number) {
@@ -1676,7 +1725,7 @@
   }
 
   async function runTool() {
-    if (!media || !selected || busy) return;
+    if (!media || !selected || operationBusy) return;
     const validation = validate(selected);
     if (validation) { error = validation; return; }
     armCompletionSound();
@@ -1697,6 +1746,7 @@
         jobStatus = language === "tr" ? "SHA-256 hesaplandı" : "SHA-256 calculated";
         return;
       }
+      const renderedSettingsKey=renderSettingsKey();
       const operationParams=paramsFrom(selected);
       const operationInput=temporaryImagePreviewPath||media.path;
       if(temporaryImagePreviewPath)operationParams.__source_path=media.path;
@@ -1704,15 +1754,7 @@
         request: { input: operationInput, operation: selected.id, params: operationParams },
       });
       output = result.output;
-      const appliedTool=selected.id;
-      if(media.kind==="video"&&["color","text"].includes(appliedTool)){
-        media=await invoke<MediaInfo>("probe_media",{path:result.output});
-        mediaUrl=`${convertFileSrc(result.output)}?applied=${Date.now()}`;
-        toolboxCurrent=0;toolboxPlaying=false;
-        const fresh=kindTools(activeKind).find(tool=>tool.id===appliedTool);
-        if(fresh)selected=localizedTool(fresh,language);
-        colorEnabled={};textLayers=[];activeTextId=null;
-      }
+      outputSettingsKey=renderedSettingsKey;
       if (media.kind === "image") {
         renderedImageUrl = `${convertFileSrc(result.output)}?render=${Date.now()}`;
         renderedImageSize = (await invoke<MediaInfo>("probe_media",{path:result.output})).size;
@@ -1899,7 +1941,7 @@
         event.stopPropagation();
         return;
       }
-      if (!media) return;
+      if (!media||restoringSession||stageNavigating) return;
       if(editingText)return;
       if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -1981,16 +2023,22 @@
   }
 </script>
 
-<main class="shell" class:drag-active={dragActive}>
+{#snippet historyControl()}
+  <StageHistoryControl history={stageHistory} {language} busy={operationBusy} currentLabel={stageLabel()} onselect={selectStage}/>
+{/snippet}
+<main class="shell" class:drag-active={dragActive} inert={restoringSession||stageNavigating} aria-busy={restoringSession||stageNavigating}>
   <header class="topbar">
     <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/logo-dark.png" alt="" decoding="sync"><img class="brand-logo brand-logo-light" src="/logo-light.png" alt="" decoding="sync"></span>CONTAINER</span>
     {#if media}
-      <span class="slash">/</span><span class="filename mono">{media.name}</span>
+      {@render historyControl()}
+      <div class="file-summary">
+      <span class="filename mono" title={`${media.name}\n${language==="tr"?"Süre":"Duration"}: ${formatDuration(media.duration)}${media.width?`\n${language==="tr"?"Çözünürlük":"Resolution"}: ${media.width}×${media.height}`:""}${media.fps?`\nFPS: ${media.fps.toFixed(3)}`:""}\nCodec: ${media.codec}\n${language==="tr"?"Boyut":"Size"}: ${formatBytes(media.size)}`}>{media.name}</span>
       <div class="chips mono">
-        <span><b>dur</b>{formatDuration(media.duration)}</span><em>·</em>
-        {#if media.width}<span><b>res</b>{media.width}×{media.height}</span><em>·</em>{/if}
-        {#if media.fps}<span><b>fps</b>{media.fps.toFixed(3)}</span><em>·</em>{/if}
-        <span><b>codec</b>{media.codec}</span><em>·</em><span><b>size</b>{formatBytes(media.size)}</span>
+        <span><b>dur</b>{formatDuration(media.duration)}</span>
+        {#if media.width}<span><b>res</b>{media.width}×{media.height}</span>{/if}
+        {#if media.fps}<span class="media-extra"><b>fps</b>{media.fps.toFixed(3)}</span>{/if}
+        <span class="media-extra"><b>codec</b>{media.codec}</span><span class="media-extra"><b>size</b>{formatBytes(media.size)}</span>
+      </div>
       </div>
       <nav class="mode-tabs" aria-label="Workspace">
         <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")} disabled={operationBusy&&workspaceMode!=="toolbox"}>{t("toolbox")}</button>
@@ -2117,9 +2165,9 @@
     </section>
   {:else}
     {#if workspaceMode === "autocut" && media.kind === "video"}
-      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
+      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
     {:else if workspaceMode === "batch"}
-      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} />
+      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} />
     {:else}
     <section class="workspace">
       <aside class="tool-pane panel">
@@ -2136,13 +2184,13 @@
         <button class="favorites-filter" class:active={favoritesOnly} onclick={()=>favoritesOnly=!favoritesOnly}><span>★</span>{language==="tr"?"FAVORİLER":"FAVORITES"}<b>{favoriteIds.length}</b></button>
         <div class="tool-scroll">
           {#each categories as [category, entries]}
-            <section class="tool-group">
+            <section class="tool-group" data-category={toolCategory(entries[0].id)}>
               <h4>{category}</h4>
               {#each entries as tool}
                 <div class="tool-entry">
-                  <button class="tool-row" class:active={selected?.id === tool.id} onclick={() => chooseTool(tool)}>
+                  <button class="tool-row" class:active={selected?.id === tool.id} title={tool.description} onclick={() => chooseTool(tool)}>
                     <i class:blue={tool.accent === "blue"} class:green={tool.accent === "green"} class:purple={tool.accent === "purple"} class:red={tool.accent === "red"} class:yellow={tool.accent === "yellow"}></i>
-                    <span><b>{tool.title}</b><small>{tool.description}</small></span><em>›</em>
+                    <span><b>{tool.title}</b><small>{toolSummary(tool,language)}</small></span><em>›</em>
                   </button>
                   <button class="favorite-toggle" class:active={favoriteIds.includes(tool.id)} onclick={()=>toggleFavorite(tool.id)} title={language==="tr"?"Favoriye ekle/kaldır":"Add/remove favorite"} aria-label={language==="tr"?`${tool.title} favori`:`Favorite ${tool.title}`}>★</button>
                 </div>
@@ -2329,7 +2377,7 @@
             <div><h3>{t("process")}</h3><p class="mono">{jobStatus}</p></div>
             <div class="job-meta">
               <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
-              {#if output}<button class="ghost job-action" onclick={continueEditingOutput}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
+              {#if output}<button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
               {#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}
             </div>
           </div>
@@ -2534,6 +2582,7 @@
                       <label class="watermark-text-field"><span>{language==="tr"?"Platform":"Platform"}</span><select value={toolValue("social_tag_platform")} onchange={(event)=>setToolValue("social_tag_platform",event.currentTarget.value)}><option value="kick">Kick</option><option value="twitch">Twitch</option></select></label>
                       <label class="watermark-text-field"><span>{language==="tr"?"Kullanıcı adı":"Username"}</span><input type="text" maxlength="32" placeholder="kanaladi" value={toolValue("social_tag_username")} oninput={(event)=>setToolValue("social_tag_username",event.currentTarget.value)}></label>
                       <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>setToolValue("social_tag_style",event.currentTarget.value)}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option></select></label>
+                      <label class="watermark-text-field"><span>{language==="tr"?"Konum":"Position"}</span><select value={toolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position")} onchange={(event)=>setToolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position",event.currentTarget.value)}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
                       <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("social_tag_size").toFixed(0)} px</small></span><input type="range" min="20" max="96" step="1" value={toolNumber("social_tag_size")} oninput={(event)=>setToolNumber("social_tag_size",Number(event.currentTarget.value))}></label>
                     {/if}
                   </div>

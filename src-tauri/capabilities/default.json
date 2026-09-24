@@ -9,6 +9,7 @@
     "core:window:allow-set-theme",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
     {
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [

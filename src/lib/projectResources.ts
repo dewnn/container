@@ -1,6 +1,6 @@
 export interface ProjectResource { label: string; path: string; relativePath?: string }
 
-export function projectResources(session: unknown): ProjectResource[] {
+export function projectResources(session: unknown, includeHistory=false): ProjectResource[] {
   if (!session || typeof session !== "object") return [];
   const value = session as Record<string, any>;
   const collected: ProjectResource[] = [];
@@ -13,6 +13,14 @@ export function projectResources(session: unknown): ProjectResource[] {
   for (const track of value.autocut?.linkedTracks ?? []) add("SmartCut linked track", track?.path);
   add("SmartCut analysis track", value.autocut?.analysisInput);
   for (const item of value.batch?.items ?? []) add("Batch input", item?.path);
+  if(includeHistory){
+    for(const entry of value.stageHistory?.entries??[])for(const resource of projectResources(entry.session))add(resource.label,resource.path);
+    const sessions=[value,...(value.stageHistory?.entries??[]).map((entry:any)=>entry.session)];
+    for(const snapshot of sessions){
+      add("Stage output",snapshot.toolbox?.output);add("SmartCut output",snapshot.autocut?.output);
+      for(const item of snapshot.batch?.items??[])add("Batch output",item?.output);
+    }
+  }
   return collected;
 }
 

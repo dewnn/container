@@ -1,0 +1,17 @@
+{
+  "kick-plain": {
+    "source": "kick-mark.svg",
+    "sourceSha256": "317f61953fa855795fae4d5920f5b49d4a9db78a90c2307823069a8ae78fc7ef",
+    "pngSha256": "d4f9005d8cbc226cd1c3d49fcbf1c4629f215eb263cf2f0a3aa7fc93e1029d95"
+  },
+  "kick-boxed": {
+    "source": "kick-mark.svg",
+    "sourceSha256": "317f61953fa855795fae4d5920f5b49d4a9db78a90c2307823069a8ae78fc7ef",
+    "pngSha256": "2421e856461b8641fad266cf6e0da7f125728d30370cd27141219829bdf51cb4"
+  },
+  "twitch": {
+    "source": "twitch-mark.svg",
+    "sourceSha256": "1e7a3f95ce4cd872c5c6530c0e4ca861da78952caf774bbb3fe0ae0a0eb5e6ff",
+    "pngSha256": "3d420234e3da50d039d4f200a55f40df929bd67cf6f36099968150f97faea4ab"
+  }
+}

@@ -2371,13 +2371,7 @@ fn category(operation: &str) -> &str {
 }
 
 fn ffmpeg_filter_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .replace(':', "\\:")
-        .replace('\'', "\\'")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace(',', "\\,")
+    ffmpeg_quoted_value(&path.to_string_lossy().replace('\\', "/"))
 }
 
 fn unique_output(input: &Path, operation: &str, extension: &str) -> Result<PathBuf, String> {
@@ -3429,15 +3423,24 @@ fn atempo(speed: f64) -> String {
     filters.join(",")
 }
 
+fn ffmpeg_quoted_value(value: &str) -> String {
+    // Callers wrap this in single quotes. Escape the option parser first, then
+    // close/reopen graph-level quotes around apostrophes. One backslash alone
+    // loses the apostrophe when FFmpeg parses the filter graph a second time.
+    let mut option = String::with_capacity(value.len());
+    for c in value.chars() {
+        if matches!(c, '\\' | ':' | '\'') || c.is_ascii_whitespace() {
+            option.push('\\');
+        }
+        option.push(c);
+    }
+    option.replace('\'', "'\\''")
+}
+
 fn drawtext_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace(':', "\\:")
-        .replace('\'', "\\'")
-        .replace(',', "\\,")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace('%', "\\\\%")
+    // drawtext callers also set expansion=none, so percent sequences are text,
+    // never expressions. This is shared by Watermark, Social Tag and text layers.
+    ffmpeg_quoted_value(value)
 }
 
 fn audio_format(format: &str) -> Result<(&'static str, Vec<String>), String> {
@@ -3878,10 +3881,60 @@ fn clipper_watermark_filter(
         .map(|filter| format!("{filter},"))
         .unwrap_or_default();
     Ok(Some(format!(
-        "{background}drawtext=fontfile='{}':text='{}':fontcolor=white@{opacity:.3}:fontsize={size:.0}:x={x}:y={y}:borderw=3:bordercolor=black@{border_opacity:.3}:shadowx=2:shadowy=2:shadowcolor=black@{shadow_opacity:.3}",
+        "{background}drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white@{opacity:.3}:fontsize={size:.0}:x={x}:y={y}:borderw=3:bordercolor=black@{border_opacity:.3}:shadowx=2:shadowy=2:shadowcolor=black@{shadow_opacity:.3}",
         drawtext_escape(&font.to_string_lossy()),
         drawtext_escape(text)
     )))
+}
+
+// Keep the originals inside the executable: export must not depend on files on
+// the developer's Desktop or on an SVG decoder in the user's FFmpeg build.
+fn social_tag_mark_path(platform: &str, style: &str) -> Result<PathBuf, String> {
+    static CACHE_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CACHE_LOCK.lock().map_err(|e| e.to_string())?;
+    let bytes: &[u8] = match (platform, style) {
+        ("twitch", _) => include_bytes!("../resources/social-tags/twitch.png"),
+        (_, "boxed") => include_bytes!("../resources/social-tags/kick-boxed.png"),
+        _ => include_bytes!("../resources/social-tags/kick-plain.png"),
+    };
+    let directory = dirs::cache_dir()
+        .ok_or("User cache directory unavailable")?
+        .join(app_cache_name())
+        .join("social-tags");
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("{:x}.png", Sha256::digest(bytes)));
+    if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+        // Publish a complete file, including when DEV and stable export together.
+        let pending = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&pending, bytes).map_err(|e| e.to_string())?;
+        if let Err(error) = std::fs::rename(&pending, &path) {
+            let _ = std::fs::remove_file(&pending);
+            if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+                return Err(error.to_string());
+            }
+        }
+    }
+    Ok(path)
+}
+
+fn movie_filter_path(path: &Path) -> String {
+    // Escape both the filter-option parser and the surrounding graph parser.
+    // Forward slashes avoid treating Windows separators as escape characters.
+    let option = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+        .replace('\'', "\\'");
+    option
+        .chars()
+        .flat_map(|c| {
+            if matches!(c, '\\' | '\'' | '[' | ']' | ',' | ';') {
+                vec!['\\', c]
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 
 fn clipper_social_tag_filter(
@@ -3908,6 +3961,17 @@ fn clipper_social_tag_filter(
         .unwrap_or("boxed");
     if !matches!(style, "boxed" | "plain") {
         return Err("Invalid Social Tag style.".into());
+    }
+    let position = params
+        .get(if style == "boxed" {
+            "social_tag_boxed_position"
+        } else {
+            "social_tag_plain_position"
+        })
+        .map(String::as_str)
+        .unwrap_or(if style == "boxed" { "left" } else { "center" });
+    if !matches!(position, "left" | "center" | "right") {
+        return Err("Invalid Social Tag position.".into());
     }
     let platform = params
         .get("social_tag_platform")
@@ -3979,15 +4043,14 @@ fn clipper_social_tag_filter(
         }
         _ => {}
     }
-    let anchor_x = if style == "boxed" {
-        camera_left
-    } else if layout == "freecam" {
-        camera_left + camera_width / 2.0
-    } else {
-        width as f64 / 2.0
+    let camera_right = camera_left + camera_width;
+    let target_x = match position {
+        "left" => camera_left,
+        "center" => camera_left + camera_width / 2.0,
+        _ => camera_right,
     };
     let available = if style == "boxed" {
-        (width as f64 - anchor_x).max(24.0)
+        (width as f64 - camera_left).max(24.0)
     } else {
         width as f64 * 0.84
     };
@@ -3998,12 +4061,14 @@ fn clipper_social_tag_filter(
     let padding = (size * 0.34).round().max(2.0);
     let text_width = units * size * if style == "boxed" { 1.1 } else { 1.0 };
     let total_width = side + gap + text_width + if style == "boxed" { padding * 2.0 } else { 0.0 };
-    let x = if style == "boxed" {
-        anchor_x.min((width as f64 - total_width).max(0.0))
-    } else {
-        (anchor_x - total_width / 2.0).max(0.0)
-    }
-    .round();
+    let raw_x = match position {
+        "left" => target_x,
+        "center" => target_x - total_width / 2.0,
+        _ => target_x - total_width,
+    };
+    let x = raw_x
+        .clamp(0.0, (width as f64 - total_width).max(0.0))
+        .round();
     let center_y = if style == "boxed" {
         (camera_bottom - side / 2.0).max(camera_top + side / 2.0)
     } else {
@@ -4038,88 +4103,13 @@ fn clipper_social_tag_filter(
             (total_width - side).round()
         ));
     }
-    if platform == "twitch" {
-        // 24x24 even-odd mask rasterized from the supplied Twitch SVG path.
-        const TWITCH_RECTS: [(f64, f64, f64, f64); 16] = [
-            (2.0, 0.0, 23.0, 2.0),
-            (10.0, 6.0, 12.0, 13.0),
-            (16.0, 6.0, 18.0, 13.0),
-            (21.0, 2.0, 23.0, 14.0),
-            (20.0, 14.0, 23.0, 15.0),
-            (19.0, 15.0, 23.0, 16.0),
-            (1.0, 2.0, 4.0, 17.0),
-            (18.0, 16.0, 22.0, 17.0),
-            (12.0, 17.0, 21.0, 18.0),
-            (11.0, 18.0, 20.0, 19.0),
-            (1.0, 17.0, 9.0, 20.0),
-            (10.0, 19.0, 19.0, 20.0),
-            (1.0, 20.0, 18.0, 21.0),
-            (6.0, 21.0, 12.0, 22.0),
-            (6.0, 22.0, 11.0, 23.0),
-            (6.0, 23.0, 10.0, 24.0),
-        ];
+    let (mark_width, mark_height) = if platform == "twitch" {
         let mark_side = side * if style == "boxed" { 0.80 } else { 0.84 };
-        let mark_x = x + (side - mark_side) / 2.0;
-        let mark_y = y + (side - mark_side) / 2.0;
-        let cell = mark_side / 24.0;
-        for (x0, y0, x1, y1) in TWITCH_RECTS {
-            let left = (mark_x + x0 * cell).round();
-            let right = (mark_x + x1 * cell).round();
-            let top = (mark_y + y0 * cell).round();
-            let bottom = (mark_y + y1 * cell).round();
-            filters.push(format!(
-                "drawbox=x={left:.0}:y={top:.0}:w={:.0}:h={:.0}:color=0x9146ff:t=fill",
-                (right - left + 1.0).max(1.0),
-                (bottom - top + 1.0).max(1.0)
-            ));
-        }
+        (mark_side.round(), mark_side.round())
     } else {
-        // Exact 8x9 grid of the supplied Kick SVG path (the SVG background is omitted).
-        let rows = [
-            "11100111", "11101111", "11111111", "11111110", "11111100", "11111110", "11111111",
-            "11101111", "11100111",
-        ];
         let mark_height = side * if style == "boxed" { 0.72 } else { 0.84 };
-        let mark_width = mark_height * 8.0 / 9.0;
-        let mark_x = x + (side - mark_width) / 2.0;
-        let mark_y = y + (side - mark_height) / 2.0;
-        let cell = mark_height / 9.0;
-        let color = if style == "boxed" {
-            "0x050805"
-        } else {
-            "0x53fc19"
-        };
-        filters.push(format!(
-            "drawbox=x={:.0}:y={:.0}:w={:.0}:h={:.0}:color={color}:t=fill",
-            mark_x.round(),
-            mark_y.round(),
-            ((mark_x + 3.0 * cell).round() - mark_x.round()).max(1.0),
-            ((mark_y + mark_height).round() - mark_y.round()).max(1.0)
-        ));
-        for (row, pixels) in rows.iter().enumerate() {
-            let bytes = pixels.as_bytes();
-            let mut column = 3;
-            while column < bytes.len() {
-                if bytes[column] != b'1' {
-                    column += 1;
-                    continue;
-                }
-                let start = column;
-                while column < bytes.len() && bytes[column] == b'1' {
-                    column += 1;
-                }
-                let left = (mark_x + start as f64 * cell).round();
-                let right = (mark_x + column as f64 * cell).round();
-                let top = (mark_y + row as f64 * cell).round();
-                let bottom = (mark_y + (row + 1) as f64 * cell).round();
-                filters.push(format!(
-                    "drawbox=x={left:.0}:y={top:.0}:w={:.0}:h={:.0}:color={color}:t=fill",
-                    (right - left + 1.0).max(1.0),
-                    (bottom - top + 1.0).max(1.0)
-                ));
-            }
-        }
-    }
+        ((mark_height * 8.0 / 9.0).round(), mark_height.round())
+    };
     let text_x = x + side + gap + if style == "boxed" { padding } else { 0.0 };
     let text_y = if style == "boxed" {
         format!("{y:.0}+({side:.0}-text_h)/2")
@@ -4132,11 +4122,20 @@ fn clipper_social_tag_filter(
         ":borderw=3:bordercolor=black@0.95:shadowx=2:shadowy=2:shadowcolor=black@0.9".into()
     };
     filters.push(format!(
-        "drawtext=fontfile='{}':text='{}':fontcolor=white:fontsize={size:.0}:x={text_x:.0}:y={text_y}{outline}",
+        "drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={size:.0}:x={text_x:.0}:y={text_y}{outline}",
         drawtext_escape(&font.to_string_lossy()),
         drawtext_escape(username)
     ));
-    Ok(Some(filters.join(",")))
+    let mark = social_tag_mark_path(platform, style)?;
+    let mark_x = (x + (side - mark_width) / 2.0).round();
+    let mark_y = (y + (side - mark_height) / 2.0).round();
+    // One high-resolution, alpha-bearing mark instead of separately rounded
+    // rectangles. 4:4:4 compositing preserves odd-pixel edges before encoding.
+    // Repeat the still image through the entire video, not only its first frame.
+    Ok(Some(format!(
+        "{}[social_base];movie=filename={}:dec_threads=1,scale={mark_width:.0}:{mark_height:.0}:flags=lanczos,format=rgba[social_mark];[social_base][social_mark]overlay=x={mark_x:.0}:y={mark_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1",
+        filters.join(","), movie_filter_path(&mark)
+    )))
 }
 
 async fn build_command(
@@ -5067,7 +5066,7 @@ async fn build_command(
                     &layer.shadow_color
                 };
                 let line_spacing = size * 0.05;
-                let mut filter = format!("drawtext=fontfile='{}':text='{}':fontcolor={}:alpha={opacity:.4}:fontsize={size}:line_spacing={line_spacing:.3}:x={x_expression}:y=h*{y:.6}-text_h/2:borderw={outline:.3}:bordercolor={}:shadowx={shadow:.0}:shadowy={shadow:.0}:shadowcolor={}@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),drawtext_escape(outline_color),drawtext_escape(shadow_color),opacity*0.75);
+                let mut filter = format!("drawtext=fontfile='{}':text='{}':expansion=none:fontcolor='{}':alpha={opacity:.4}:fontsize={size}:line_spacing={line_spacing:.3}:x={x_expression}:y=h*{y:.6}-text_h/2:borderw={outline:.3}:bordercolor='{}':shadowx={shadow:.0}:shadowy={shadow:.0}:shadowcolor='{}'@{:.4}",drawtext_escape(&font.to_string_lossy()),drawtext_escape(&layer.text),drawtext_escape(&layer.color),drawtext_escape(outline_color),drawtext_escape(shadow_color),opacity*0.75);
                 if layer.background {
                     let background_opacity =
                         check_range(layer.background_opacity, 0.0, 100.0, "Background opacity")?
@@ -5079,7 +5078,7 @@ async fn build_command(
                     } else {
                         &layer.background_color
                     };
-                    filter.push_str(&format!(":box=1:boxcolor={}@{background_opacity:.4}:boxborderw={background_padding:.0}",drawtext_escape(background_color)));
+                    filter.push_str(&format!(":box=1:boxcolor='{}'@{background_opacity:.4}:boxborderw={background_padding:.0}",drawtext_escape(background_color)));
                 }
                 text_filters.push(filter);
             }
@@ -7945,7 +7944,7 @@ mod tests {
             .unwrap()[1]
             .as_str();
         assert!(!plain_filter.contains("drawbox="));
-        assert!(plain_filter.contains(r"text='100\\% ready'"));
+        assert!(plain_filter.contains(r"text='100%\ ready':expansion=none"));
         assert!(plain_filter.contains("y=960.000-text_h/2"));
 
         let mut freecam_watermark = request("freecam");
@@ -7990,20 +7989,52 @@ mod tests {
             size: 1,
             start_timecode: None,
         };
-        for (platform, style, username, size) in [
-            ("kick", "plain", "Example", "36"),
-            ("kick", "boxed", "OHNEPIXEL", "36"),
-            ("kick", "boxed", "batuhanfurkan5", "20"),
-            ("kick", "boxed", "a_very_long_kick_username_12345", "36"),
-            ("twitch", "plain", "ohnePixel", "36"),
-            ("twitch", "boxed", "OHNEPIXEL", "36"),
-            ("twitch", "boxed", "OHNEPIXEL", "50"),
+        for (platform, style, username, size, position) in [
+            ("kick", "plain", "Example", "36", "center"),
+            ("kick", "plain", "Example", "36", "left"),
+            ("kick", "plain", "Example", "36", "right"),
+            ("kick", "boxed", "OHNEPIXEL", "36", "left"),
+            ("kick", "boxed", "OHNEPIXEL", "36", "center"),
+            ("kick", "boxed", "OHNEPIXEL", "36", "right"),
+            ("kick", "boxed", "batuhanfurkan5", "20", "left"),
+            ("kick", "plain", "nejburi", "20", "center"),
+            ("kick", "boxed", "nejburi", "20", "center"),
+            ("twitch", "plain", "nejburi", "20", "center"),
+            ("twitch", "boxed", "nejburi", "20", "center"),
+            ("kick", "boxed", "O'Neil", "20", "center"),
+            ("twitch", "plain", "name;[tag],100%", "36", "left"),
+            (
+                "kick",
+                "boxed",
+                "a_very_long_kick_username_12345",
+                "36",
+                "left",
+            ),
+            (
+                "kick",
+                "boxed",
+                "a_very_long_kick_username_12345",
+                "36",
+                "right",
+            ),
+            ("twitch", "plain", "ohnePixel", "36", "center"),
+            ("twitch", "plain", "ohnePixel", "36", "right"),
+            ("twitch", "boxed", "OHNEPIXEL", "36", "left"),
+            ("twitch", "boxed", "OHNEPIXEL", "50", "right"),
         ] {
             let params = values(&[
                 ("social_tag_enabled", "true"),
                 ("social_tag_platform", platform),
                 ("social_tag_username", username),
                 ("social_tag_style", style),
+                (
+                    if style == "boxed" {
+                        "social_tag_boxed_position"
+                    } else {
+                        "social_tag_plain_position"
+                    },
+                    position,
+                ),
                 ("social_tag_size", size),
                 ("region_a_height", "30"),
                 ("region_order", "a_first"),
@@ -8011,21 +8042,20 @@ mod tests {
             let filter = clipper_social_tag_filter(&params, "split", 360, 640, &info)
                 .unwrap()
                 .unwrap();
-            assert!(filter.contains(&format!("text='{username}'")));
+            assert!(filter.contains(&format!("text='{}'", drawtext_escape(username))));
             assert_eq!(
                 filter.contains("color=black@0.88"),
                 style == "boxed" && platform == "kick"
             );
             assert_eq!(filter.contains("borderw=3"), style == "plain");
-            assert!(filter.contains(if platform == "kick" {
-                "0x53fc19"
-            } else {
-                "0x9146ff"
-            }));
+            assert!(filter.contains("flags=lanczos"));
+            assert!(filter.contains("format=yuv444:eof_action=repeat:repeatlast=1"));
             if style == "plain" {
                 assert!(filter.contains("y=192-text_h/2"));
             } else {
-                assert!(filter.starts_with("drawbox=x=0:"));
+                if position == "left" {
+                    assert!(filter.starts_with("drawbox=x=0:"));
+                }
                 let mut segments = filter.split(',');
                 let icon = segments.next().unwrap();
                 let plate = segments.next().unwrap();
@@ -8037,7 +8067,9 @@ mod tests {
             let snapshot = std::env::var_os("CONTAINER_SOCIAL_TAG_SNAPSHOT_DIR")
                 .map(PathBuf::from)
                 .map(|directory| {
-                    directory.join(format!("social-{platform}-{style}-{username}-{size}.png"))
+                    directory.join(format!(
+                        "social-{platform}-{style}-{position}-{username}-{size}.png"
+                    ))
                 });
             let mut command = hidden_command("ffmpeg");
             command
@@ -8057,7 +8089,7 @@ mod tests {
             let output = command.output().await.unwrap();
             assert!(
                 output.status.success(),
-                "{platform} {style} Social Tag FFmpeg render failed: {}",
+                "{platform} {style} {position} Social Tag FFmpeg render failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -8135,6 +8167,14 @@ mod tests {
                 ("social_tag_platform", "kick"),
                 ("social_tag_username", fixture["username"].as_str().unwrap()),
                 ("social_tag_style", style),
+                (
+                    if style == "boxed" {
+                        "social_tag_boxed_position"
+                    } else {
+                        "social_tag_plain_position"
+                    },
+                    fixture["position"].as_str().unwrap(),
+                ),
                 ("social_tag_size", "36"),
                 ("region_a_height", "30"),
                 ("region_order", "a_first"),
@@ -8261,6 +8301,65 @@ mod tests {
             assert_eq!(colored.iter().map(|point| point.1).min(), Some(138));
             assert_eq!(colored.iter().map(|point| point.0).max(), Some(53));
             assert_eq!(colored.iter().map(|point| point.1).max(), Some(191));
+        }
+    }
+
+    #[tokio::test]
+    async fn social_tag_movie_handles_special_paths_and_repeats_until_video_end() {
+        let root = operation_temp_dir("social-mark-test").unwrap();
+        let path = root.join("Türkçe ' [logo], %; cache.png");
+        std::fs::copy(social_tag_mark_path("twitch", "plain").unwrap(), &path).unwrap();
+        let graph = format!(
+            "null[base];movie=filename={}:dec_threads=1,scale=24:24:flags=lanczos,format=rgba[mark];[base][mark]overlay=x=3:y=5:format=yuv444:eof_action=repeat:repeatlast=1,format=rgb24",
+            movie_filter_path(&path)
+        );
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            hidden_command("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=black:s=64x64:r=12:d=2",
+                    "-vf",
+                    &graph,
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ])
+                .output(),
+        )
+        .await;
+        let _ = std::fs::remove_dir_all(&root);
+        let output = result
+            .expect("still logo must not extend video duration")
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let frame_size = 64 * 64 * 3;
+        assert_eq!(output.stdout.len(), frame_size * 24);
+        let first = &output.stdout[..frame_size];
+        assert!(
+            first
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .any(|rgb| rgb[2] > 180 && rgb[0] > 80),
+            "Twitch logo missing"
+        );
+        for frame in output.stdout.chunks_exact(frame_size) {
+            assert_eq!(
+                frame, first,
+                "logo must remain visible after its still frame ends"
+            );
         }
     }
 
@@ -9011,9 +9110,105 @@ mod tests {
         );
         assert_eq!(
             drawtext_escape("user's [text], ok"),
-            r"user\'s \[text\]\, ok"
+            r"user\'\''s\ [text],\ ok"
         );
-        assert_eq!(drawtext_escape("100%"), r"100\\%");
+        assert_eq!(drawtext_escape("100%"), "100%");
+    }
+
+    #[tokio::test]
+    async fn quoted_filter_values_render_literal_text_and_subtitle_paths() {
+        async fn render(filter: &str) -> Vec<u8> {
+            let output = hidden_command("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=black:s=640x180:r=1:d=1",
+                    "-vf",
+                    filter,
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{filter}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout.len(), 640 * 180 * 3);
+            output.stdout
+        }
+        let root = operation_temp_dir("filter-quoting-test").unwrap();
+        let font = root.join("O'Neil [font], 100%.ttf");
+        let system_font =
+            PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+                .join("Fonts")
+                .join("arialbd.ttf");
+        std::fs::copy(system_font, &font).unwrap();
+        for text in [
+            "O'Neil",
+            "user's [text], ok",
+            "100% ready: %{pts}",
+            r"C:\clips\O'Neil; [video], 100%",
+            "  leading and trailing  ",
+            "first line\nsecond's line",
+        ] {
+            let file = root.join("reference.txt");
+            std::fs::write(&file, text).unwrap();
+            let prefix = format!(
+                "drawtext=fontfile='{}'",
+                drawtext_escape(&font.to_string_lossy())
+            );
+            let suffix = ":expansion=none:fontcolor=white:fontsize=24:x=10:y=10";
+            let expected = render(&format!(
+                "{prefix}:textfile='{}'{suffix}",
+                ffmpeg_filter_path(&file)
+            ))
+            .await;
+            let actual = render(&format!(
+                "{prefix}:text='{}'{suffix}",
+                drawtext_escape(text)
+            ))
+            .await;
+            assert!(
+                expected.iter().any(|byte| *byte > 200),
+                "Reference text must be visible"
+            );
+            assert_eq!(
+                actual, expected,
+                "Literal text changed during export: {text}"
+            );
+        }
+        let subtitle = "1\n00:00:00,000 --> 00:00:01,000\nCaption\n";
+        let simple = root.join("normal.srt");
+        let special = root.join("Türkçe O'Neil [subs], 100%; clip.srt");
+        std::fs::write(&simple, subtitle).unwrap();
+        std::fs::write(&special, subtitle).unwrap();
+        let expected = render(&format!(
+            "subtitles=filename='{}'",
+            ffmpeg_filter_path(&simple)
+        ))
+        .await;
+        let actual = render(&format!(
+            "subtitles=filename='{}'",
+            ffmpeg_filter_path(&special)
+        ))
+        .await;
+        assert_eq!(
+            actual, expected,
+            "Special characters in subtitle paths must not affect export"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

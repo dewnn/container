@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-24
+
+- Added Go Back history after Continue Editing.
+- Added more Social Tag positions and improved small logos.
+- Improved interface readability, colors and compact layouts.
+- Fixed output continuation, Batch controls, project relinking and special-character exports.
+
 ## [0.15.0] - 2026-09-23
 
 - Added Kick/Twitch Social Tags to Clipper.

@@ -20,6 +20,14 @@ const clipper = tools.find(tool => tool.id === "clipper")!;
 const named = localizedTool(clipper, "en");
 named.fields.find(field => field.key === "social_tag_username")!.value = "example_user";
 assert(preserveToolValues(localizedTool(clipper, "tr"), named).fields.find(field => field.key === "social_tag_username")?.value === "example_user", "The Social Tag name was lost on language change.");
+const legacyClipper = { ...named, fields: named.fields.filter(field => !field.key.startsWith("social_tag_") || !field.key.endsWith("_position")) };
+const restoredClipper = preserveToolValues(localizedTool(clipper, "en"), legacyClipper);
+assert(restoredClipper.fields.find(field => field.key === "social_tag_boxed_position")?.value === "left", "Older boxed tags must remain on the left.");
+assert(restoredClipper.fields.find(field => field.key === "social_tag_plain_position")?.value === "center", "Older plain tags must remain centered.");
+named.fields.find(field => field.key === "social_tag_boxed_position")!.value = "right";
+named.fields.find(field => field.key === "social_tag_plain_position")!.value = "left";
+const translatedPositions = preserveToolValues(localizedTool(clipper, "tr"), named);
+assert(translatedPositions.fields.find(field => field.key === "social_tag_boxed_position")?.value === "right" && translatedPositions.fields.find(field => field.key === "social_tag_plain_position")?.value === "left", "Each Social Tag style must keep its own position.");
 
 for (const tag of ["INPUT", "SELECT", "TEXTAREA"]) {
   assert(isTextEditingTarget(tag, false), `${tag} must keep its native undo and keyboard handling.`);
@@ -31,4 +39,4 @@ assert(startupAction("C:/video.mp4", true) === "open-path", "An explicit startup
 assert(startupAction(null, true) === "offer-recovery", "Interrupted work should be offered when no file was opened.");
 assert(startupAction(null, false) === "discard-recovery", "A clean previous exit must discard stale recovery.");
 
-console.log("editor safety scenarios: 13 passed");
+console.log("editor safety scenarios: 16 passed");

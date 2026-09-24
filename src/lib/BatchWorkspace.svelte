@@ -2,13 +2,13 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { onMount } from "svelte";
+  import { onMount, type Snippet } from "svelte";
   import { localizedTool, tools, type Field, type Tool } from "./tools";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
 
   interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
-  let { initialPath, language, availableEncoders, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void;onbusychange?:(value:boolean)=>void}=$props();
+  let { initialPath, language, availableEncoders, historyControl, oncontinue, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;historyControl?:Snippet;oncontinue?:(path:string)=>Promise<void>;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void;onbusychange?:(value:boolean)=>void}=$props();
   const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","gif"];
   const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)).map(tool=>{
     const copy=localizedTool(tool,language);
@@ -42,18 +42,20 @@
   $effect(()=>{const value=snapshot();if(historyApplying||running)return;const timer=window.setTimeout(()=>onsessionchange(value),350);return()=>window.clearTimeout(timer)});
   onMount(()=>{if(initialPath)addPaths([initialPath]);history=[snapshot()];historyIndex=0});
   const params=()=>Object.fromEntries(selected.fields.filter(field=>field.key!=="audio_track").map(field=>[field.key,String(field.value)]));
-  function addPaths(paths:string[]){const known=new Set(items.map(item=>item.path.toLowerCase()));for(const path of paths)if(!known.has(path.toLowerCase())){items=[...items,{path,status:"waiting",progress:0}];known.add(path.toLowerCase())}}
+  function addPaths(paths:string[]){if(running)return;const known=new Set(items.map(item=>item.path.toLowerCase()));for(const path of paths)if(!known.has(path.toLowerCase())){items=[...items,{path,status:"waiting",progress:0}];known.add(path.toLowerCase())}}
   async function addFiles(){const result=await open({multiple:true,filters:[{name:"Media",extensions:["mp4","mkv","mov","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","ogg","jpg","jpeg","png","webp"]}]});if(Array.isArray(result))addPaths(result)}
   async function addFolder(){const folder=await open({directory:true,multiple:false});if(typeof folder==="string")addPaths(await invoke<string[]>("list_media_files",{folder,recursive}))}
-  function chooseTool(event:Event){const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??batchTools()[0]}
+  function chooseTool(event:Event){if(running)return;const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??batchTools()[0]}
   function visible(field:Field){return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&["lossless","smart"].includes(String(selected.fields.find(item=>item.key==="cut_mode")?.value)))}
   async function start(){
     if(running||!items.length)return;armCompletionSound();running=true;cancelAll=false;aggregate=0;let completed=0;
+    const operation=selected.id,operationParams=params();
+    items=items.map(item=>({...item,status:"waiting",progress:0,output:undefined,error:undefined}));
     let unlisten:UnlistenFn|null=null;
     try{unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=(currentIndex+event.payload.percent/100)/items.length*100;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
     for(let index=0;index<items.length;index++){
-      if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,error:undefined};items=[...items];
-      try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation:selected.id,params:params()}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
+      if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,output:undefined,error:undefined};items=[...items];
+      try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation,params:operationParams}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
       catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)};reportProblem(reason)}
       aggregate=(index+1)/items.length*100;items=[...items];
     }
@@ -65,19 +67,19 @@
 
 <section class="batch-workspace">
   <aside class="batch-control panel">
-    <div class="pane-head"><div><h3>{language==="tr"?"TOPLU İŞLEM":"BATCH QUEUE"}</h3><p>{language==="tr"?"tek seferde bir iş · güvenli varsayılan":"one job at a time · safe default"}</p></div></div>
-    <label class="field"><span>{language==="tr"?"İŞLEM":"OPERATION"}</span><select value={selected.id} onchange={chooseTool}>{#each batchTools() as tool}<option value={tool.id}>{tool.title}</option>{/each}</select></label>
+    <div class="pane-head"><div><h3>{language==="tr"?"TOPLU İŞLEM":"BATCH QUEUE"}</h3><p>{language==="tr"?"tek seferde bir iş · güvenli varsayılan":"one job at a time · safe default"}</p></div>{@render historyControl?.()}</div>
+    <label class="field"><span>{language==="tr"?"İŞLEM":"OPERATION"}</span><select value={selected.id} onchange={chooseTool} disabled={running}>{#each batchTools() as tool}<option value={tool.id}>{tool.title}</option>{/each}</select></label>
     {#each selected.fields as field}
-      {#if visible(field)}<label class="field"><span>{field.label}</span>{#if field.type==="select"}<select bind:value={field.value}>{#each field.options??[] as option}<option value={option.value}>{option.label}</option>{/each}</select>{:else}<input type={field.type==="text"?"text":"number"} bind:value={field.value} min={field.min} max={field.max} step={field.step}>{/if}</label>{/if}
+      {#if visible(field)}<label class="field"><span>{field.label}</span>{#if field.type==="select"}<select bind:value={field.value} disabled={running}>{#each field.options??[] as option}<option value={option.value}>{option.label}</option>{/each}</select>{:else}<input type={field.type==="text"?"text":"number"} bind:value={field.value} min={field.min} max={field.max} step={field.step} disabled={running}>{/if}</label>{/if}
     {/each}
-    <div class="batch-add"><button class="ghost" onclick={addFiles}>+ {language==="tr"?"DOSYA":"FILES"}</button><button class="ghost" onclick={addFolder}>+ {language==="tr"?"KLASÖR":"FOLDER"}</button></div>
-    <label class="batch-check"><input type="checkbox" bind:checked={recursive}> {language==="tr"?"alt klasörleri de tara":"include subfolders"}</label>
+    <div class="batch-add"><button class="ghost" onclick={addFiles} disabled={running}>+ {language==="tr"?"DOSYA":"FILES"}</button><button class="ghost" onclick={addFolder} disabled={running}>+ {language==="tr"?"KLASÖR":"FOLDER"}</button></div>
+    <label class="batch-check"><input type="checkbox" bind:checked={recursive} disabled={running}> {language==="tr"?"alt klasörleri de tara":"include subfolders"}</label>
     <small>{language==="tr"?"Alt klasör taraması yalnızca açıkça işaretlendiğinde çalışır. Hata alan dosya kuyruğu durdurmaz.":"Subfolders are scanned only when explicitly enabled. A failed file does not stop the queue."}</small>
     {#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={start} disabled={!items.length}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{/if}
   </aside>
   <section class="batch-list panel">
     <div class="pane-head"><div><h3>{language==="tr"?"KUYRUK":"QUEUE"}</h3><p>{items.length} {language==="tr"?"dosya":"files"}</p></div><b>{aggregate.toFixed(0)}%</b></div>
     <div class="batch-total"><i style={`width:${aggregate}%`}></i></div>
-    <div class="batch-items">{#each items as item,index}<article><span class="batch-index">{String(index+1).padStart(2,"0")}</span><div><b>{name(item.path)}</b><small>{item.error??item.output??item.status}</small><i><em style={`width:${item.progress}%`}></em></i></div><strong class:failed={item.status==="failed"}>{item.status}</strong><button onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"}>×</button></article>{/each}</div>
+    <div class="batch-items">{#each items as item,index}<article><span class="batch-index">{String(index+1).padStart(2,"0")}</span><div><b>{name(item.path)}</b><small>{item.error??item.output??item.status}</small><i><em style={`width:${item.progress}%`}></em></i></div><strong class:failed={item.status==="failed"}>{item.status}</strong><div class="batch-row-actions">{#if item.status==="complete" && item.output && oncontinue}<button disabled={running} title={language==="tr"?"çıktıyı düzenle":"continue editing"} aria-label={language==="tr"?"çıktıyı düzenle":"continue editing"} onclick={()=>oncontinue?.(item.output!)}>↗</button>{/if}<button onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} aria-label={language==="tr"?"Kuyruktan kaldır":"Remove from queue"}>×</button></div></article>{/each}</div>
   </section>
 </section>

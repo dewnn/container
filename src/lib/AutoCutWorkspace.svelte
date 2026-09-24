@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, type Snippet } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -17,7 +17,7 @@
   interface LinkedTrack { path:string; offset:number; timecode:boolean }
   interface HistorySnapshot { threshold:number;minSilence:number;minSpeech:number;minimumPause:number;keepBeforeSpeech:number;keepAfterSpeech:number;preset:string;cuts:Cut[];autoSummary:string;skipRemoved:boolean;output:string;exportFormat:string;quality:string;resolution:string;analysisInput:string;linkedTracks:LinkedTrack[];hasAnalyzed:boolean;lastAnalyzedKey:string }
 
-  let { media, mediaUrl, language, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void; onbusychange?:(value:boolean)=>void } = $props();
+  let { media, mediaUrl, language, historyControl, oncontinue, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; historyControl?:Snippet; oncontinue?:(path:string)=>Promise<void>; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void; onbusychange?:(value:boolean)=>void } = $props();
   const words:Record<"tr"|"en",Record<string,string>>={
     tr:{detection:"ALGILAMA",silenceParams:"sessizlik parametreleri",threshold:"EŞİK",minSilence:"EN AZ SESSİZLİK",minSpeech:"EN AZ KONUŞMA",padding:"KENAR PAYI",help:"Eşik, Silero modelinin bir parçayı konuşma sayması için gereken güven değeridir. Yükseldikçe daha çok yer kesilir. Kenar payı kelimelerin başını ve sonunu korur.",listen:"BAŞKA BİR KAYDI DİNLE",camera:"kamera sesini kullan",analyzing:"ANALİZ EDİLİYOR…",detect:"SESSİZLİĞİ ALGILA",export:"DIŞA AKTAR",kept:"tutuldu",removed:"kaldırıldı",format:"FORMAT",quality:"KALİTE",resolution:"ÇÖZÜNÜRLÜK",high:"Yüksek",medium:"Orta",small:"Küçük",source:"Kaynak",linked:"BAĞLANTILI KAYITLAR",add:"+ EKLE",exporting:"AKTARILIYOR",cancelExport:"AKTARMAYI İPTAL ET",showOutput:"ÇIKTIYI GÖSTER",timeline:"ZAMAN ÇİZELGESİ",waveform:"ses dalgası oluşturuluyor…",skipping:"kesimler atlanıyor",playingAll:"tümü oynatılıyor",cuts:"KESİMLER",editable:"düzenlenebilir tutma bölgeleri",regions:"bölge",output:"çıktı",keep:"TUT",off:"KAPALI",empty:"Kesim listesini oluşturmak için algılamayı çalıştır.",noise:"gürültü",voice:"konuşma"},
     en:{detection:"DETECTION",silenceParams:"silence parameters",threshold:"THRESHOLD",minSilence:"MIN SILENCE",minSpeech:"MIN SPEECH",padding:"PADDING",help:"Threshold is the confidence Silero needs to count a segment as speech. Raising it cuts more. Padding protects word beginnings and endings.",listen:"LISTEN TO ANOTHER TRACK",camera:"use camera audio",analyzing:"ANALYZING…",detect:"DETECT SILENCE",export:"EXPORT",kept:"kept",removed:"removed",format:"FORMAT",quality:"QUALITY",resolution:"RESOLUTION",high:"High",medium:"Medium",small:"Small",source:"Source",linked:"LINKED TRACKS",add:"+ ADD",exporting:"EXPORTING",cancelExport:"CANCEL EXPORT",showOutput:"SHOW OUTPUT",timeline:"TIMELINE",waveform:"building waveform…",skipping:"skipping cuts",playingAll:"playing all",cuts:"CUTS",editable:"editable keep regions",regions:"regions",output:"output",keep:"KEEP",off:"OFF",empty:"Run detection to build a cut list.",noise:"noise",voice:"voice"}
@@ -61,6 +61,7 @@
   let viewEnd = $state(0);
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
   let historyApplying=false;
+  let sessionRestored=false;
 
   $effect(()=>onbusychange(analyzing||autoTuning||exporting));
 
@@ -68,6 +69,7 @@
   const kept = $derived(cuts.filter(c => c.enabled).reduce((n,c)=>n+Math.max(0,c.end-c.start),0));
   const removed = $derived(Math.max(0,duration-kept));
   const settingsKey = $derived(`${threshold}|${minSilence}|${minSpeech}|${minimumPause}|${keepBeforeSpeech}|${keepAfterSpeech}|${analysisInput}`);
+  const analysisStale = $derived(hasAnalyzed&&settingsKey!==lastAnalyzedKey);
   const viewSpan = $derived(Math.max(.001,viewEnd-viewStart));
   const zoomLevel = $derived(duration&&viewSpan ? duration/viewSpan : 1);
   const segments = $derived.by(()=>{
@@ -92,7 +94,7 @@
   export function undo(){if(analyzing||autoTuning||exporting)return;commit(snapshot());if(historyIndex<=0)return;historyIndex--;applyHistory(history[historyIndex])}
   export function redo(){if(analyzing||autoTuning||exporting||historyIndex>=history.length-1)return;historyIndex++;applyHistory(history[historyIndex])}
   export function exportSession(){return snapshot()}
-  export function restoreSession(value:HistorySnapshot){applyHistory(value);requestAnimationFrame(resetHistory)}
+  export function restoreSession(value:HistorySnapshot){sessionRestored=true;applyHistory(value);requestAnimationFrame(resetHistory)}
 
   $effect(()=>{const value=snapshot();if(historyApplying||autoTuning)return;const key=signature(value);const timer=window.setTimeout(()=>{const current=snapshot();if(!historyApplying&&!autoTuning&&key===signature(current))commit(value)},280);return()=>window.clearTimeout(timer)});
   $effect(()=>onhistorychange(!analyzing&&!autoTuning&&!exporting&&historyIndex>0,!analyzing&&!autoTuning&&!exporting&&historyIndex>=0&&historyIndex<history.length-1));
@@ -137,7 +139,17 @@
   async function analyze(fromAutoTune=false){
     if(analyzing||exporting||(autoTuning&&!fromAutoTune))return;
     analyzing=true;error="";output="";
-    try{const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=settingsKey;}
+    try{
+      // Controls remain responsive, but only a result for the current settings
+      // may replace the cuts. Coalesce in-flight edits into a fresh analysis.
+      while(true){
+        const analyzedKey=settingsKey;
+        const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});
+        if(analyzedKey!==settingsKey)continue;
+        cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=analyzedKey;
+        break;
+      }
+    }
     catch(reason){error=String(reason);reportProblem(reason)}finally{analyzing=false}
   }
   async function autoTune(){
@@ -155,7 +167,7 @@
     preset=id;minimumPause=value.minimum_pause;keepBeforeSpeech=value.keep_before_speech;keepAfterSpeech=value.keep_after_speech;autoSummary="";
   }
   async function exportCuts(){
-    if(exporting||analyzing||autoTuning||!cuts.length)return;
+    if(exporting||analyzing||autoTuning||analysisStale||!cuts.length)return;
     armCompletionSound();
     exporting=true;progress=0;error="";output="";
     try{const result=await invoke<Result>("export_autocut",{request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;await playCompletionSound();}
@@ -210,7 +222,7 @@
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
     resetHistory();
-    invoke<Preset[]>("autocut_presets").then(result=>{presets=result;const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
+    invoke<Preset[]>("autocut_presets").then(result=>{presets=result;const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed&&!sessionRestored){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
     invoke<number[]>("compute_autocut_waveform",{path:media.path}).then(result=>waveform=result).catch(reason=>{error=String(reason);reportProblem(reason)}).finally(()=>waveformLoading=false);
     return()=>{disposed=true;unlisten?.();window.removeEventListener("keydown",key)};
   });
@@ -236,7 +248,7 @@
       </div>
     </div>
     <div class="ac-card ac-export">
-      <header><div><h3>{t("export")}</h3><p>{time(kept)} {t("kept")} · {time(removed)} {t("removed")}</p></div></header>
+      <header><div><h3>{t("export")}</h3><p>{time(kept)} {t("kept")} · {time(removed)} {t("removed")}</p></div>{@render historyControl?.()}</header>
       <div class="ac-fields">
         <label><span>{t("format")}</span><select bind:value={exportFormat}><option value="mp4">MP4 Video</option><option value="fcpxml">Final Cut Pro XML</option></select></label>
         {#if exportFormat==="mp4"}
@@ -247,8 +259,11 @@
         {#each linkedTracks as track,index}
           <div class="linked-row"><span title={track.path}><b>{track.timecode?"tc":"≈"}</b> {base(track.path)}</span><input aria-label="Track offset" type="number" step="0.01" bind:value={track.offset}><button onclick={()=>linkedTracks=linkedTracks.filter((_,i)=>i!==index)}>×</button></div>
         {/each}
-        {#if output}<button class="ac-secondary" onclick={()=>revealItemInDir(output)}>{t("showOutput")}</button>{/if}
-        <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||autoTuning||!cuts.length}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
+        {#if output}
+          {#if oncontinue && /\.(mp4|mov|mkv|webm)$/i.test(output)}<button class="ac-secondary" disabled={analyzing||autoTuning||exporting} onclick={()=>oncontinue?.(output)}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button>{/if}
+          <button class="ac-secondary" onclick={()=>revealItemInDir(output)}>{t("showOutput")}</button>
+        {/if}
+        <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.length}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
         {#if exporting}<button class="ac-secondary danger" onclick={cancel}>{t("cancelExport")}</button>{/if}
       </div>
     </div>

@@ -2,7 +2,7 @@
   "name": "container-studio",
   "private": true,
   "license": "MIT",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Local-first FFmpeg media toolbox with SmartCut, batch processing and visual previews.",
   "homepage": "https://github.com/dewnn/container#readme",
   "bugs": {
@@ -19,7 +19,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test:timeline": "node --experimental-strip-types scripts/test-timeline-range.ts",
     "test:recovery": "node --experimental-strip-types scripts/test-recovery.ts",
-    "test:editor-safety": "node --experimental-strip-types scripts/test-editor-safety.ts",
+    "test:editor-safety": "node --experimental-strip-types scripts/test-editor-safety.ts && node --experimental-strip-types scripts/test-stage-history.ts",
     "test:project-resources": "node --experimental-strip-types scripts/test-project-resources.ts",
     "test:visual-geometry": "node --experimental-strip-types scripts/test-visual-geometry.ts",
     "test:release-channel": "node --experimental-strip-types scripts/test-release-channel.ts",
