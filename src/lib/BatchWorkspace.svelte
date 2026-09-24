@@ -26,6 +26,52 @@
   let currentIndex=$state(-1);
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
   let historyApplying=false;
+  let panelWorkspace:HTMLElement|null=$state(null);
+  let panelWorkspaceWidth=$state(0);
+  let controlPanelWidth=$state<number|null>(null);
+  const panelStorageKey="container-batch-panel-widths";
+  function panelSizes(){
+    const compact=panelWorkspaceWidth<=950,padding=compact?7:12;
+    const available=Math.max(0,panelWorkspaceWidth-padding*2-8);
+    const minLeft=compact?235:260,minRight=compact?320:400;
+    const left=Math.max(minLeft,Math.min(600,available-minRight,controlPanelWidth??(compact?235:340)));
+    return {left,available,minLeft,minRight};
+  }
+  const sizes=$derived(panelSizes());
+  $effect(()=>{
+    const element=panelWorkspace;if(!element)return;
+    const update=()=>panelWorkspaceWidth=element.clientWidth;
+    update();const observer=new ResizeObserver(update);observer.observe(element);
+    return()=>observer.disconnect();
+  });
+  function savePanelWidth(){try{localStorage.setItem(panelStorageKey,JSON.stringify({left:controlPanelWidth}))}catch{}}
+  function setPanelWidth(value:number){const next=panelSizes();controlPanelWidth=Math.round(Math.max(next.minLeft,Math.min(600,next.available-next.minRight,value)))}
+  function startPanelResize(event:PointerEvent){
+    if(event.button!==0||!panelWorkspace)return;
+    event.preventDefault();const target=event.currentTarget as HTMLElement,pointerId=event.pointerId;
+    const startX=event.clientX,initial=panelSizes().left;
+    controlPanelWidth=initial;target.setPointerCapture?.(pointerId);
+    const oldCursor=document.body.style.cursor,oldSelection=document.body.style.userSelect;
+    document.body.style.cursor="col-resize";document.body.style.userSelect="none";
+    const move=(next:PointerEvent)=>{if(next.pointerId===pointerId)setPanelWidth(initial+next.clientX-startX)};
+    const stop=(next?:PointerEvent)=>{
+      if(next&&next.pointerId!==pointerId)return;
+      window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop);window.removeEventListener("blur",onBlur);
+      if(target.hasPointerCapture?.(pointerId))target.releasePointerCapture(pointerId);
+      document.body.style.cursor=oldCursor;document.body.style.userSelect=oldSelection;savePanelWidth();
+    };
+    const onBlur=()=>stop();
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);window.addEventListener("pointercancel",stop);window.addEventListener("blur",onBlur);
+  }
+  function panelKey(event:KeyboardEvent){
+    const next=panelSizes();let value=next.left;
+    if(event.key==="Home")value=next.minLeft;
+    else if(event.key==="End")value=Math.min(600,next.available-next.minRight);
+    else if(event.key==="ArrowLeft"||event.key==="ArrowRight")value+=(event.key==="ArrowRight"?1:-1)*(event.shiftKey?50:20);
+    else return;
+    event.preventDefault();event.stopPropagation();setPanelWidth(value);savePanelWidth();
+  }
+  export function resetPanelWidths(){controlPanelWidth=null;savePanelWidth()}
   $effect(()=>onbusychange(running));
   const name=(path:string)=>path.split(/[\\/]/).pop()??path;
   const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
@@ -40,7 +86,10 @@
   $effect(()=>{const value=snapshot();if(historyApplying||running)return;const key=signature(value);const timer=window.setTimeout(()=>{const current=snapshot();if(!historyApplying&&!running&&key===signature(current))commit(value)},280);return()=>window.clearTimeout(timer)});
   $effect(()=>onhistorychange(!running&&historyIndex>0,!running&&historyIndex>=0&&historyIndex<history.length-1));
   $effect(()=>{const value=snapshot();if(historyApplying||running)return;const timer=window.setTimeout(()=>onsessionchange(value),350);return()=>window.clearTimeout(timer)});
-  onMount(()=>{if(initialPath)addPaths([initialPath]);history=[snapshot()];historyIndex=0});
+  onMount(()=>{
+    try{const saved=JSON.parse(localStorage.getItem(panelStorageKey)??"null");if(saved&&typeof saved==="object"&&Number.isFinite(saved.left)&&saved.left>=235&&saved.left<=600)controlPanelWidth=saved.left}catch{}
+    if(initialPath)addPaths([initialPath]);history=[snapshot()];historyIndex=0;
+  });
   const params=()=>Object.fromEntries(selected.fields.filter(field=>field.key!=="audio_track").map(field=>[field.key,String(field.value)]));
   function addPaths(paths:string[]){if(running)return;const known=new Set(items.map(item=>item.path.toLowerCase()));for(const path of paths)if(!known.has(path.toLowerCase())){items=[...items,{path,status:"waiting",progress:0}];known.add(path.toLowerCase())}}
   async function addFiles(){const result=await open({multiple:true,filters:[{name:"Media",extensions:["mp4","mkv","mov","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","ogg","jpg","jpeg","png","webp"]}]});if(Array.isArray(result))addPaths(result)}
@@ -65,7 +114,7 @@
   async function removeOrCancel(index:number){if(running&&index===currentIndex){await invoke("cancel_job");return}if(!running||items[index].status==="waiting")items=items.filter((_,position)=>position!==index)}
 </script>
 
-<section class="batch-workspace">
+<section class="batch-workspace resizable" bind:this={panelWorkspace} style={`--batch-left:${sizes.left}px`}>
   <aside class="batch-control panel">
     <div class="pane-head"><div><h3>{language==="tr"?"TOPLU İŞLEM":"BATCH QUEUE"}</h3><p>{language==="tr"?"tek seferde bir iş · güvenli varsayılan":"one job at a time · safe default"}</p></div>{@render historyControl?.()}</div>
     <label class="field"><span>{language==="tr"?"İŞLEM":"OPERATION"}</span><select value={selected.id} onchange={chooseTool} disabled={running}>{#each batchTools() as tool}<option value={tool.id}>{tool.title}</option>{/each}</select></label>
@@ -77,6 +126,7 @@
     <small>{language==="tr"?"Alt klasör taraması yalnızca açıkça işaretlendiğinde çalışır. Hata alan dosya kuyruğu durdurmaz.":"Subfolders are scanned only when explicitly enabled. A failed file does not stop the queue."}</small>
     {#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={start} disabled={!items.length}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{/if}
   </aside>
+  <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Batch kontrol paneli genişliği":"Batch controls panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(600,sizes.available-sizes.minRight)} aria-valuenow={Math.round(sizes.left)} onpointerdown={startPanelResize} onkeydown={panelKey} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
   <section class="batch-list panel">
     <div class="pane-head"><div><h3>{language==="tr"?"KUYRUK":"QUEUE"}</h3><p>{items.length} {language==="tr"?"dosya":"files"}</p></div><b>{aggregate.toFixed(0)}%</b></div>
     <div class="batch-total"><i style={`width:${aggregate}%`}></i></div>

@@ -3986,7 +3986,7 @@ fn clipper_social_tag_filter(
         96.0,
         "Social Tag size",
     )?;
-    let units: f64 = username
+    let estimated_units: f64 = username
         .chars()
         .map(|letter| match letter {
             'i' | 'l' | 'I' | '1' | '.' | ',' | ':' | '!' | '|' => 0.35,
@@ -3995,6 +3995,17 @@ fn clipper_social_tag_filter(
             _ => 0.59,
         })
         .sum();
+    let measured_units = params.contains_key("social_tag_text_units");
+    let units = if measured_units {
+        check_range(
+            parse_number(params, "social_tag_text_units")?,
+            0.1,
+            100.0,
+            "Social Tag text width",
+        )?
+    } else {
+        estimated_units
+    };
     let mut camera_left = 0.0;
     let mut camera_top = 0.0;
     let mut camera_width = width as f64;
@@ -4054,12 +4065,17 @@ fn clipper_social_tag_filter(
     } else {
         width as f64 * 0.84
     };
-    let fitted_units = units * if style == "boxed" { 1.1 } else { 1.0 };
+    let unit_scale = if !measured_units && style == "boxed" {
+        1.1
+    } else {
+        1.0
+    };
+    let fitted_units = units * unit_scale;
     let size = requested.min(available / (fitted_units + 2.4));
     let side = (size * 1.5).round().max(8.0);
     let gap = if style == "plain" { size * 0.22 } else { 0.0 };
     let padding = (size * 0.34).round().max(2.0);
-    let text_width = units * size * if style == "boxed" { 1.1 } else { 1.0 };
+    let text_width = units * size * unit_scale;
     let total_width = side + gap + text_width + if style == "boxed" { padding * 2.0 } else { 0.0 };
     let raw_x = match position {
         "left" => target_x,
@@ -4111,10 +4127,33 @@ fn clipper_social_tag_filter(
         ((mark_height * 8.0 / 9.0).round(), mark_height.round())
     };
     let text_x = x + side + gap + if style == "boxed" { padding } else { 0.0 };
-    let text_y = if style == "boxed" {
-        format!("{y:.0}+({side:.0}-text_h)/2")
+    // Descenders carry little visual weight below the baseline. Center the
+    // visible word, rather than only FFmpeg's full glyph bounding box.
+    let descenders = username
+        .chars()
+        .filter(|letter| matches!(*letter, 'g' | 'j' | 'p' | 'q' | 'y'))
+        .count();
+    let optical_offset = if descenders == 0 {
+        0.0
+    } else if style == "boxed" {
+        (size * 0.32 * descenders as f64 / length as f64)
+            .min(size * 0.08)
+            .round()
     } else {
-        format!("{center_y:.0}-text_h/2")
+        (size * 0.08).round()
+    };
+    let text_y = if style == "boxed" {
+        if optical_offset > 0.0 {
+            format!("{y:.0}+({side:.0}-text_h)/2+{optical_offset:.0}")
+        } else {
+            format!("{y:.0}+({side:.0}-text_h)/2")
+        }
+    } else {
+        if optical_offset > 0.0 {
+            format!("{center_y:.0}-text_h/2+{optical_offset:.0}")
+        } else {
+            format!("{center_y:.0}-text_h/2")
+        }
     };
     let outline = if style == "boxed" {
         "".to_string()
@@ -5026,10 +5065,14 @@ async fn build_command(
             if layers.is_empty() {
                 return Err("Add at least one text layer.".into());
             }
+            let raster_path = p.get("text_raster_path").map(PathBuf::from);
             let mut text_filters = Vec::with_capacity(layers.len());
             for layer in layers {
                 if layer.text.trim().is_empty() {
                     return Err("Text layers cannot be empty.".into());
+                }
+                if raster_path.is_some() {
+                    continue;
                 }
                 let size = check_range(layer.size, 8.0, 600.0, "Font size")?;
                 let opacity = check_range(layer.opacity, 0.0, 100.0, "Opacity")? / 100.0;
@@ -5082,7 +5125,27 @@ async fn build_command(
                 }
                 text_filters.push(filter);
             }
-            args.extend(["-vf".into(), text_filters.join(",")]);
+            if let Some(path) = raster_path {
+                require_filters(&["overlay"], "Emoji Text").await?;
+                if !path.is_file() {
+                    return Err("Text raster image is unavailable.".into());
+                }
+                if info.kind == "video" {
+                    args.extend(["-loop".into(), "1".into()]);
+                }
+                args.extend(["-i".into(), path.to_string_lossy().into_owned()]);
+                args.extend([
+                    "-filter_complex".into(),
+                    "[1:v]format=rgba[txt];[0:v][txt]overlay=0:0:format=auto:shortest=1[v]".into(),
+                    "-map".into(),
+                    "[v]".into(),
+                ]);
+                if info.kind == "video" {
+                    args.extend(["-map".into(), "0:a?".into()]);
+                }
+            } else {
+                args.extend(["-vf".into(), text_filters.join(",")]);
+            }
             if info.kind == "image" {
                 extension = image_extension(&input);
                 args.extend(["-frames:v".into(), "1".into()]);
@@ -6902,6 +6965,14 @@ fn operation_temp_dir(name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+struct OperationTempGuard(PathBuf);
+
+impl Drop for OperationTempGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 async fn require_filters(names: &[&str], feature: &str) -> Result<(), String> {
     let filters = ffmpeg_filter_names().await?;
     let missing = names
@@ -7171,10 +7242,45 @@ async fn run_merge_videos(
 async fn run_operation(
     app: AppHandle,
     state: State<'_, JobState>,
-    request: OperationRequest,
+    mut request: OperationRequest,
 ) -> Result<JobResult, String> {
     state.cancelled.store(false, Ordering::Relaxed);
     let info = probe_media(request.input.clone()).await?;
+    request.params.remove("text_raster_path");
+    let _text_raster_temp = if request.operation == "text" {
+        if let Some(data_url) = request.params.remove("text_raster_png") {
+            let encoded = data_url
+                .strip_prefix("data:image/png;base64,")
+                .ok_or("Invalid text raster image.")?;
+            if encoded.len() > 24_000_000 {
+                return Err("Text raster image is too large.".into());
+            }
+            let png = BASE64
+                .decode(encoded)
+                .map_err(|_| "Invalid text raster image encoding.")?;
+            if png.len() < 24 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return Err("Invalid text raster PNG.".into());
+            }
+            let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+            let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+            if width == 0 || height == 0 || width > 8192 || height > 8192 {
+                return Err("Invalid text raster dimensions.".into());
+            }
+            let directory = OperationTempGuard(operation_temp_dir("text-raster")?);
+            let path = directory.0.join("text.png");
+            std::fs::write(&path, png).map_err(|error| error.to_string())?;
+            request.params.insert(
+                "text_raster_path".into(),
+                path.to_string_lossy().into_owned(),
+            );
+            Some(directory)
+        } else {
+            None
+        }
+    } else {
+        request.params.remove("text_raster_png");
+        None
+    };
     if request.operation == "merge_videos" {
         return run_merge_videos(Some(&app), &state, &request).await;
     }
@@ -7993,6 +8099,8 @@ mod tests {
             ("kick", "plain", "Example", "36", "center"),
             ("kick", "plain", "Example", "36", "left"),
             ("kick", "plain", "Example", "36", "right"),
+            ("kick", "plain", "eray", "36", "left"),
+            ("kick", "boxed", "eray", "36", "center"),
             ("kick", "boxed", "OHNEPIXEL", "36", "left"),
             ("kick", "boxed", "OHNEPIXEL", "36", "center"),
             ("kick", "boxed", "OHNEPIXEL", "36", "right"),
@@ -8048,6 +8156,12 @@ mod tests {
                 style == "boxed" && platform == "kick"
             );
             assert_eq!(filter.contains("borderw=3"), style == "plain");
+            if style == "plain" && username == "eray" {
+                assert!(filter.contains("y=192-text_h/2+3"), "{filter}");
+            }
+            if style == "boxed" && username == "eray" {
+                assert!(filter.contains("-text_h)/2+3"), "{filter}");
+            }
             assert!(filter.contains("flags=lanczos"));
             assert!(filter.contains("format=yuv444:eof_action=repeat:repeatlast=1"));
             if style == "plain" {
@@ -8131,6 +8245,157 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(freecam.starts_with("drawbox=x=90:"));
+    }
+
+    #[tokio::test]
+    async fn measured_plain_social_tag_is_visually_centered() {
+        let info = MediaInfo {
+            path: "source.mp4".into(),
+            name: "source.mp4".into(),
+            kind: "video".into(),
+            duration: Some(1.0),
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            codec: "h264".into(),
+            audio_codec: None,
+            audio_tracks: Vec::new(),
+            pixel_format: Some("yuv420p".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        // Chromium's Arial Black canvas measurement for "Example" at 36 px.
+        let params = values(&[
+            ("social_tag_enabled", "true"),
+            ("social_tag_platform", "kick"),
+            ("social_tag_username", "Example"),
+            ("social_tag_style", "plain"),
+            ("social_tag_plain_position", "center"),
+            ("social_tag_size", "36"),
+            ("social_tag_text_units", "4.72314"),
+            ("region_a_height", "30"),
+            ("region_order", "a_first"),
+        ]);
+        let filter = clipper_social_tag_filter(&params, "split", 360, 640, &info)
+            .unwrap()
+            .unwrap();
+        let output = hidden_command("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("color=c=0x303844:s=360x640:r=1:d=1")
+            .args([
+                "-vf",
+                &format!("drawbox=x=0:y=192:w=360:h=448:color=white:t=fill,{filter},format=rgb24"),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut left = 360usize;
+        let mut right = 0usize;
+        for (index, rgb) in output.stdout.as_chunks::<3>().0.iter().enumerate() {
+            let x = index % 360;
+            let y = index / 360;
+            if !(170..=215).contains(&y) {
+                continue;
+            }
+            if rgb[0] < 130 && rgb[1] > 180 && rgb[2] < 130 {
+                left = left.min(x);
+            }
+            if rgb.iter().all(|channel| *channel < 35) {
+                right = right.max(x);
+            }
+        }
+        assert!(
+            left < right && right < 360,
+            "missing tag pixels: {left}..{right}"
+        );
+        let visual_center = (left + right) as f64 / 2.0;
+        assert!(
+            (visual_center - 180.0).abs() <= 7.0,
+            "plain tag appears off center: {left}..{right}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rasterized_text_overlay_renders_image_and_video() {
+        let directory = OperationTempGuard(operation_temp_dir("text-raster-test").unwrap());
+        let raster = directory.0.join("emoji.png");
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/social-tags/kick-plain.png"),
+            &raster,
+        )
+        .unwrap();
+        let font = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+            .join("Fonts/arial.ttf");
+        let layers = serde_json::json!([{
+            "text":"Emoji 😀", "x":50, "y":50, "size":42, "color":"#ffffff",
+            "opacity":100, "font_path":font
+        }])
+        .to_string();
+        for kind in ["image", "video"] {
+            let input = directory.0.join(if kind == "image" {
+                "source.png"
+            } else {
+                "source.mp4"
+            });
+            let mut source = hidden_command("ffmpeg");
+            source
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                ])
+                .arg("color=c=0x203040:s=160x90:r=25:d=1");
+            if kind == "image" {
+                source.args(["-frames:v", "1"]);
+            } else {
+                source.args(["-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+            }
+            assert!(source.arg(&input).status().await.unwrap().success());
+            let info = probe_media(input.to_string_lossy().into_owned())
+                .await
+                .unwrap();
+            let request = OperationRequest {
+                input: input.to_string_lossy().into_owned(),
+                operation: "text".into(),
+                params: values(&[
+                    ("layers", &layers),
+                    ("text_raster_path", &raster.to_string_lossy()),
+                ]),
+            };
+            let (args, output) = build_command(&request, &info).await.unwrap();
+            assert!(args.contains(&"-filter_complex".to_string()));
+            assert!(hidden_command("ffmpeg")
+                .args(&args)
+                .status()
+                .await
+                .unwrap()
+                .success());
+            let rendered = probe_media(output.to_string_lossy().into_owned())
+                .await
+                .unwrap();
+            assert_eq!((rendered.width, rendered.height), (Some(160), Some(90)));
+        }
     }
 
     #[test]
@@ -8238,11 +8503,11 @@ mod tests {
             size: 1,
             start_timecode: None,
         };
-        for platform in ["kick", "twitch"] {
+        for (platform, username) in [("kick", "eray"), ("twitch", "Example")] {
             let params = values(&[
                 ("social_tag_enabled", "true"),
                 ("social_tag_platform", platform),
-                ("social_tag_username", "Example"),
+                ("social_tag_username", username),
                 ("social_tag_style", "boxed"),
                 ("social_tag_size", "36"),
                 ("region_a_height", "30"),
@@ -8301,6 +8566,27 @@ mod tests {
             assert_eq!(colored.iter().map(|point| point.1).min(), Some(138));
             assert_eq!(colored.iter().map(|point| point.0).max(), Some(53));
             assert_eq!(colored.iter().map(|point| point.1).max(), Some(191));
+            let text_rows: Vec<usize> = output
+                .stdout
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .enumerate()
+                .filter_map(|(index, rgb)| {
+                    let x = index % 360;
+                    let y = index / 360;
+                    ((54..200).contains(&x)
+                        && (138..192).contains(&y)
+                        && rgb.iter().all(|channel| *channel > 190))
+                    .then_some(y)
+                })
+                .collect();
+            assert!(!text_rows.is_empty(), "{platform} text is missing");
+            let text_center = text_rows.iter().sum::<usize>() as f64 / text_rows.len() as f64;
+            assert!(
+                (text_center - 164.5).abs() <= 2.0,
+                "{platform}/{username} text center {text_center} differs from badge center 164.5"
+            );
         }
     }
 

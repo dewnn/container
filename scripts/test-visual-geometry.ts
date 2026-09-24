@@ -15,4 +15,6 @@ for(const style of ["boxed","plain"] as const){
     if(result.x<0||result.x+result.totalWidth>361)throw new Error(`${style}/${position} long Social Tag escapes the output`);
   }
 }
+const measured=socialTagGeometry({width:360,height:640,sourceWidth:1920,sourceHeight:1080,layout:"split",style:"plain",position:"center",username:"Example",size:36,textUnits:4.72314,regionAHeight:30,regionOrder:"a_first",regionAWidth:50,regionARegionHeight:50,freecamSize:50,freecamX:50,freecamY:2});
+if(measured.x!==64||Math.abs(measured.anchorX-180)>1)throw new Error(`Measured Social Tag center drifted: ${JSON.stringify(measured)}`);
 console.log(`Social Tag preview geometry: ${fixtures.length} export fixtures matched`);

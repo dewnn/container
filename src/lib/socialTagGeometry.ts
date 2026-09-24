@@ -1,6 +1,7 @@
 export interface SocialTagGeometryInput {
   width:number; height:number; sourceWidth:number; sourceHeight:number;
   layout:string; style:"boxed"|"plain"; position:"left"|"center"|"right"; username:string; size:number;
+  textUnits?:number;
   regionAHeight:number; regionOrder:string;
   regionAWidth:number; regionARegionHeight:number;
   freecamSize:number; freecamX:number; freecamY:number;
@@ -10,7 +11,10 @@ export interface SocialTagGeometry { x:number; y:number; side:number; fontSize:n
 
 export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometry {
   const {width,height,layout,style,position,username}=input;
-  const units=Array.from(username).reduce((sum,letter)=>sum+(/[ilI1.,:!|]/.test(letter)?.35:/[mwMW@]/.test(letter)?.9:/[A-Z]/.test(letter)?.72:.59),0);
+  const estimatedUnits=Array.from(username).reduce((sum,letter)=>sum+(/[ilI1.,:!|]/.test(letter)?.35:/[mwMW@]/.test(letter)?.9:/[A-Z]/.test(letter)?.72:.59),0);
+  const measured=Number.isFinite(input.textUnits)&&input.textUnits!==undefined&&input.textUnits>0;
+  const units=measured?input.textUnits!:estimatedUnits;
+  const unitScale=measured?1:style==="boxed"?1.1:1;
   let cameraLeft=0,cameraTop=0,cameraWidth=width,cameraBottom=height,seam=height*.78;
   const even=(value:number)=>Math.floor(Math.round(value)/2)*2;
   if(layout==="split"){
@@ -30,11 +34,11 @@ export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometr
   const cameraRight=cameraLeft+cameraWidth;
   const targetX=position==="left"?cameraLeft:position==="center"?cameraLeft+cameraWidth/2:cameraRight;
   const available=style==="boxed"?Math.max(width-cameraLeft,24):width*.84;
-  const fontSize=Math.min(input.size,available/(units*(style==="boxed"?1.1:1)+2.4));
+  const fontSize=Math.min(input.size,available/(units*unitScale+2.4));
   const side=Math.max(8,Math.round(fontSize*1.5));
   const gap=style==="plain"?fontSize*.22:0;
   const padding=Math.max(2,Math.round(fontSize*.34));
-  const textWidth=units*fontSize*(style==="boxed"?1.1:1);
+  const textWidth=units*fontSize*unitScale;
   const totalWidth=side+gap+textWidth+(style==="boxed"?padding*2:0);
   const rawX=position==="left"?targetX:position==="center"?targetX-totalWidth/2:targetX-totalWidth;
   const x=Math.round(Math.max(0,Math.min(rawX,Math.max(0,width-totalWidth))));

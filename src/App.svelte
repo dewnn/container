@@ -61,7 +61,7 @@
   interface SubtitleTrack { index:number; codec:string; language:string|null; title:string|null }
   interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
-  interface TextLayer { id:number; text:string; x:number; y:number; size:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
+  interface TextLayer { id:number; text:string; x:number; y:number; size:number; wrap_width?:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
   interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; outputSettingsKey?:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean>; mergeInputs?:string[] }
   interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown; resources?:ProjectResource[]; stageHistory?:StageHistory<RecoverySession> }
   let stageHistory:StageHistory<RecoverySession>|null=$state(null);
@@ -92,8 +92,8 @@
   let downloaderOpen = $state(false);
   let downloaderBusy = $state(false);
   let autoCutBusy=$state(false),batchBusy=$state(false);
-  let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
-  let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void}|null=$state(null);
+  let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void;resetPanelWidths:()=>void}|null=$state(null);
+  let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void;resetPanelWidths:()=>void}|null=$state(null);
   let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
   let recoveryCandidate:RecoverySession|null=$state(null);
   let projectFilesOpen=$state(false);
@@ -102,6 +102,11 @@
   let autoCutCanUndo=$state(false),autoCutCanRedo=$state(false);
   let batchCanUndo=$state(false),batchCanRedo=$state(false);
   let toolboxVideo: HTMLVideoElement | null = $state(null);
+  let toolboxWorkspace: HTMLElement | null = $state(null);
+  let toolboxWorkspaceWidth = $state(0);
+  let toolboxLeftWidth = $state<number|null>(null);
+  let toolboxRightWidth = $state<number|null>(null);
+  let panelResetDialogOpen = $state(false);
   let transformBackdropVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
   let toolboxCanvas: HTMLElement | null = $state(null);
@@ -439,6 +444,7 @@
     if(activeKind==="image")entries.sort(([left],[right])=>left==="Utilities"?1:right==="Utilities"?-1:0);
     return entries;
   });
+  const visibleFavoriteCount = $derived(kindTools(activeKind).filter(tool=>favoriteIds.includes(tool.id)).length);
 
   function toggleFavorite(id:string){favoriteIds=favoriteIds.includes(id)?favoriteIds.filter(value=>value!==id):[...favoriteIds,id];localStorage.setItem("container-favorites",JSON.stringify(favoriteIds))}
 
@@ -773,6 +779,7 @@
     textLayers=[...textLayers,layer];activeTextId=layer.id;
   }
   function updateTextLayer(patch:Partial<TextLayer>){textLayers=textLayers.map(layer=>layer.id===activeTextId?{...layer,...patch}:layer)}
+  function resizeTextLayer(size:number){const layer=activeText();if(layer)updateTextLayer({size,wrap_width:layer.wrap_width??textLayerAvailableWidth(layer)/layer.size})}
   function removeTextLayer(id:number){fontSelectionVersions.delete(id);textLayers=textLayers.filter(layer=>layer.id!==id);if(activeTextId===id)activeTextId=textLayers[0]?.id??null}
   function textLayerStyle(layer:TextLayer){
     const box=mediaDisplayBox();if(!box||!media?.width)return "display:none";
@@ -790,13 +797,13 @@
     const anchorWidth=layer.align==="left"?1-x:layer.align==="right"?x:2*Math.min(x,1-x);
     const safeWidth=sourceWidth*Math.min(.9,Math.max(.05,anchorWidth));
     const effects=(layer.background?layer.background_padding*2:0)+layer.outline+Math.max(0,layer.shadow);
-    return Math.max(layer.size,safeWidth-effects);
+    return layer.wrap_width?Math.max(layer.size,layer.wrap_width*layer.size):Math.max(layer.size,safeWidth-effects);
   }
   function wrappedText(layer:TextLayer){
     textMeasureCanvas??=document.createElement("canvas");
     const context=textMeasureCanvas.getContext("2d");
     if(!context)return layer.text;
-    context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}`;
+    context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}, "Segoe UI Emoji", sans-serif`;
     const maxWidth=textLayerAvailableWidth(layer),lines:string[]=[];
     const fits=(value:string)=>context.measureText(value).width<=maxWidth;
     const splitLongWord=(word:string)=>{
@@ -834,7 +841,7 @@
     context.clearRect(0,0,width,height);
     for(const layer of textLayers){
       const lines=wrappedText(layer).split("\n"),lineHeight=layer.size*1.05,totalHeight=lineHeight*lines.length;
-      context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}`;
+      context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}, "Segoe UI Emoji", sans-serif`;
       context.textAlign=layer.align;context.textBaseline="middle";
       const anchorX=width*layer.x/100,centerY=height*layer.y/100;
       const widest=Math.max(0,...lines.map(line=>context.measureText(line).width));
@@ -920,17 +927,106 @@
     const values={high:{crf:16,preset:"slow",goal:"high"},balanced:{crf:20,preset:"veryfast",goal:"balanced"},small:{crf:24,preset:"veryfast",goal:"small"}}[profile];
     setToolNumber("crf",values.crf);setToolValue("preset",values.preset);setToolValue("goal",values.goal);qualityAnalysis=null;
   }
-  function startTextDrag(event:PointerEvent,layer:TextLayer,resizeDirection:-1|0|1=0){
+  function trackEditorPointer(event:PointerEvent,move:(event:PointerEvent)=>void){
+    const pointerId=event.pointerId,target=event.currentTarget as HTMLElement;
+    target.setPointerCapture?.(pointerId);
+    const onMove=(next:PointerEvent)=>{if(next.pointerId===pointerId)move(next)};
+    const stop=(next?:PointerEvent)=>{
+      if(next&&next.pointerId!==pointerId)return;
+      window.removeEventListener("pointermove",onMove);
+      window.removeEventListener("pointerup",stop);
+      window.removeEventListener("pointercancel",stop);
+      window.removeEventListener("blur",onBlur);
+      if(target.hasPointerCapture?.(pointerId))target.releasePointerCapture(pointerId);
+    };
+    const onBlur=()=>stop();
+    window.addEventListener("pointermove",onMove);
+    window.addEventListener("pointerup",stop);
+    window.addEventListener("pointercancel",stop);
+    window.addEventListener("blur",onBlur);
+  }
+  function toolboxPanelSizes(){
+    const compact=toolboxWorkspaceWidth<=950,padding=compact?7:10;
+    const available=Math.max(0,toolboxWorkspaceWidth-padding*2-16);
+    const minLeft=compact?185:230,minRight=compact?225:280,minCenter=compact?320:360;
+    const left=Math.max(minLeft,Math.min(560,available-minRight-minCenter,toolboxLeftWidth??available*.19));
+    const right=Math.max(minRight,Math.min(620,available-left-minCenter,toolboxRightWidth??available*.24));
+    return {left,right,available,minLeft,minRight,minCenter};
+  }
+  $effect(()=>{
+    const element=toolboxWorkspace;if(!element)return;
+    const update=()=>{toolboxWorkspaceWidth=element.clientWidth};
+    update();const observer=new ResizeObserver(update);observer.observe(element);
+    return ()=>observer.disconnect();
+  });
+  function saveToolboxPanelWidths(){
+    try{localStorage.setItem("container-toolbox-panel-widths",JSON.stringify({left:toolboxLeftWidth,right:toolboxRightWidth}))}catch{}
+  }
+  function setToolboxPanelWidth(side:"left"|"right",value:number){
+    const sizes=toolboxPanelSizes();
+    if(side==="left")toolboxLeftWidth=Math.round(Math.max(sizes.minLeft,Math.min(560,sizes.available-sizes.right-sizes.minCenter,value)));
+    else toolboxRightWidth=Math.round(Math.max(sizes.minRight,Math.min(620,sizes.available-sizes.left-sizes.minCenter,value)));
+  }
+  function startToolboxPanelResize(event:PointerEvent,side:"left"|"right"){
+    if(event.button!==0||!toolboxWorkspace)return;
+    event.preventDefault();const target=event.currentTarget as HTMLElement,pointerId=event.pointerId;
+    const startX=event.clientX,sizes=toolboxPanelSizes(),initial=side==="left"?sizes.left:sizes.right;
+    toolboxLeftWidth=sizes.left;toolboxRightWidth=sizes.right;
+    target.setPointerCapture?.(pointerId);
+    const oldCursor=document.body.style.cursor,oldSelection=document.body.style.userSelect;
+    document.body.style.cursor="col-resize";document.body.style.userSelect="none";
+    const move=(next:PointerEvent)=>{if(next.pointerId===pointerId)setToolboxPanelWidth(side,initial+(next.clientX-startX)*(side==="left"?1:-1))};
+    const stop=(next?:PointerEvent)=>{
+      if(next&&next.pointerId!==pointerId)return;
+      window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop);window.removeEventListener("blur",onBlur);
+      if(target.hasPointerCapture?.(pointerId))target.releasePointerCapture(pointerId);
+      document.body.style.cursor=oldCursor;document.body.style.userSelect=oldSelection;
+      saveToolboxPanelWidths();
+    };
+    const onBlur=()=>stop();
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);window.addEventListener("pointercancel",stop);window.addEventListener("blur",onBlur);
+  }
+  function toolboxPanelKey(event:KeyboardEvent,side:"left"|"right"){
+    const sizes=toolboxPanelSizes();let value=side==="left"?sizes.left:sizes.right;
+    if(event.key==="Home")value=side==="left"?sizes.minLeft:sizes.minRight;
+    else if(event.key==="End")value=side==="left"?Math.min(560,sizes.available-sizes.right-sizes.minCenter):Math.min(620,sizes.available-sizes.left-sizes.minCenter);
+    else if(event.key==="ArrowLeft"||event.key==="ArrowRight")value+=(event.key==="ArrowRight"?1:-1)*(side==="left"?1:-1)*(event.shiftKey?50:20);
+    else return;
+    event.preventDefault();setToolboxPanelWidth(side,value);saveToolboxPanelWidths();
+  }
+  function resetToolboxPanelWidths(){toolboxLeftWidth=null;toolboxRightWidth=null;saveToolboxPanelWidths()}
+  function mountPanelResetDialog(node:HTMLDialogElement){
+    node.showModal();
+    node.querySelector<HTMLButtonElement>(".panel-reset-cancel")?.focus();
+    return {destroy(){if(node.open)node.close()}};
+  }
+  function confirmResetPanelWidths(){
+    if(workspaceMode==="autocut")autoCutWorkspace?.resetPanelWidths();
+    else if(workspaceMode==="batch")batchWorkspace?.resetPanelWidths();
+    else resetToolboxPanelWidths();
+    panelResetDialogOpen=false;
+  }
+  function startTextDrag(event:PointerEvent,layer:TextLayer,resizeDirection:-1|0|1=0,verticalDirection:-1|0|1=0){
     if(!toolboxCanvas||!media?.width)return;event.preventDefault();event.stopPropagation();activeTextId=layer.id;
-    const box=mediaDisplayBox();if(!box)return;const mediaWidth=media.width;const startX=event.clientX,startY=event.clientY,origin={...layer};
+    const box=mediaDisplayBox();if(!box)return;const startX=event.clientX,startY=event.clientY,origin={...layer};
+    const rect=(event.currentTarget as HTMLElement).closest(".preview-text")?.getBoundingClientRect();
+    const sourceLeft=(box.stageWidth-box.width)/2+toolboxCanvas.getBoundingClientRect().left;
+    const alignment=layer.align==="left"?0:layer.align==="right"?1:.5;
+    const wrapWidth=layer.wrap_width??textLayerAvailableWidth(layer)/layer.size;
     const move=(moveEvent:PointerEvent)=>{
-      if(resizeDirection){const delta=(moveEvent.clientX-startX)/box.width*mediaWidth*resizeDirection;updateTextLayer({size:Math.max(8,Math.min(600,origin.size+delta))});return}
+      if(resizeDirection&&rect){
+        const proposedWidth=Math.max(1,rect.width+(moveEvent.clientX-startX)*resizeDirection+(moveEvent.clientY-startY)*verticalDirection*.5);
+        const size=Math.max(8,Math.min(600,origin.size*proposedWidth/Math.max(1,rect.width)));
+        const newWidth=rect.width*size/origin.size;
+        const anchor=resizeDirection>0?rect.left+alignment*newWidth:rect.right-(1-alignment)*newWidth;
+        updateTextLayer({size,wrap_width:wrapWidth,x:Math.max(0,Math.min(100,(anchor-sourceLeft)/box.width*100))});
+        return;
+      }
       let dx=(moveEvent.clientX-startX)/box.width*100,dy=(moveEvent.clientY-startY)/box.height*100;
       if(moveEvent.shiftKey){if(Math.abs(dx)>=Math.abs(dy))dy=0;else dx=0}
       updateTextLayer({x:Math.max(0,Math.min(100,origin.x+dx)),y:Math.max(0,Math.min(100,origin.y+dy))});
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   const transformPresets = ["off","free","16:9","9:16","1:1","4:5","5:4","4:3","3:4","2:3","3:2","191:100"];
   const transformHandles = ["nw","n","ne","e","se","s","sw","w"] as const;
@@ -1087,8 +1183,7 @@
       }
       setToolNumber("crop_x",x);setToolNumber("crop_y",y);setToolNumber("crop_w",w);setToolNumber("crop_h",h);
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   function startTransformRegion(event:PointerEvent,region:"a"|"b",mode:"move"|"n"|"s"|"e"|"w"|"nw"|"ne"|"sw"|"se"){
     if(!transformSourceBox||!["split","squares","freecam"].includes(toolValue("vertical_layout")))return;
@@ -1107,8 +1202,7 @@
       }
       setToolNumber(`${prefix}x`,x);setToolNumber(`${prefix}y`,y);setToolNumber(`${prefix}w`,w);setToolNumber(`${prefix}h`,h);
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   function startFillPan(event:PointerEvent){
     const box=verticalOutputBox();if(!box||toolValue("vertical_layout")!=="fill")return;
@@ -1119,8 +1213,7 @@
       const y=Math.max(0,Math.min(100-height,initialY-(moveEvent.clientY-startY)/box.height*height));
       setToolNumber("crop_x",x);setToolNumber("crop_y",y);
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   function freecamPlacement(){
     const source=previewSourceDimensions(),regionWidth=Math.max(1,source.width*toolNumber("region_a_w")/100),regionHeight=Math.max(1,source.height*toolNumber("region_a_h")/100);
@@ -1148,18 +1241,51 @@
     const opacity=Math.max(.1,Math.min(1,toolNumber("watermark_opacity")/100));
     return `left:${x}px;top:${y}px;font-size:${fontSize}px;color:rgba(255,255,255,${opacity});text-shadow:0 1px 2px rgba(0,0,0,${opacity}),0 0 3px rgba(0,0,0,${opacity})`;
   }
+  function socialTagTextUnits(username:string){
+    const context=document.createElement("canvas").getContext("2d");
+    if(!context||!username)return undefined;
+    context.font='900 100px "Arial Black", Arial, sans-serif';
+    const units=context.measureText(username).width/100;
+    return Number.isFinite(units)&&units>0?units:undefined;
+  }
   function socialTagPreviewStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
     const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
     const boxed=toolValue("social_tag_style")==="boxed";
     const position=toolValue(boxed?"social_tag_boxed_position":"social_tag_plain_position") as "left"|"center"|"right";
-    const geometry=socialTagGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:boxed?"boxed":"plain",position,username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")});
+    const username=toolValue("social_tag_username").trim();
+    const geometry=socialTagGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:boxed?"boxed":"plain",position,username,size:toolNumber("social_tag_size"),textUnits:socialTagTextUnits(username),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")});
     const scaleX=box.width/width,scaleY=box.height/height;
-    const left=box.left+geometry.anchorX*scaleX;
-    const top=box.top+geometry.centerY*scaleY;
+    let left=box.left+geometry.anchorX*scaleX;
+    let top=box.top+geometry.centerY*scaleY;
+    let boundsLeft=box.left,boundsRight=box.left+box.width;
+    // The source preview shows the camera crop at its original position, not
+    // inside the virtual 9:16 output box. Project both tag styles onto it.
+    const layout=toolValue("vertical_layout");
+    if(["split","squares","freecam"].includes(layout)){
+      const source=transformDisplayBox();
+      if(source){
+        const cameraLeft=(source.stageWidth-source.width)/2+source.width*toolNumber("region_a_x")/100;
+        const cameraTop=(source.stageHeight-source.height)/2+source.height*toolNumber("region_a_y")/100;
+        const cameraWidth=source.width*toolNumber("region_a_w")/100;
+        const cameraHeight=source.height*toolNumber("region_a_h")/100;
+        const even=(value:number)=>Math.floor(Math.round(value)/2)*2;
+        const outputCameraWidth=layout==="freecam"?even(width*toolNumber("freecam_size")/100):width;
+        const outputCameraLeft=layout==="freecam"?(width-outputCameraWidth)*toolNumber("freecam_x")/100:0;
+        const relativeX=(geometry.anchorX-outputCameraLeft)/Math.max(1,outputCameraWidth);
+        left=cameraLeft+relativeX*cameraWidth;
+        const seamAtCameraTop=layout==="split"&&toolValue("region_order")==="b_first";
+        top=boxed?cameraTop+cameraHeight-geometry.side*scaleX/2:cameraTop+(seamAtCameraTop?0:cameraHeight);
+        boundsLeft=boxed?cameraLeft:0;
+        boundsRight=boxed?cameraLeft+cameraWidth:source.stageWidth;
+      }
+    }
     const shift=position==="left"?"0":position==="right"?"-100%":"-50%";
-    const available=position==="left"?box.left+box.width-left:position==="right"?left-box.left:2*Math.min(left-box.left,box.left+box.width-left);
-    return `left:${left}px;top:${top}px;font-size:${geometry.fontSize*scaleX}px;max-width:${Math.max(0,available)}px;transform:translate(${shift},-50%)`;
+    const available=position==="left"?boundsRight-left:position==="right"?left-boundsLeft:2*Math.min(left-boundsLeft,boundsRight-left);
+    // Rasterize the small overlay at 2× and downscale it in the compositor so
+    // the preview glyphs stay legible without changing their on-screen bounds.
+    const rasterScale=2;
+    return `left:${left}px;top:${top}px;font-size:${geometry.fontSize*scaleX*rasterScale}px;max-width:${Math.max(0,available)*rasterScale}px;transform-origin:0 0;transform:scale(${1/rasterScale}) translate(${shift},-50%)`;
   }
   function startFreecamPlacement(event:PointerEvent,mode:"move"|"resize"){
     if(!freecamLayoutBox)return;
@@ -1176,8 +1302,7 @@
       setToolNumber("freecam_x",100-initial.width>0?left/(100-initial.width)*100:0);
       setToolNumber("freecam_y",100-initial.height>0?top/(100-initial.height)*100:0);
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   function startEffectRegion(event:PointerEvent,mode:"move"|"n"|"s"|"e"|"w"|"nw"|"ne"|"sw"|"se"){
     if(!transformSourceBox||selected?.id!=="blur_pixelate")return;
@@ -1196,8 +1321,7 @@
       }
       setToolNumber("region_x",x);setToolNumber("region_y",y);setToolNumber("region_w",w);setToolNumber("region_h",h);
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   function overlayPreviewStyle(){
     const box=mediaDisplayBox();if(!box||selected?.id!=="image_overlay")return "display:none";
@@ -1213,19 +1337,30 @@
     if(position==="center"){x=left+(box.width-width)/2;y=top+(box.height-height)/2}
     return `position:absolute;z-index:4;left:${x}px;top:${y}px;width:${width}px`;
   }
-  function startOverlayDrag(event:PointerEvent,resizeDirection:-1|0|1=0){
+  function startOverlayDrag(event:PointerEvent,resizeDirection:-1|0|1=0,verticalDirection:-1|0|1=0){
     if(!toolboxCanvas||selected?.id!=="image_overlay")return;event.preventDefault();event.stopPropagation();
-    const box=mediaDisplayBox();if(!box)return;const startX=event.clientX,startY=event.clientY,origin={x:toolNumber("x"),y:toolNumber("y"),size:toolNumber("size")};
+    const box=mediaDisplayBox();if(!box)return;const startX=event.clientX,startY=event.clientY,originSize=toolNumber("size");
+    const rect=(event.currentTarget as HTMLElement).closest(".overlay-preview-box")?.getBoundingClientRect();
+    if(!rect)return;
+    const stage=toolboxCanvas.getBoundingClientRect(),sourceLeft=stage.left+(box.stageWidth-box.width)/2,sourceTop=stage.top+(box.stageHeight-box.height)/2;
+    const originX=(rect.left+rect.width/2-sourceLeft)/box.width*100,originY=(rect.top+rect.height/2-sourceTop)/box.height*100;
     const aspect=(overlayPreviewImage?.naturalWidth||1)/(overlayPreviewImage?.naturalHeight||1);
+    setToolNumber("x",originX);setToolNumber("y",originY);setToolValue("position","custom");
     const move=(moveEvent:PointerEvent)=>{
-      setToolValue("position","custom");
-      if(resizeDirection){setToolNumber("size",Math.max(1,Math.min(100,origin.size+(moveEvent.clientX-startX)/box.width*100*resizeDirection)));return}
+      if(resizeDirection){
+        const proposedWidth=rect.width+(moveEvent.clientX-startX)*resizeDirection+(moveEvent.clientY-startY)*verticalDirection*.5;
+        const size=Math.max(1,Math.min(100,originSize*proposedWidth/Math.max(1,rect.width)));
+        const newWidth=box.width*size/100;
+        const center=resizeDirection>0?rect.left+newWidth/2:rect.right-newWidth/2;
+        setToolNumber("size",size);
+        setToolNumber("x",Math.max(0,Math.min(100,(center-sourceLeft)/box.width*100)));
+        return;
+      }
       const size=toolNumber("size"),halfW=size/2,halfH=(box.width*size/100/aspect)/box.height*50;
-      setToolNumber("x",Math.max(halfW,Math.min(100-halfW,origin.x+(moveEvent.clientX-startX)/box.width*100)));
-      setToolNumber("y",Math.max(halfH,Math.min(100-halfH,origin.y+(moveEvent.clientY-startY)/box.height*100)));
+      setToolNumber("x",Math.max(halfW,Math.min(100-halfW,originX+(moveEvent.clientX-startX)/box.width*100)));
+      setToolNumber("y",Math.max(halfH,Math.min(100-halfH,originY+(moveEvent.clientY-startY)/box.height*100)));
     };
-    const stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop)};
-    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);
+    trackEditorPointer(event,move);
   }
   function timelineBounds(){
     if(!selected)return {start:0,end:0};
@@ -1641,11 +1776,16 @@
 
   function paramsFrom(tool: Tool) {
     const params=Object.fromEntries(tool.fields.map((field) => [field.key, String(field.value)]));
+    if(tool.id==="clipper"&&params.social_tag_enabled==="true"){
+      const units=socialTagTextUnits(params.social_tag_username.trim());
+      if(units!==undefined)params.social_tag_text_units=units.toFixed(5);
+    }
     if(tool.id==="merge_videos")params.inputs=JSON.stringify(mergeInputs);
     if(tool.id==="color")for(const key of ["brightness","contrast","saturation","gamma","hue","temperature","sharpen","blur","deband","vignette"])params[`${key}_enabled`]=String(colorOn(key));
     if(tool.id==="text")params.layers=JSON.stringify(textLayers.map(layer=>({...layer,text:wrappedText(layer)})));
     return params;
   }
+  function hasEmojiText(){return textLayers.some(layer=>/[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u20e3\ufe0f]/u.test(layer.text))}
 
   $effect(()=>{
     const path=media?.path,id=selected?.id,mode=toolValue("mode"),format=toolValue("format"),quality=toolNumber("quality"),background=toolValue("jpeg_background");
@@ -1748,6 +1888,11 @@
       }
       const renderedSettingsKey=renderSettingsKey();
       const operationParams=paramsFrom(selected);
+      if(selected.id==="text"&&hasEmojiText()){
+        renderTextPreview();
+        if(!textPreviewCanvas)throw new Error(language==="tr"?"Emoji çıktısı için yazı önizlemesi hazır değil.":"Text preview is not ready for emoji export.");
+        operationParams.text_raster_png=textPreviewCanvas.toDataURL("image/png");
+      }
       const operationInput=temporaryImagePreviewPath||media.path;
       if(temporaryImagePreviewPath)operationParams.__source_path=media.path;
       const result = await invoke<JobResult>("run_operation", {
@@ -1885,6 +2030,13 @@
     theme=document.documentElement.dataset.theme==="light"?"light":"dark";
     void syncWindowTheme(theme);
     try{const savedFavorites=JSON.parse(localStorage.getItem("container-favorites")??"[]");if(Array.isArray(savedFavorites))favoriteIds=savedFavorites.filter(value=>typeof value==="string")}catch{favoriteIds=[]}
+    try{
+      const savedPanels=JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null");
+      if(savedPanels&&typeof savedPanels==="object"){
+        if(Number.isFinite(savedPanels.left)&&savedPanels.left>=185&&savedPanels.left<=560)toolboxLeftWidth=savedPanels.left;
+        if(Number.isFinite(savedPanels.right)&&savedPanels.right>=225&&savedPanels.right<=620)toolboxRightWidth=savedPanels.right;
+      }
+    }catch{}
     void getVersion().then((version) => appVersion = version).catch(() => {});
     void (async()=>{
       const initialMediaLoadId=mediaLoadId;
@@ -1926,6 +2078,7 @@
       }
     })();
     const playerKeys = (event: KeyboardEvent) => {
+      if(event.defaultPrevented||document.querySelector("dialog[open]"))return;
       const key = event.key.toLowerCase();
       const target=event.target as HTMLElement|null;
       const editingText=isTextEditingTarget(target?.tagName,target?.isContentEditable??false);
@@ -2032,11 +2185,11 @@
     {#if media}
       {@render historyControl()}
       <div class="file-summary">
-      <span class="filename mono" title={`${media.name}\n${language==="tr"?"Süre":"Duration"}: ${formatDuration(media.duration)}${media.width?`\n${language==="tr"?"Çözünürlük":"Resolution"}: ${media.width}×${media.height}`:""}${media.fps?`\nFPS: ${media.fps.toFixed(3)}`:""}\nCodec: ${media.codec}\n${language==="tr"?"Boyut":"Size"}: ${formatBytes(media.size)}`}>{media.name}</span>
+      <span class="filename mono" title={`${media.name}${media.kind!=="image"?`\n${language==="tr"?"Süre":"Duration"}: ${formatDuration(media.duration)}`:""}${media.width?`\n${language==="tr"?"Çözünürlük":"Resolution"}: ${media.width}×${media.height}`:""}${media.kind==="video"&&media.fps?`\nFPS: ${media.fps.toFixed(3)}`:""}\nCodec: ${media.codec}\n${language==="tr"?"Boyut":"Size"}: ${formatBytes(media.size)}`}>{media.name}</span>
       <div class="chips mono">
-        <span><b>dur</b>{formatDuration(media.duration)}</span>
+        {#if media.kind!=="image"}<span><b>dur</b>{formatDuration(media.duration)}</span>{/if}
         {#if media.width}<span><b>res</b>{media.width}×{media.height}</span>{/if}
-        {#if media.fps}<span class="media-extra"><b>fps</b>{media.fps.toFixed(3)}</span>{/if}
+        {#if media.kind==="video"&&media.fps}<span class="media-extra"><b>fps</b>{media.fps.toFixed(3)}</span>{/if}
         <span class="media-extra"><b>codec</b>{media.codec}</span><span class="media-extra"><b>size</b>{formatBytes(media.size)}</span>
       </div>
       </div>
@@ -2045,7 +2198,8 @@
         {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")} disabled={operationBusy&&workspaceMode!=="autocut"}>SMARTCUT</button>{/if}
         <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
       </nav>
-      <div class="project-actions"><button onclick={openProject} disabled={operationBusy}>{language==="tr"?"PROJE AÇ":"OPEN PROJECT"}</button><button onclick={saveProject} disabled={operationBusy}>{language==="tr"?"PROJEYİ KAYDET":"SAVE PROJECT"}</button></div>
+      <div class="project-actions"><button onclick={saveProject} disabled={operationBusy}>{language==="tr"?"PROJEYİ KAYDET":"SAVE PROJECT"}</button></div>
+      <button class="panel-reset-trigger" onclick={()=>panelResetDialogOpen=true} disabled={operationBusy} aria-label={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"} title={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M7 3.5v13M13 3.5v13"/></svg></button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={operationBusy}>{t("close")}</button>
     {:else}
       <div class="landing-header-actions">
@@ -2056,6 +2210,14 @@
       </div>
     {/if}
   </header>
+
+  {#if panelResetDialogOpen}
+    <dialog class="panel-reset-dialog" use:mountPanelResetDialog oncancel={()=>panelResetDialogOpen=false} aria-labelledby="panel-reset-title" aria-describedby="panel-reset-description">
+      <header><span class="panel-reset-dialog-icon" aria-hidden="true">↺</span><h2 id="panel-reset-title">{language==="tr"?"Panel düzenini sıfırla":"Reset panel layout"}</h2></header>
+      <p id="panel-reset-description">{workspaceMode==="autocut"?(language==="tr"?"SmartCut yan panelleri varsayılan genişliklerine dönecek.":"SmartCut side panels will return to their default widths."):workspaceMode==="batch"?(language==="tr"?"Batch kontrol paneli varsayılan genişliğine dönecek.":"The Batch controls panel will return to its default width."):(language==="tr"?"Araçlar ve Parametreler panelleri varsayılan genişliklerine dönecek.":"Tools and Parameters will return to their default widths.")} {language==="tr"?"Proje ve düzenleme geçmişin değişmeyecek.":"Your project and editing history will stay unchanged."}</p>
+      <footer><button class="panel-reset-cancel" onclick={()=>panelResetDialogOpen=false}>{language==="tr"?"İPTAL":"CANCEL"}</button><button class="panel-reset-confirm" onclick={confirmResetPanelWidths}>{language==="tr"?"SIFIRLA":"RESET"}</button></footer>
+    </dialog>
+  {/if}
 
   {#if updatePanel}
     <div class="update-layer">
@@ -2169,7 +2331,8 @@
     {:else if workspaceMode === "batch"}
       <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} />
     {:else}
-    <section class="workspace">
+    {@const panelSizes=toolboxPanelSizes()}
+    <section class="workspace resizable" bind:this={toolboxWorkspace} style={`--toolbox-left:${panelSizes.left}px;--toolbox-right:${panelSizes.right}px`}>
       <aside class="tool-pane panel">
         <div class="pane-head">
           <div><h3>{t("tools")}</h3><p>{kindTools(activeKind).length} {t("available")}</p></div>
@@ -2181,7 +2344,7 @@
           {/each}
         </div>
         <input class="search" bind:value={search} placeholder={t("search")} />
-        <button class="favorites-filter" class:active={favoritesOnly} onclick={()=>favoritesOnly=!favoritesOnly}><span>★</span>{language==="tr"?"FAVORİLER":"FAVORITES"}<b>{favoriteIds.length}</b></button>
+        <button class="favorites-filter" class:active={favoritesOnly} onclick={()=>favoritesOnly=!favoritesOnly}><span>★</span>{language==="tr"?"FAVORİLER":"FAVORITES"}<b>{visibleFavoriteCount}</b></button>
         <div class="tool-scroll">
           {#each categories as [category, entries]}
             <section class="tool-group" data-category={toolCategory(entries[0].id)}>
@@ -2200,6 +2363,8 @@
           {#if favoritesOnly&&categories.length===0}<p class="favorites-empty">{language==="tr"?"Bu bölümde henüz favori araç yok.":"No favorite tools in this section yet."}</p>{/if}
         </div>
       </aside>
+
+      <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Araçlar panelinin genişliği":"Tools panel width"} aria-orientation="horizontal" aria-valuemin={panelSizes.minLeft} aria-valuemax={Math.min(560,panelSizes.available-panelSizes.right-panelSizes.minCenter)} aria-valuenow={Math.round(panelSizes.left)} onpointerdown={(event)=>startToolboxPanelResize(event,"left")} onkeydown={(event)=>toolboxPanelKey(event,"left")} ondblclick={resetToolboxPanelWidths} title={language==="tr"?"Genişliği sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
 
       <section class="center-stack" class:timeline-active={timelineTool}>
         <div class="preview panel">
@@ -2252,11 +2417,12 @@
                 <div class="text-preview-layer">
                   <canvas class="text-preview-canvas" bind:this={textPreviewCanvas} style={textPreviewCanvasStyle()}></canvas>
                   {#each textLayers as layer (layer.id)}
-                    <button class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} onclick={()=>activeTextId=layer.id} onpointerdown={(event)=>startTextDrag(event,layer)}>
+                    <div class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} role="group" aria-label={`${language==="tr"?"Yazı katmanı":"Text layer"}: ${layer.text}`} onpointerdown={(event)=>startTextDrag(event,layer)}>
                       <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i>
                       <span>{wrappedText(layer)}</span>
                       <i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
-                    </button>
+                      <i class="text-size-handle nw" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,-1,-1)}></i><i class="text-size-handle ne" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,1,-1)}></i><i class="text-size-handle sw" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,-1,1)}></i><i class="text-size-handle se" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,1,1)}></i>
+                    </div>
                   {/each}
                 </div>
               {/if}
@@ -2265,6 +2431,7 @@
                   <img bind:this={overlayPreviewImage} src={convertFileSrc(toolValue("image_path"))} alt="Overlay preview" draggable="false" style:opacity={toolNumber("opacity")/100} />
                   <i class="text-size-handle left" role="presentation" aria-label="Resize overlay from left" onpointerdown={(event)=>startOverlayDrag(event,-1)}></i>
                   <i class="text-size-handle right" role="presentation" aria-label="Resize overlay from right" onpointerdown={(event)=>startOverlayDrag(event,1)}></i>
+                  <i class="text-size-handle nw" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,-1,-1)}></i><i class="text-size-handle ne" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,1,-1)}></i><i class="text-size-handle sw" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,-1,1)}></i><i class="text-size-handle se" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,1,1)}></i>
                 </button>
               {/if}
               {#if selected?.id === "blur_pixelate"}
@@ -2306,16 +2473,16 @@
                   <div class="text-preview-layer">
                     <canvas class="text-preview-canvas" bind:this={textPreviewCanvas} style={textPreviewCanvasStyle()}></canvas>
                     {#each textLayers as layer (layer.id)}
-                      <button class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} onclick={()=>activeTextId=layer.id} onpointerdown={(event)=>startTextDrag(event,layer)}>
-                        <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i><span>{wrappedText(layer)}</span><i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i>
-                      </button>
+                      <div class="preview-text" class:active={activeTextId===layer.id} style={textLayerStyle(layer)} role="group" aria-label={`${language==="tr"?"Yazı katmanı":"Text layer"}: ${layer.text}`} onpointerdown={(event)=>startTextDrag(event,layer)}>
+                      <i class="text-size-handle left" role="presentation" aria-label="Resize text from left" onpointerdown={(event)=>startTextDrag(event,layer,-1)}></i><span>{wrappedText(layer)}</span><i class="text-size-handle right" role="presentation" aria-label="Resize text from right" onpointerdown={(event)=>startTextDrag(event,layer,1)}></i><i class="text-size-handle nw" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,-1,-1)}></i><i class="text-size-handle ne" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,1,-1)}></i><i class="text-size-handle sw" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,-1,1)}></i><i class="text-size-handle se" role="presentation" onpointerdown={(event)=>startTextDrag(event,layer,1,1)}></i>
+                      </div>
                     {/each}
                   </div>
                 {/if}
                 {#if selected.id === "image_overlay" && toolValue("image_path")}
                   <button class="overlay-preview-box" style={overlayPreviewStyle()} onpointerdown={(event)=>startOverlayDrag(event)} aria-label="Move overlay">
                     <img bind:this={overlayPreviewImage} src={convertFileSrc(toolValue("image_path"))} alt="Overlay preview" draggable="false" style:opacity={toolNumber("opacity")/100} />
-                    <i class="text-size-handle left" role="presentation" aria-label="Resize overlay from left" onpointerdown={(event)=>startOverlayDrag(event,-1)}></i><i class="text-size-handle right" role="presentation" aria-label="Resize overlay from right" onpointerdown={(event)=>startOverlayDrag(event,1)}></i>
+                  <i class="text-size-handle left" role="presentation" aria-label="Resize overlay from left" onpointerdown={(event)=>startOverlayDrag(event,-1)}></i><i class="text-size-handle right" role="presentation" aria-label="Resize overlay from right" onpointerdown={(event)=>startOverlayDrag(event,1)}></i><i class="text-size-handle nw" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,-1,-1)}></i><i class="text-size-handle ne" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,1,-1)}></i><i class="text-size-handle sw" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,-1,1)}></i><i class="text-size-handle se" role="presentation" onpointerdown={(event)=>startOverlayDrag(event,1,1)}></i>
                   </button>
                 {/if}
                 {#if selected.id === "blur_pixelate"}
@@ -2374,10 +2541,10 @@
 
         <div class="job panel">
           <div class="job-head">
-            <div><h3>{t("process")}</h3><p class="mono">{jobStatus}</p></div>
+            <div><h3>{t("process")}</h3><p class="mono">{outputStale?(language==="tr"?"ayarlar değişti · yeniden işle":"settings changed · render again"):jobStatus}</p></div>
             <div class="job-meta">
               <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
-              {#if output}<button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => revealItemInDir(output)}>{t("showOutput")}</button>{/if}
+              {#if output}<button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => revealItemInDir(output)}>{outputStale?(language==="tr"?"önceki çıktı":"previous output"):t("showOutput")}</button>{/if}
               {#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}
             </div>
           </div>
@@ -2386,11 +2553,13 @@
         </div>
       </section>
 
-      <aside class="settings panel" class:merge-compact={selected?.id==="merge_videos"}>
+      <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Parametreler panelinin genişliği":"Parameters panel width"} aria-orientation="horizontal" aria-valuemin={panelSizes.minRight} aria-valuemax={Math.min(620,panelSizes.available-panelSizes.left-panelSizes.minCenter)} aria-valuenow={Math.round(panelSizes.right)} onpointerdown={(event)=>startToolboxPanelResize(event,"right")} onkeydown={(event)=>toolboxPanelKey(event,"right")} ondblclick={resetToolboxPanelWidths} title={language==="tr"?"Genişliği sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
+
+      <aside class="settings panel" class:merge-compact={selected?.id==="merge_videos"} class:compact-controls={panelSizes.right<300}>
         {#if selected}
           <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={resetSelectedTool}>{t("defaults")}</button></div>
           <div class="selected-title"><span class="index mono">{String(kindTools(activeKind).findIndex((tool) => tool.id === selected?.id) + 1).padStart(2,"0")}</span><div><h2>{selected.title}</h2><p>{selected.description}</p></div></div>
-          {#if !["transform","clipper","cut","text","color","merge_videos"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.detail}</p></div>{/if}
+          {#if !["transform","clipper","cut","text","color","merge_videos"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.id==="fix_timestamps"&&media.kind==="audio"?(language==="tr"?"Hızlı onarım, sesi kalite kaybı olmadan yeniden paketler. Derin onarım sesi FLAC olarak yeniden kodlar; yalnızca hızlı yöntem yetmezse kullan.":"Fast Repair remuxes audio without quality loss. Deep Repair re-encodes audio as FLAC; use it only when the fast method is not enough."):selected.detail}</p></div>{/if}
           {#if selected.id === "merge_videos"}
             <div class="merge-list">
               <button class="merge-add" onclick={addMergeVideos}>＋ {language==="tr"?"VİDEO EKLE":"ADD VIDEOS"}</button>
@@ -2436,17 +2605,17 @@
             <div class="text-workspace">
               <button class="add-text" onclick={addTextLayer}>＋ {language==="tr"?"Yazı ekle":"Add text"}</button>
               {#if textLayers.length}
-                <div class="text-tabs">{#each textLayers as layer,index (layer.id)}<button class:active={activeTextId===layer.id} onclick={()=>activeTextId=layer.id}>{index+1}. {layer.text||"—"}</button>{/each}</div>
+                <div class="text-tabs">{#each textLayers as layer,index (layer.id)}<div class="text-tab" class:active={activeTextId===layer.id}><button class="text-tab-select" onclick={()=>activeTextId=layer.id}>{index+1}. {layer.text||"—"}</button><button class="text-tab-remove" aria-label={`${language==="tr"?"Yazıyı kaldır":"Remove text"}: ${layer.text||index+1}`} title={language==="tr"?"Yazıyı kaldır":"Remove text"} onclick={()=>removeTextLayer(layer.id)}>×</button></div>{/each}</div>
                 {@const layer=activeText()}
                 {#if layer}
-                  <label class="field"><span>{language==="tr"?"Yazı":"Text"}</span><input type="text" value={layer.text} oninput={(event)=>updateTextLayer({text:event.currentTarget.value})}></label>
+                  <label class="field"><span>{language==="tr"?"Yazı":"Text"}</span><textarea class="text-content-input" rows="3" value={layer.text} oninput={(event)=>updateTextLayer({text:event.currentTarget.value})}></textarea></label>
                   <label class="field"><span>{language==="tr"?"Font":"Font"}</span><select value={layer.font_path} onchange={(event)=>chooseTextFont(event.currentTarget.value)}>{#each systemFonts as font}<option value={font.path}>{font.name}</option>{/each}</select></label>
                   <div class="text-color-editor">
                     <span>{language==="tr"?"Renk":"Color"}</span>
                     <div class="text-color-row"><i style:background={layer.color}></i><input aria-label="Hex color" value={layer.color} maxlength="7" onchange={(event)=>setTextColor(event.currentTarget.value)}></div>
                     <div class="text-swatches">{#each textColors as color}<button class:active={layer.color===color} style:background={color} aria-label={`Use ${color}`} onclick={()=>setTextColor(color)}></button>{/each}</div>
                   </div>
-                  <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.size,8,600)}%`} min="8" max="600" step="1" value={layer.size} oninput={(event)=>updateTextLayer({size:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.size)} px</small></label>
+                  <label class="field"><span>{language==="tr"?"Yazı boyutu":"Font size"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.size,8,600)}%`} min="8" max="600" step="1" value={layer.size} oninput={(event)=>resizeTextLayer(Number(event.currentTarget.value))}><small class="hint">{Math.round(layer.size)} px</small></label>
                   <label class="field"><span>{language==="tr"?"Opaklık":"Opacity"}<small>%</small></span><input type="range" style={`--range-pct:${rangePercent(layer.opacity,0,100)}%`} min="0" max="100" step="1" value={layer.opacity} oninput={(event)=>updateTextLayer({opacity:Number(event.currentTarget.value)})}><small class="hint">{Math.round(layer.opacity)}%</small></label>
                   <label class="field"><span>{language==="tr"?"Hizalama":"Alignment"}</span><select value={layer.align} onchange={(event)=>updateTextLayer({align:event.currentTarget.value as "left"|"center"|"right"})}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
                   <div class="text-position-grid" aria-label={language==="tr"?"Yazı konumu":"Text position"}>{#each ["top-left","top-center","top-right","middle-left","middle-center","middle-right","bottom-left","bottom-center","bottom-right"] as position}<button title={position.replace("-"," ")} onclick={()=>positionText(position)}></button>{/each}</div>
@@ -2463,8 +2632,7 @@
                       <label class="field"><span>{language==="tr"?"İç boşluk":"Padding"}<small>px</small></span><input type="range" style={`--range-pct:${rangePercent(layer.background_padding,0,80)}%`} min="0" max="80" step="1" value={layer.background_padding} oninput={(event)=>updateTextLayer({background_padding:Number(event.currentTarget.value)})}><small class="hint">{layer.background_padding}px</small></label>
                     {/if}
                   </details>
-                  <button class="remove-text" onclick={()=>removeTextLayer(layer.id)}>{language==="tr"?"Seçili yazıyı kaldır":"Remove selected text"}</button>
-                  <p class="text-help">{language==="tr"?"Yazıyı sürükle; Shift ile yatay/dikey eksene kilitle. Yan tutamaçlardan boyutlandır.":"Drag text; hold Shift to lock movement to one axis. Resize from either side handle."}</p>
+                  <p class="text-help">{language==="tr"?"Yazıyı sürükle; Shift ile yatay/dikey eksene kilitle. Kenar veya köşe tutamaçlarından boyutlandır.":"Drag text; hold Shift to lock movement to one axis. Resize from side or corner handles."}</p>
                 {/if}
               {:else}<p class="text-empty">{language==="tr"?"Önizlemeye ilk katmanı eklemek için Yazı ekle’ye bas.":"Choose Add text to place the first layer in the preview."}</p>{/if}
             </div>
@@ -2596,7 +2764,7 @@
                 </div>
                 {#if toolValue("crop_mode")!=="off" && toolValue("fit_mode")!=="contain"}<p>{language==="tr"?"Kadrajı önizlemede sürükle; kenar ve köşelerden serbestçe boyutlandır.":"Drag the frame in the preview; resize freely from its edges and corners."}</p>{/if}
                 {#if media.kind === "image"}
-                  <details class="text-style-options"><summary>{language==="tr"?"Sığdır / Tuval":"Fit / Canvas"}</summary>
+                  <details class="text-style-options image-fit-options"><summary>{language==="tr"?"Sığdır / Tuval":"Fit / Canvas"}</summary>
                     <div class="transform-options two"><button class:active={toolValue("fit_mode")==="crop"} onclick={()=>setToolValue("fit_mode","crop")}>{language==="tr"?"Kırp / doldur":"Crop / fill"}</button><button class:active={toolValue("fit_mode")==="contain"} onclick={()=>{setToolValue("fit_mode","contain");if(toolValue("crop_mode")==="free")setCropPreset("off")}}>{language==="tr"?"Sığdır / tuval":"Fit / contain"}</button></div>
                     {#if toolValue("fit_mode")==="contain" && toolValue("crop_mode")!=="off"}<label class="field"><span>{language==="tr"?"Tuval arka planı":"Canvas background"}</span><select value={toolValue("canvas_background")} onchange={(event)=>setToolValue("canvas_background",event.currentTarget.value)}><option value="transparent">{language==="tr"?"Şeffaf":"Transparent"}</option><option value="black">{language==="tr"?"Siyah":"Black"}</option><option value="white">{language==="tr"?"Beyaz":"White"}</option><option value="custom">{language==="tr"?"Özel renk":"Custom color"}</option></select></label>{/if}
                     {#if toolValue("fit_mode")==="contain" && toolValue("canvas_background")==="custom"}<label class="field"><span>{language==="tr"?"Arka plan rengi":"Background color"}</span><input type="text" maxlength="7" value={toolValue("canvas_color")} oninput={(event)=>setToolValue("canvas_color",event.currentTarget.value)}></label>{/if}

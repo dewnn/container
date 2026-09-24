@@ -25,6 +25,10 @@
   const t=(key:string)=>words[language][key]??key;
   let video:HTMLVideoElement|null = $state(null);
   let stage:HTMLElement|null = $state(null);
+  let panelWorkspace:HTMLElement|null = $state(null);
+  let panelWorkspaceWidth=$state(0);
+  let leftPanelWidth=$state<number|null>(null);
+  let rightPanelWidth=$state<number|null>(null);
   let threshold = $state(0.50);
   let minSilence = $state(0.10);
   let minSpeech = $state(0.15);
@@ -62,6 +66,56 @@
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
   let historyApplying=false;
   let sessionRestored=false;
+  const panelStorageKey="container-smartcut-panel-widths";
+  function panelSizes(){
+    const compact=panelWorkspaceWidth<=950,padding=compact?7:10;
+    const available=Math.max(0,panelWorkspaceWidth-padding*2-16);
+    const minLeft=compact?185:220,minRight=compact?225:285,minCenter=compact?315:420;
+    const defaultLeft=panelWorkspaceWidth<=1150?220:250,defaultRight=panelWorkspaceWidth<=1150?285:330;
+    const left=Math.max(minLeft,Math.min(560,available-minRight-minCenter,leftPanelWidth??defaultLeft));
+    const right=Math.max(minRight,Math.min(620,available-left-minCenter,rightPanelWidth??defaultRight));
+    return {left,right,available,minLeft,minRight,minCenter};
+  }
+  const sizes=$derived(panelSizes());
+  $effect(()=>{
+    const element=panelWorkspace;if(!element)return;
+    const update=()=>panelWorkspaceWidth=element.clientWidth;
+    update();const observer=new ResizeObserver(update);observer.observe(element);
+    return()=>observer.disconnect();
+  });
+  function savePanelWidths(){try{localStorage.setItem(panelStorageKey,JSON.stringify({left:leftPanelWidth,right:rightPanelWidth}))}catch{}}
+  function setPanelWidth(side:"left"|"right",value:number){
+    const sizes=panelSizes();
+    if(side==="left")leftPanelWidth=Math.round(Math.max(sizes.minLeft,Math.min(560,sizes.available-sizes.right-sizes.minCenter,value)));
+    else rightPanelWidth=Math.round(Math.max(sizes.minRight,Math.min(620,sizes.available-sizes.left-sizes.minCenter,value)));
+  }
+  function startPanelResize(event:PointerEvent,side:"left"|"right"){
+    if(event.button!==0||!panelWorkspace)return;
+    event.preventDefault();const target=event.currentTarget as HTMLElement,pointerId=event.pointerId;
+    const startX=event.clientX,sizes=panelSizes(),initial=side==="left"?sizes.left:sizes.right;
+    leftPanelWidth=sizes.left;rightPanelWidth=sizes.right;
+    target.setPointerCapture?.(pointerId);
+    const oldCursor=document.body.style.cursor,oldSelection=document.body.style.userSelect;
+    document.body.style.cursor="col-resize";document.body.style.userSelect="none";
+    const move=(next:PointerEvent)=>{if(next.pointerId===pointerId)setPanelWidth(side,initial+(next.clientX-startX)*(side==="left"?1:-1))};
+    const stop=(next?:PointerEvent)=>{
+      if(next&&next.pointerId!==pointerId)return;
+      window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop);window.removeEventListener("blur",onBlur);
+      if(target.hasPointerCapture?.(pointerId))target.releasePointerCapture(pointerId);
+      document.body.style.cursor=oldCursor;document.body.style.userSelect=oldSelection;savePanelWidths();
+    };
+    const onBlur=()=>stop();
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);window.addEventListener("pointercancel",stop);window.addEventListener("blur",onBlur);
+  }
+  function panelKey(event:KeyboardEvent,side:"left"|"right"){
+    const sizes=panelSizes();let value=side==="left"?sizes.left:sizes.right;
+    if(event.key==="Home")value=side==="left"?sizes.minLeft:sizes.minRight;
+    else if(event.key==="End")value=side==="left"?Math.min(560,sizes.available-sizes.right-sizes.minCenter):Math.min(620,sizes.available-sizes.left-sizes.minCenter);
+    else if(event.key==="ArrowLeft"||event.key==="ArrowRight")value+=(event.key==="ArrowRight"?1:-1)*(side==="left"?1:-1)*(event.shiftKey?50:20);
+    else return;
+    event.preventDefault();event.stopPropagation();setPanelWidth(side,value);savePanelWidths();
+  }
+  export function resetPanelWidths(){leftPanelWidth=null;rightPanelWidth=null;savePanelWidths()}
 
   $effect(()=>onbusychange(analyzing||autoTuning||exporting));
 
@@ -216,9 +270,16 @@
   }
 
   onMount(()=>{
+    try{
+      const saved=JSON.parse(localStorage.getItem(panelStorageKey)??"null");
+      if(saved&&typeof saved==="object"){
+        if(Number.isFinite(saved.left)&&saved.left>=185&&saved.left<=560)leftPanelWidth=saved.left;
+        if(Number.isFinite(saved.right)&&saved.right>=225&&saved.right<=620)rightPanelWidth=saved.right;
+      }
+    }catch{}
     let disposed=false;
     listen<Progress>("container-progress",e=>{if(exporting)progress=e.payload.percent}).then(fn=>{if(disposed)fn();else unlisten=fn});
-    const key=(e:KeyboardEvent)=>{const tag=(document.activeElement as HTMLElement)?.tagName;if(["INPUT","SELECT","TEXTAREA"].includes(tag))return;if(e.code==="Space"){e.preventDefault();togglePlay()}else if(e.key==="ArrowLeft")seek(current-5);else if(e.key==="ArrowRight")seek(current+5)};
+    const key=(e:KeyboardEvent)=>{if(e.defaultPrevented||document.querySelector("dialog[open]"))return;const tag=(document.activeElement as HTMLElement)?.tagName;if(["INPUT","SELECT","TEXTAREA"].includes(tag))return;if(e.code==="Space"){e.preventDefault();togglePlay()}else if(e.key==="ArrowLeft")seek(current-5);else if(e.key==="ArrowRight")seek(current+5)};
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
     resetHistory();
@@ -228,7 +289,7 @@
   });
 </script>
 
-<section class="ac-layout">
+<section class="ac-layout resizable" bind:this={panelWorkspace} style={`--ac-left:${sizes.left}px;--ac-right:${sizes.right}px`}>
   <aside class="ac-side ac-left">
     <div class="ac-card">
         <header><div><h3>{t("detection")}</h3><p class:auto-result={!!autoSummary} title={autoSummary?`AUTO · ${autoSummary}`:t("silenceParams")}>{autoSummary?`AUTO · ${autoSummary}`:t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing||exporting}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
@@ -268,6 +329,8 @@
       </div>
     </div>
   </aside>
+
+  <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sol panel genişliği":"SmartCut left panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(560,sizes.available-sizes.right-sizes.minCenter)} aria-valuenow={Math.round(sizes.left)} onpointerdown={(event)=>startPanelResize(event,"left")} onkeydown={(event)=>panelKey(event,"left")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
 
   <div class="ac-main">
     <div class="ac-player ac-card" bind:this={stage}>
@@ -311,6 +374,8 @@
     </div>
     {#if error}<div class="ac-error">{error}</div>{/if}
   </div>
+
+  <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sağ panel genişliği":"SmartCut right panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minRight} aria-valuemax={Math.min(620,sizes.available-sizes.left-sizes.minCenter)} aria-valuenow={Math.round(sizes.right)} onpointerdown={(event)=>startPanelResize(event,"right")} onkeydown={(event)=>panelKey(event,"right")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
 
   <aside class="ac-side ac-right ac-card">
     <header><div><h3>{t("cuts")}</h3><p>{t("editable")}</p></div><button class="ac-mini" onclick={addCut}>{t("add")}</button></header>

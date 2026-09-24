@@ -11,7 +11,7 @@ const sample = {
   bitrate: 3_000_000, size: 1_000_000, start_timecode: null,
 };
 
-async function mockDesktop(page: Page, options: { invalidSecond?: boolean; interrupted?: boolean; startupPath?: string | null; savedRecovery?: boolean; missingProjectSource?: boolean } = {}) {
+async function mockDesktop(page: Page, options: { invalidSecond?: boolean; interrupted?: boolean; startupPath?: string | null; savedRecovery?: boolean; missingProjectSource?: boolean; fixture?: typeof sample } = {}) {
   await page.addInitScript(({ media, invalidSecond, interrupted, startupPath, savedRecovery, missingProjectSource, dialogMessagesAllowed }) => {
     const callbacks = new Map<number, (...args: any[]) => void>();
     const events = new Map<string, number>();
@@ -68,7 +68,7 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
     Object.defineProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__", { value: { unregisterListener() {} } });
     if (!localStorage.getItem("container-language")) localStorage.setItem("container-language", "en");
     if (savedRecovery) localStorage.setItem("container-recovery-v1", JSON.stringify({version:1,savedAt:Date.now(),mediaPath:media.path,workspaceMode:"toolbox",toolbox:null,autocut:null,batch:null}));
-  }, { media: sample, dialogMessagesAllowed, ...options });
+  }, { media: options.fixture??sample, dialogMessagesAllowed, ...options });
   await page.goto("/");
   if (!options.startupPath) await expect(page.locator(".dropzone")).toBeVisible();
 }
@@ -77,6 +77,245 @@ async function openFixture(page: Page) {
   await page.locator(".dropzone").click();
   await expect(page.locator(".settings")).toBeVisible();
 }
+
+test("Toolbox side panels resize, preserve preview space and remember widths",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.setViewportSize({width:1440,height:850});
+  const panels=page.locator(".workspace");
+  const left=page.locator(".tool-pane"),middle=page.locator(".center-stack"),right=page.locator(".settings");
+  const dividers=page.locator(".workspace-resizer");
+  await expect(dividers).toHaveCount(2);
+  const before={left:(await left.boundingBox())!,middle:(await middle.boundingBox())!,right:(await right.boundingBox())!};
+  const first=(await dividers.nth(0).boundingBox())!;
+  await page.mouse.move(first.x+first.width/2,first.y+first.height/2);
+  await page.mouse.down();await page.mouse.move(first.x+first.width/2+90,first.y+first.height/2,{steps:8});await page.mouse.up();
+  const widened={left:(await left.boundingBox())!,middle:(await middle.boundingBox())!,right:(await right.boundingBox())!};
+  expect(widened.left.width-before.left.width).toBeGreaterThan(75);
+  expect(before.middle.width-widened.middle.width).toBeGreaterThan(75);
+  expect(Math.abs(widened.right.width-before.right.width)).toBeLessThan(3);
+  const second=(await dividers.nth(1).boundingBox())!;
+  await page.mouse.move(second.x+second.width/2,second.y+second.height/2);
+  await page.mouse.down();await page.mouse.move(second.x+second.width/2-70,second.y+second.height/2,{steps:8});await page.mouse.up();
+  expect((await right.boundingBox())!.width-widened.right.width).toBeGreaterThan(55);
+  const rightBeforeKey=(await right.boundingBox())!.width;
+  await dividers.nth(1).focus();await page.keyboard.press("ArrowRight");
+  expect(rightBeforeKey-(await right.boundingBox())!.width).toBeGreaterThan(15);
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null"));
+  expect(saved.left).toBeGreaterThan(before.left.width+75);
+  expect(saved.right).toBeGreaterThan(before.right.width+30);
+  for(const width of [1100,900,860]){
+    await page.setViewportSize({width,height:700});
+    await expect.poll(async()=>((await middle.boundingBox())?.width??0)).toBeGreaterThan(315);
+    const bounds=(await panels.boundingBox())!;
+    expect((await right.boundingBox())!.x+(await right.boundingBox())!.width).toBeLessThanOrEqual(bounds.x+bounds.width+1);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+    expect(await page.locator(".tool-row small").first().evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+  }
+  expect(await page.locator(".settings .transform-options.four").evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(" ").length)).toBe(2);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/resizable-toolbox-compact.png"});
+  await page.setViewportSize({width:1440,height:850});
+  await page.reload();await openFixture(page);
+  expect(Math.abs((await left.boundingBox())!.width-saved.left)).toBeLessThan(3);
+  expect(Math.abs((await right.boundingBox())!.width-saved.right)).toBeLessThan(3);
+  await dividers.nth(0).dblclick();
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null"))).toEqual({left:null,right:null});
+});
+
+test("Panel reset icon asks before restoring saved widths",async({page})=>{
+  await mockDesktop(page);
+  await expect(page.getByRole("button",{name:"OPEN PROJECT"})).toBeVisible();
+  await openFixture(page);
+  await expect(page.getByRole("button",{name:"OPEN PROJECT"})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"SAVE PROJECT"})).toBeVisible();
+  const divider=page.locator(".workspace-resizer").first();
+  await divider.focus();await page.keyboard.press("ArrowRight");
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null"));
+  expect(saved.left).toBeGreaterThan(0);
+  const trigger=page.getByRole("button",{name:"Reset panel widths"});
+  await trigger.click();
+  const dialog=page.getByRole("dialog",{name:"Reset panel layout"});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button",{name:"CANCEL"})).toBeFocused();
+  await expect(dialog).toContainText("editing history will stay unchanged");
+  if(process.env.UI_AUDIT_SCREENSHOTS){
+    await page.evaluate(()=>document.documentElement.dataset.theme="dark");
+    await page.screenshot({path:"test-results/panel-reset-dark.png"});
+    await page.evaluate(()=>document.documentElement.dataset.theme="light");
+    await page.screenshot({path:"test-results/panel-reset-light.png"});
+  }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null"))).toEqual(saved);
+  await trigger.click();
+  await dialog.getByRole("button",{name:"CANCEL"}).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null"))).toEqual(saved);
+  await trigger.click();
+  await dialog.getByRole("button",{name:"RESET"}).click();
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem("container-toolbox-panel-widths")??"null"))).toEqual({left:null,right:null});
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="plugin:dialog|message").length)).toBe(0);
+});
+
+test("Panel resize and reset dialog keyboard input never reaches either player",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  for(const mode of ["TOOLBOX","SMARTCUT"]){
+    await page.getByRole("button",{name:mode,exact:true}).click();
+    await page.evaluate(()=>{
+      (window as any).__PLAYER_TOUCHES__=0;
+      for(const video of document.querySelectorAll("video")){
+        Object.defineProperty(video,"currentTime",{configurable:true,get:()=>0,set:()=>{(window as any).__PLAYER_TOUCHES__++}});
+        video.play=async()=>{(window as any).__PLAYER_TOUCHES__++};
+      }
+    });
+    await page.locator(".workspace-resizer").first().focus();await page.keyboard.press("ArrowRight");
+    expect(await page.evaluate(()=>(window as any).__PLAYER_TOUCHES__)).toBe(0);
+    await page.getByRole("button",{name:"Reset panel widths"}).click();
+    const dialog=page.getByRole("dialog",{name:"Reset panel layout"});
+    await expect(dialog.getByRole("button",{name:"CANCEL"})).toBeFocused();
+    await page.keyboard.press("ArrowRight");await page.keyboard.press("Space");
+    await expect(dialog).toHaveCount(0);
+    expect(await page.evaluate(()=>(window as any).__PLAYER_TOUCHES__)).toBe(0);
+  }
+});
+
+test("SmartCut and Batch panels resize, persist independently, and reset only the active workspace",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.setViewportSize({width:1440,height:850});
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  const smart=page.locator(".ac-layout"),smartLeft=smart.locator(".ac-left"),smartMiddle=smart.locator(".ac-main"),smartRight=smart.locator(".ac-right");
+  const smartDividers=smart.locator(".workspace-resizer");
+  await expect(smartDividers).toHaveCount(2);
+  const leftBefore=(await smartLeft.boundingBox())!.width,rightBefore=(await smartRight.boundingBox())!.width;
+  const leftHandle=(await smartDividers.first().boundingBox())!;
+  await page.mouse.move(leftHandle.x+4,leftHandle.y+leftHandle.height/2);await page.mouse.down();
+  await page.mouse.move(leftHandle.x+94,leftHandle.y+leftHandle.height/2,{steps:8});await page.mouse.up();
+  expect((await smartLeft.boundingBox())!.width-leftBefore).toBeGreaterThan(75);
+  const rightHandle=(await smartDividers.last().boundingBox())!;
+  await page.mouse.move(rightHandle.x+4,rightHandle.y+rightHandle.height/2);await page.mouse.down();
+  await page.mouse.move(rightHandle.x-66,rightHandle.y+rightHandle.height/2,{steps:8});await page.mouse.up();
+  expect((await smartRight.boundingBox())!.width-rightBefore).toBeGreaterThan(55);
+  const smartSaved=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"));
+  expect(smartSaved.left).toBeGreaterThan(leftBefore+75);expect(smartSaved.right).toBeGreaterThan(rightBefore+55);
+  await smartDividers.first().focus();await page.keyboard.press("ArrowRight");
+  expect((await smartLeft.boundingBox())!.width).toBeGreaterThan(smartSaved.left+15);
+  const smartFinal=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"));
+
+  await page.getByRole("button",{name:"BATCH",exact:true}).click();
+  const batch=page.locator(".batch-workspace"),batchLeft=batch.locator(".batch-control"),batchRight=batch.locator(".batch-list");
+  const batchDivider=batch.locator(".workspace-resizer");
+  await expect(batchDivider).toHaveCount(1);
+  const batchBefore=(await batchLeft.boundingBox())!.width,batchHandle=(await batchDivider.boundingBox())!;
+  await page.mouse.move(batchHandle.x+4,batchHandle.y+batchHandle.height/2);await page.mouse.down();
+  await page.mouse.move(batchHandle.x+84,batchHandle.y+batchHandle.height/2,{steps:8});await page.mouse.up();
+  expect((await batchLeft.boundingBox())!.width-batchBefore).toBeGreaterThan(65);
+  const batchSaved=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-batch-panel-widths")??"null"));
+  expect(batchSaved.left).toBeGreaterThan(batchBefore+65);
+  await batchDivider.focus();await page.keyboard.press("ArrowLeft");
+  expect((await batchLeft.boundingBox())!.width).toBeLessThan(batchSaved.left-15);
+  const batchFinal=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-batch-panel-widths")??"null"));
+
+  for(const width of [1024,900,860]){
+    await page.setViewportSize({width,height:700});
+    await expect.poll(async()=>((await batchRight.boundingBox())?.width??0)).toBeGreaterThan(315);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+  }
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/batch-resizable-compact.png"});
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  await expect.poll(async()=>((await smartMiddle.boundingBox())?.width??0)).toBeGreaterThan(310);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/smartcut-resizable-compact.png"});
+  await page.setViewportSize({width:1440,height:850});
+  expect(Math.abs((await smartLeft.boundingBox())!.width-smartFinal.left)).toBeLessThan(3);
+  expect(Math.abs((await smartRight.boundingBox())!.width-smartFinal.right)).toBeLessThan(3);
+  await page.reload();await openFixture(page);
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  expect(Math.abs((await smartLeft.boundingBox())!.width-smartFinal.left)).toBeLessThan(3);
+  expect(Math.abs((await smartRight.boundingBox())!.width-smartFinal.right)).toBeLessThan(3);
+  const reset=page.getByRole("button",{name:"Reset panel widths"});
+  await reset.click();
+  const dialog=page.getByRole("dialog",{name:"Reset panel layout"});
+  await expect(dialog).toContainText("SmartCut side panels");
+  await dialog.getByRole("button",{name:"CANCEL"}).click();
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"))).toEqual(smartFinal);
+  await reset.click();await dialog.getByRole("button",{name:"RESET"}).click();
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"))).toEqual({left:null,right:null});
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-batch-panel-widths")??"null"))).toEqual(batchFinal);
+
+  await page.getByRole("button",{name:"BATCH",exact:true}).click();
+  expect(Math.abs((await batchLeft.boundingBox())!.width-batchFinal.left)).toBeLessThan(3);
+  await reset.click();await expect(dialog).toContainText("Batch controls panel");
+  await dialog.getByRole("button",{name:"RESET"}).click();
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem("container-batch-panel-widths")??"null"))).toEqual({left:null});
+  await page.reload();await openFixture(page);
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  expect((await smartLeft.boundingBox())!.width).toBeLessThan(smartFinal.left-40);
+  await page.getByRole("button",{name:"BATCH",exact:true}).click();
+  expect((await batchLeft.boundingBox())!.width).toBeLessThan(batchFinal.left-40);
+});
+
+test("Image favorites count and crop controls stay separate at compact widths",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("container-favorites",JSON.stringify(["clipper","transform","text","image_compressor","audio_convert"])));
+  await mockDesktop(page,{fixture:{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:0.04,width:140,height:140,fps:25,codec:"mjpeg"}});
+  await openFixture(page);
+  await expect(page.locator(".favorites-filter b")).toHaveText("3");
+  await expect(page.locator(".chips")).not.toContainText("dur");
+  await expect(page.locator(".chips")).not.toContainText("fps");
+  await expect(page.locator(".filename")).not.toHaveAttribute("title",/Duration:|FPS:/);
+  for(const width of [1440,1024,900]){
+    await page.setViewportSize({width,height:720});
+    const lastPreset=page.locator(".crop-options button").last();
+    const fit=page.locator(".image-fit-options");
+    await fit.scrollIntoViewIfNeeded();
+    const presetBox=await lastPreset.boundingBox(),fitBox=await fit.boundingBox();
+    expect(fitBox!.y-(presetBox!.y+presetBox!.height)).toBeGreaterThanOrEqual(8);
+    await fit.locator("summary").click();
+    await expect(fit).toHaveAttribute("open","");
+    const options=fit.locator(".transform-options");
+    const summaryBox=await fit.locator("summary").boundingBox(),optionsBox=await options.boundingBox();
+    expect(optionsBox!.y).toBeGreaterThanOrEqual(summaryBox!.y+summaryBox!.height);
+    if(width===900){
+      await page.screenshot({path:"test-results/image-toolbox-compact.png"});
+      await page.evaluate(()=>document.documentElement.dataset.theme="dark");
+      await page.screenshot({path:"test-results/image-toolbox-compact-dark.png"});
+    }
+    await fit.locator("summary").click();
+  }
+  await page.locator(".favorites-filter").click();
+  await expect(page.locator(".tool-row")).toHaveCount(3);
+  await page.locator(".favorite-toggle.active").first().click();
+  await expect(page.locator(".favorites-filter b")).toHaveText("2");
+});
+
+test("Audio favorites exclude video and image tools",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("container-favorites",JSON.stringify(["clipper","image_compressor","audio_convert","file_hash"])));
+  await mockDesktop(page,{fixture:{...sample,path:"C:\\fixtures\\sample.mp3",name:"sample.mp3",kind:"audio",width:0,height:0,fps:0,codec:"mp3",audio_codec:"mp3"}});
+  await openFixture(page);
+  await expect(page.locator(".explain")).toContainText("re-encodes audio as FLAC");
+  await expect(page.locator(".favorites-filter b")).toHaveText("2");
+  await expect(page.locator(".chips")).not.toContainText("res");
+  await expect(page.locator(".chips")).not.toContainText("fps");
+  await page.locator(".favorites-filter").click();
+  await expect(page.locator(".tool-row")).toHaveCount(2);
+  await page.setViewportSize({width:900,height:600});
+  await expect(page.locator(".run-box .run")).toBeVisible();
+  expect(await page.locator(".settings").evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+  await page.screenshot({path:"test-results/audio-toolbox-compact.png"});
+  await page.evaluate(()=>document.documentElement.dataset.theme="dark");
+  await page.screenshot({path:"test-results/audio-toolbox-compact-dark.png"});
+});
+
+test("Video and its Audio tab show separate favorite counts",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("container-favorites",JSON.stringify(["clipper","text","file_hash","remove_audio"])));
+  await mockDesktop(page);
+  await openFixture(page);
+  await expect(page.locator(".favorites-filter b")).toHaveText("3");
+  await page.locator(".tabs button").filter({hasText:"AUDIO"}).click();
+  await expect(page.locator(".favorites-filter b")).toHaveText("1");
+  await page.locator(".favorites-filter").click();
+  await expect(page.locator(".tool-row")).toHaveCount(1);
+  await expect(page.locator(".tool-row")).toContainText("Remove Audio");
+});
 
 for(const language of ["en","tr"]){
   for(const theme of ["dark","light"]){
@@ -529,6 +768,115 @@ test("text layers remain editable when returning from a continued output",async(
   await expect(page.getByRole("textbox",{name:"Text",exact:true})).toHaveValue("Keep this editable");
 });
 
+test("Text handles resize smoothly and pasted emoji reaches the export raster",async({page})=>{
+  await mockDesktop(page);await openFixture(page);await stageMocks(page);
+  const font=readFileSync(new URL("../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
+  await page.evaluate(font=>{
+    const previous=(window as any).__TEST_HANDLER__;
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+      if(cmd==="list_system_fonts")return [{name:"Arial",path:"C:\\fixtures\\font.ttf"}];
+      if(cmd==="font_preview_data")return `data:font/woff2;base64,${font}`;
+      return previous(cmd,args);
+    };
+  },font);
+  await page.getByPlaceholder("search tools...").fill("Text");
+  await page.locator(".tool-row").filter({has:page.getByText("Text",{exact:true})}).click();
+  await page.getByRole("button",{name:"＋ Add text",exact:true}).click();
+  await page.getByRole("textbox",{name:"Text",exact:true}).fill("Hi 😀");
+  const layer=page.locator(".preview-text.active");
+  const before=await layer.boundingBox();
+  const right=await layer.locator(".text-size-handle.right").boundingBox();
+  await page.mouse.move(right!.x+right!.width/2,right!.y+right!.height/2);
+  await page.mouse.down();await page.mouse.move(right!.x+right!.width/2+36,right!.y+right!.height/2,{steps:4});await page.mouse.up();
+  const after=await layer.boundingBox();
+  expect(after!.width-before!.width).toBeGreaterThan(25);
+  expect(Math.abs(after!.x-before!.x)).toBeLessThan(3);
+  const left=await layer.locator(".text-size-handle.left").boundingBox();
+  await page.mouse.move(left!.x+left!.width/2,left!.y+left!.height/2);
+  await page.mouse.down();await page.mouse.move(left!.x+left!.width/2-24,left!.y+left!.height/2,{steps:4});await page.mouse.up();
+  const fromLeft=await layer.boundingBox();
+  expect(fromLeft!.width-after!.width).toBeGreaterThan(16);
+  expect(Math.abs(fromLeft!.x+fromLeft!.width-after!.x-after!.width)).toBeLessThan(3);
+  await expect(layer.locator(".text-size-handle.nw,.text-size-handle.ne,.text-size-handle.sw,.text-size-handle.se")).toHaveCount(4);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/text-transform-handles.png"});
+  const emojiPixels=await page.locator(".text-preview-canvas").evaluate(canvas=>{
+    const image=(canvas as HTMLCanvasElement).getContext("2d")!.getImageData(0,0,(canvas as HTMLCanvasElement).width,(canvas as HTMLCanvasElement).height).data;
+    let yellow=0;for(let index=0;index<image.length;index+=4)if(image[index]>170&&image[index+1]>90&&image[index+1]<245&&image[index+2]<100&&image[index+3]>100)yellow++;
+    return yellow;
+  });
+  expect(emojiPixels).toBeGreaterThan(20);
+  await page.getByRole("button",{name:"▶ render text",exact:true}).click();
+  const call=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((value:any)=>value.cmd==="run_operation").at(-1));
+  expect(call.args.request.params.text_raster_png).toMatch(/^data:image\/png;base64,/);
+});
+
+for(const kind of ["video","image"] as const){
+  test(`Text corner resize keeps line breaks, Enter adds a line and canvas X removes it in ${kind}`,async({page})=>{
+    const fixture=kind==="image"?{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:.04,width:640,height:360,fps:25,codec:"mjpeg"}:sample;
+    await mockDesktop(page,{fixture});await openFixture(page);await stageMocks(page);
+    const font=readFileSync(new URL("../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
+    await page.evaluate(font=>{
+      const previous=(window as any).__TEST_HANDLER__;
+      (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+        if(cmd==="list_system_fonts")return [{name:"Arial",path:"C:\\fixtures\\font.ttf"}];
+        if(cmd==="font_preview_data")return `data:font/woff2;base64,${font}`;
+        return previous(cmd,args);
+      };
+    },font);
+    await page.getByPlaceholder("search tools...").fill("Text");
+    await page.locator(".tool-row").filter({has:page.getByText("Text",{exact:true})}).click();
+    await page.getByRole("button",{name:"＋ Add text",exact:true}).click();
+    const editor=page.getByRole("textbox",{name:"Text",exact:true});
+    await editor.fill("ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN ELEVEN TWELVE");
+    const layer=page.locator(".preview-text.active");
+    const before=await layer.locator("span").textContent()??"";
+    expect(before.split("\n").length).toBeGreaterThan(1);
+    const corner=await layer.locator(".text-size-handle.ne").boundingBox();
+    await page.mouse.move(corner!.x+corner!.width/2,corner!.y+corner!.height/2);
+    await page.mouse.down();await page.mouse.move(corner!.x+corner!.width/2-30,corner!.y+corner!.height/2,{steps:4});await page.mouse.up();
+    await expect(layer.locator("span")).toHaveText(before);
+    await editor.fill("FIRST");await editor.press("End");await editor.press("Enter");await editor.type("SECOND");
+    await expect(editor).toHaveValue("FIRST\nSECOND");
+    await expect(layer.locator("span")).toHaveText("FIRST\nSECOND");
+    if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:`test-results/text-multiline-delete-${kind}.png`});
+    await page.getByRole("button",{name:"▶ render text",exact:true}).click();
+    const call=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((value:any)=>value.cmd==="run_operation").at(-1));
+    expect(JSON.parse(call.args.request.params.layers)[0].text).toBe("FIRST\nSECOND");
+    await expect(layer.getByRole("button",{name:/Remove text/})).toHaveCount(0);
+    await page.locator(".text-tab.active .text-tab-remove").click();
+    await expect(page.locator(".preview-text")).toHaveCount(0);
+  });
+}
+
+for(const kind of ["video","image"] as const){
+  test(`Image overlay handle keeps its opposite edge fixed in ${kind}`,async({page})=>{
+    const fixture=kind==="image"?{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:.04,width:640,height:360,fps:25,codec:"mjpeg"}:sample;
+    await mockDesktop(page,{fixture});await openFixture(page);
+    const logo=readFileSync(new URL("../../public/logo-dark.png",import.meta.url));
+    await page.route("http://asset.localhost/**",route=>decodeURIComponent(route.request().url()).endsWith("overlay.png")?route.fulfill({contentType:"image/png",body:logo}):route.continue());
+    await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="plugin:dialog|open"?"C:\\fixtures\\overlay.png":undefined});
+    await page.getByPlaceholder("search tools...").fill("Image / Logo Overlay");
+    await page.getByText("Image / Logo Overlay",{exact:true}).last().click();
+    await page.locator(".file-field").click();
+    await expect(page.locator(".overlay-preview-box")).toBeVisible();
+    const overlay=page.locator(".overlay-preview-box");
+    const before=await overlay.boundingBox();
+    const handle=await overlay.locator(".text-size-handle.right").boundingBox();
+    await page.mouse.move(handle!.x+handle!.width/2,handle!.y+handle!.height/2);
+    await page.mouse.down();await page.mouse.move(handle!.x+handle!.width/2+30,handle!.y+handle!.height/2,{steps:4});await page.mouse.up();
+    const after=await overlay.boundingBox();
+    expect(after!.width-before!.width).toBeGreaterThan(20);
+    expect(Math.abs(after!.x-before!.x)).toBeLessThan(3);
+    const corner=await overlay.locator(".text-size-handle.se").boundingBox();
+    await page.mouse.move(corner!.x+corner!.width/2,corner!.y+corner!.height/2);
+    await page.mouse.down();await page.mouse.move(corner!.x+corner!.width/2+16,corner!.y+corner!.height/2+12,{steps:4});await page.mouse.up();
+    const diagonal=await overlay.boundingBox();
+    expect(diagonal!.width-after!.width).toBeGreaterThan(12);
+    expect(Math.abs(diagonal!.x-after!.x)).toBeLessThan(3);
+    if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:`test-results/overlay-transform-handles-${kind}.png`});
+  });
+}
+
 test("failed second file does not destroy the open tool settings", async ({ page }) => {
   await mockDesktop(page, { invalidSecond: true });
   await openFixture(page);
@@ -567,10 +915,20 @@ test("Social Tag positions move across the camera and retain per-style choices",
   await expect(position).toHaveValue("left");
   await expect(tag).toBeVisible();
   const boxedLeft = await x();
+  const camera = await page.locator(".region-a").boundingBox();
+  const boxedBounds = await tag.boundingBox();
+  expect(camera).not.toBeNull();
+  expect(boxedBounds).not.toBeNull();
+  expect(Math.abs(boxedBounds!.x - camera!.x)).toBeLessThan(3);
+  expect(Math.abs(boxedBounds!.y + boxedBounds!.height - camera!.y - camera!.height)).toBeLessThan(3);
   await position.selectOption("center");
   const boxedCenter = await x();
+  const centeredBounds = await tag.boundingBox();
+  expect(Math.abs(centeredBounds!.x + centeredBounds!.width / 2 - camera!.x - camera!.width / 2)).toBeLessThan(3);
   await position.selectOption("right");
   const boxedRight = await x();
+  const rightBounds = await tag.boundingBox();
+  expect(Math.abs(rightBounds!.x + rightBounds!.width - camera!.x - camera!.width)).toBeLessThan(3);
   expect(boxedLeft).toBeLessThan(boxedCenter);
   expect(boxedCenter).toBeLessThan(boxedRight);
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-boxed-right.png" });
@@ -578,6 +936,9 @@ test("Social Tag positions move across the camera and retain per-style choices",
   await style.selectOption("plain");
   await expect(position).toHaveValue("center");
   const plainCenter = await x();
+  const plainBounds = await tag.boundingBox();
+  expect(Math.abs(plainBounds!.x + plainBounds!.width / 2 - camera!.x - camera!.width / 2)).toBeLessThan(3);
+  expect(Math.abs(plainBounds!.y + plainBounds!.height / 2 - camera!.y - camera!.height)).toBeLessThan(3);
   await position.selectOption("left");
   const plainLeft = await x();
   await position.selectOption("right");
@@ -587,6 +948,49 @@ test("Social Tag positions move across the camera and retain per-style choices",
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-plain-right.png" });
   await style.selectOption("boxed");
   await expect(position).toHaveValue("right");
+});
+
+test("Social Tag preview keeps text and icon aligned at small sizes",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.setViewportSize({width:1920,height:1080});
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByText("Social Tag",{exact:true}).click();
+  await page.getByPlaceholder("kanaladi").fill("eray");
+  const style=page.getByRole("combobox",{name:"Style"});
+  const platform=page.getByRole("combobox",{name:"Platform"});
+  const size=page.locator(".clipper-watermark-controls input[type=range]");
+  const tag=page.locator(".clipper-social-tag");
+  for(const platformValue of ["kick","twitch"]){
+    await platform.selectOption(platformValue);
+    for(const styleValue of ["plain","boxed"]){
+      await style.selectOption(styleValue);
+      for(const fontSize of ["20","36"]){
+        await size.fill(fontSize);
+        const icon=await tag.locator(".clipper-social-icon").boundingBox();
+        const text=await tag.locator(".clipper-social-name").boundingBox();
+        expect(icon).not.toBeNull();expect(text).not.toBeNull();
+        expect(Math.abs(icon!.y+icon!.height/2-text!.y-text!.height/2)).toBeLessThan(1);
+        expect(await tag.evaluate(el=>getComputedStyle(el).transform)).not.toBe("none");
+      }
+    }
+  }
+  await style.selectOption("plain");
+  await platform.selectOption("kick");
+  await size.fill("36");
+  const centered=await tag.evaluate(el=>{
+    const box=el.getBoundingClientRect(),parent=el.parentElement!.getBoundingClientRect();
+    return {visual:box.x+box.width/2,anchor:parent.x+parseFloat(el.style.left)};
+  });
+  expect(Math.abs(centered.visual-centered.anchor)).toBeLessThan(2);
+  await page.screenshot({path:"test-results/social-tag-eray-preview.png"});
+  await stageMocks(page);
+  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+  await expect(page.getByRole("button",{name:"show output",exact:true})).toBeVisible();
+  await page.getByRole("combobox",{name:"Position"}).selectOption("left");
+  await expect(page.locator(".job-head p")).toHaveText("settings changed · render again");
+  await expect(page.getByRole("button",{name:"previous output",exact:true})).toBeVisible();
 });
 
 test("GIF IN and OUT respond to the player position", async ({ page }) => {

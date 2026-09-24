@@ -6,6 +6,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-24
+
+- Added resizable panels with remembered widths in Toolbox, SmartCut and Batch, plus a theme-matched reset confirmation.
+- Improved text and image overlay resizing, preserved text wrapping when scaling, and added multiline text editing with compact layer removal.
+- Added emoji text export for video and images.
+- Improved Social Tag alignment and camera-relative previews for plain and boxed styles.
+- Fixed media-specific favorite counts and spacing in image crop controls.
+- Simplified the editor header and prevented panel controls and confirmation dialogs from activating player shortcuts.
+
 ## [0.16.0] - 2026-09-24
 
 - Added Go Back history after Continue Editing.
