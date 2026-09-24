@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n- Added Kick/Twitch Social Tags to Clipper.\n- Improved experimental Auto Camera boundaries.\n- Improved project opening, recovery and missing-file warnings.\n- Fixed compact editor layouts and streamlined the header.\n- Corrected the Windows installer publisher to `dewn`.\n",
-  "pub_date": "2026-09-23T15:24:44.3252637Z",
+  "pub_date": "2026-09-24T11:21:57.0214546Z",
+  "notes": "# Changes\n\n\n- Added Go Back history after Continue Editing.\n- Added more Social Tag positions and improved small logos.\n- Improved interface readability, colors and compact layouts.\n- Fixed output continuation, Batch controls, project relinking and special-character exports.\n",
+  "version": "0.16.0",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVlBSFYzV1lZVGw4bmNSa3JXaEFxcXRVMEx5U3o4VmpBZUpxRjRQZ3pBMEhRaHRHYnFZTWVGMUJaLzZVLzJ3K3NZRHdFenVyTU1oejM1NmZKZ1VDUlFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTc3MDY5CWZpbGU6Q09OVEFJTkVSXzAuMTUuMF94NjQtc2V0dXAuZXhlCktLQ29KU05mV0piaXgzWnF6S0xmTmhJQWNvWHFidWY4VlNteXJPdEFKd09PUXJJVDhINHpyZ3IwclJINU9WbXE4UXJOWjdPdEJsZ3dIVHBMdFhhK0FBPT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.15.0/CONTAINER-Setup-0.15.0-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.16.0/CONTAINER-Setup-0.16.0-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRWSUxvazNaL1pCb241TW1pLzBZbWpKQnd0SjkxWnJnb1kzODJ6L0ZzMDBud2xpVG93VUlhY0dKWUpLNVlDeHNDRDhtQnJPdkpySS9VUHpYbEhweXc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMjQ4OTA0CWZpbGU6Q09OVEFJTkVSXzAuMTYuMF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xNi4wCmRtbjBNNktSZE8vaHQrN1dQY01JTEhHcERjZG5sUmZTckJNM2FmTHFTTWkxelFnVkhVMmdNd3ZYajdQa0tkdTRJcmJJU0ZtRXlpajZ0MUpLMjVYekJRPT0K"
     }
-  },
-  "version": "0.15.0"
+  }
 }
