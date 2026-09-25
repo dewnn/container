@@ -15,8 +15,6 @@
   <a href="https://github.com/dewnn/container/releases/latest">Download the latest release</a> · <a href="https://github.com/dewnn/container/actions/workflows/ci.yml">Build status</a>
 </p>
 
-## In action
-
 <p align="center">
   <img src="docs/container-product-tour.gif" width="960" alt="CONTAINER tour through Toolbox, Clipper, SmartCut and Batch" />
 </p>
