@@ -17,7 +17,7 @@
   import { startupAction } from "./lib/startupRecovery";
   import { projectResources, replaceProjectResource, type ProjectResource } from "./lib/projectResources";
   import { socialTagGeometry } from "./lib/socialTagGeometry";
-  import AutoCutWorkspace from "./lib/AutoCutWorkspace.svelte";
+  import SmartCutWorkspace from "./lib/SmartCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
   import StageHistoryControl from "./lib/StageHistory.svelte";
   import { toolSummary, toolCategory } from "./lib/toolSummaries";
@@ -192,8 +192,8 @@
   let updateDownloaded = $state(0);
   let updateTotal = $state(0);
   const messages:Record<"tr"|"en",Record<string,string>>={
-    tr:{tagline:"FFMPEG MEDYA ARAÇ KUTUSU",close:"kapat",drop:"medyayı buraya bırak",browse:"veya dosya seçmek için tıkla",landingTitle:"tek dosya. bütün araçlar.",landingCopy:"CONTAINER’ın bütün FFmpeg işlemleri, ayrıntılı ayarlar ve canlı ilerleme bilgisiyle tek çalışma alanında.",local:"yalnızca yerel işlem",untouched:"orijinal dosyalar değişmez",tools:"ARAÇLAR",available:"mevcut",video:"video",audio:"ses",image:"görsel",search:"araçlarda ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen",showOutput:"çıktıyı göster",cancelJob:"işlemi iptal et",parameters:"PARAMETRELER",defaults:"varsayılanlar",what:"NE YAPAR?",forVideo:"BU VİDEO İÇİN",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktı Downloads/CONTAINER Output klasörüne yazılır. Kaynak dosya değiştirilmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
-    en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one file. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to Downloads/CONTAINER Output. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
+    tr:{tagline:"FFMPEG MEDYA ARAÇLARI",close:"kapat",drop:"dosyanı buraya bırak",browse:"ya da seçmek için tıkla",landingTitle:"tek yerde. tüm araçlar.",landingCopy:"Videonu, sesini veya görselini aç; ihtiyacın olan araçlar ve tüm ayarlar burada.",local:"işlemler cihazında yapılır",untouched:"kaynak dosyaların değişmez",tools:"ARAÇLAR",available:"araç",video:"video",audio:"ses",image:"görsel",search:"araç ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen süre",showOutput:"çıktıyı göster",cancelJob:"işlemi iptal et",parameters:"AYARLAR",defaults:"varsayılanlar",what:"NE İŞE YARAR?",forVideo:"BU VİDEODA",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktın İndirilenler/CONTAINER Output klasörüne kaydedilir. Kaynak dosyan değişmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
+    en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one place. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to Downloads/CONTAINER Output. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
   };
   const t=(key:string)=>messages[language][key]??key;
   function friendlyProblem(reason:unknown){
@@ -2024,9 +2024,18 @@
   }
 
   onMount(() => {
+    let disposed=false;
     const saved=localStorage.getItem("container-language");
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
     document.documentElement.lang=language;
+    if(isTauri())void invoke("set_tray_language",{language}).catch(reportProblem);
+    let unlistenTrayUpdate:UnlistenFn|undefined;
+    if(isTauri())void listen("tray-check-updates",()=>{void checkForUpdates(true)}).then(fn=>{if(disposed)fn();else unlistenTrayUpdate=fn});
+    let unlistenTrayHidden:UnlistenFn|undefined;
+    if(isTauri())void listen("container-tray-hidden",()=>{
+      document.querySelectorAll<HTMLMediaElement>("video,audio").forEach(element=>element.pause());
+      persistRecovery();
+    }).then(fn=>{if(disposed)fn();else unlistenTrayHidden=fn});
     theme=document.documentElement.dataset.theme==="light"?"light":"dark";
     void syncWindowTheme(theme);
     try{const savedFavorites=JSON.parse(localStorage.getItem("container-favorites")??"[]");if(Array.isArray(savedFavorites))favoriteIds=savedFavorites.filter(value=>typeof value==="string")}catch{favoriteIds=[]}
@@ -2119,7 +2128,6 @@
     window.addEventListener("container-toast",toastEvent);
     window.addEventListener("error",browserError);
     window.addEventListener("unhandledrejection",rejected);
-    let disposed=false;
     listen<ProgressEvent>("container-progress", (event) => {
       progress = Math.max(0, Math.min(100, event.payload.percent));
       speed = event.payload.speed || "—";
@@ -2138,13 +2146,14 @@
       }
     }).then((fn) => {if(disposed)fn();else unlistenDrop=fn});
 
-    return () => { disposed=true;unlistenProgress?.(); unlistenDrop?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
+    return () => { disposed=true;unlistenProgress?.(); unlistenDrop?.(); unlistenTrayUpdate?.(); unlistenTrayHidden?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
   });
 
   function setLanguage(next:"tr"|"en"){
     if(next===language)return;
     const previous=selected;
     language=next; localStorage.setItem("container-language",next); document.documentElement.lang=next;
+    if(isTauri())void invoke("set_tray_language",{language:next}).catch(reportProblem);
     if(previous){selected=restoreToolSnapshot(previous);if(selected)restrictEncoderOptions(selected)}
   }
   function setTheme(next:"dark"|"light"){
@@ -2181,7 +2190,7 @@
 {/snippet}
 <main class="shell" class:drag-active={dragActive} inert={restoringSession||stageNavigating} aria-busy={restoringSession||stageNavigating}>
   <header class="topbar">
-    <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/logo-dark.png" alt="" decoding="sync"><img class="brand-logo brand-logo-light" src="/logo-light.png" alt="" decoding="sync"></span>CONTAINER</span>
+    <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt="" decoding="sync"><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt="" decoding="sync"></span>CONTAINER</span>
     {#if media}
       {@render historyControl()}
       <div class="file-summary">
@@ -2214,7 +2223,7 @@
   {#if panelResetDialogOpen}
     <dialog class="panel-reset-dialog" use:mountPanelResetDialog oncancel={()=>panelResetDialogOpen=false} aria-labelledby="panel-reset-title" aria-describedby="panel-reset-description">
       <header><span class="panel-reset-dialog-icon" aria-hidden="true">↺</span><h2 id="panel-reset-title">{language==="tr"?"Panel düzenini sıfırla":"Reset panel layout"}</h2></header>
-      <p id="panel-reset-description">{workspaceMode==="autocut"?(language==="tr"?"SmartCut yan panelleri varsayılan genişliklerine dönecek.":"SmartCut side panels will return to their default widths."):workspaceMode==="batch"?(language==="tr"?"Batch kontrol paneli varsayılan genişliğine dönecek.":"The Batch controls panel will return to its default width."):(language==="tr"?"Araçlar ve Parametreler panelleri varsayılan genişliklerine dönecek.":"Tools and Parameters will return to their default widths.")} {language==="tr"?"Proje ve düzenleme geçmişin değişmeyecek.":"Your project and editing history will stay unchanged."}</p>
+      <p id="panel-reset-description">{workspaceMode==="autocut"?(language==="tr"?"SmartCut yan panelleri ve zaman çizelgesi varsayılan boyutlarına dönecek.":"SmartCut side panels and timeline will return to their default sizes."):workspaceMode==="batch"?(language==="tr"?"Batch kontrol paneli varsayılan genişliğine dönecek.":"The Batch controls panel will return to its default width."):(language==="tr"?"Araçlar ve Parametreler panelleri varsayılan genişliklerine dönecek.":"Tools and Parameters will return to their default widths.")} {language==="tr"?"Proje ve düzenleme geçmişin değişmeyecek.":"Your project and editing history will stay unchanged."}</p>
       <footer><button class="panel-reset-cancel" onclick={()=>panelResetDialogOpen=false}>{language==="tr"?"İPTAL":"CANCEL"}</button><button class="panel-reset-confirm" onclick={confirmResetPanelWidths}>{language==="tr"?"SIFIRLA":"RESET"}</button></footer>
     </dialog>
   {/if}
@@ -2310,7 +2319,7 @@
       <div class="landing-copy motto-only">
         <h2>{t("landingTitle")}</h2>
       </div>
-      <footer><span class="status-dot" class:missing={(ffmpegStatus !== null && !ffmpegStatus.ready)||(downloaderStatus!==null&&!downloaderStatus.ready)}></span> {ffmpegStatus?.ready&&downloaderStatus?.ready ? `FFMPEG · FFPROBE · YT-DLP ${t("ready").toUpperCase()}` : (dependencyChecking||downloaderStatus===null ? "CHECKING COMPONENTS" : "MEDIA COMPONENTS REQUIRED")}</footer>
+      <footer><span class="status-dot" class:missing={(ffmpegStatus !== null && !ffmpegStatus.ready)||(downloaderStatus!==null&&!downloaderStatus.ready)}></span> {ffmpegStatus?.ready&&downloaderStatus?.ready ? `FFMPEG · FFPROBE · YT-DLP ${t("ready").toUpperCase()}` : (dependencyChecking||downloaderStatus===null ? (language==="tr"?"BİLEŞENLER KONTROL EDİLİYOR":"CHECKING COMPONENTS") : (language==="tr"?"MEDYA BİLEŞENLERİ GEREKLİ":"MEDIA COMPONENTS REQUIRED"))}</footer>
       <button class="output-clean-trigger al-icon-wrapper" onclick={()=>{outputCleanupMessage="";outputCleanupOpen=true}} title={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"} aria-label={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"}>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M10 11v6" class="trash-handle trash-delay-0" />
@@ -2327,7 +2336,7 @@
     </section>
   {:else}
     {#if workspaceMode === "autocut" && media.kind === "video"}
-      <AutoCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
+      <SmartCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
     {:else if workspaceMode === "batch"}
       <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} />
     {:else}
@@ -2692,15 +2701,15 @@
                 <section>
                   <header><b>{language==="tr"?"DİKEY YERLEŞİM":"VERTICAL LAYOUT"}</b><small>1080×1920</small></header>
                   <div class="transform-options three">
-                    <button class:active={toolValue("vertical_layout")==="original"} onclick={()=>setVerticalLayout("original")}>ORIGINAL SIZE</button>
-                    <button class:active={toolValue("vertical_layout")==="blur"} onclick={()=>setVerticalLayout("blur")}>BLUR</button>
-                    <button class:active={toolValue("vertical_layout")==="fill"} onclick={()=>setVerticalLayout("fill")}>FILL</button>
-                    <button class:active={toolValue("vertical_layout")==="split"} onclick={()=>setVerticalLayout("split")}>SPLIT</button>
-                    <button class:active={toolValue("vertical_layout")==="squares"} onclick={()=>setVerticalLayout("squares")}>SQUARES</button>
+                    <button class:active={toolValue("vertical_layout")==="original"} onclick={()=>setVerticalLayout("original")}>{language==="tr"?"ORİJİNAL BOYUT":"ORIGINAL SIZE"}</button>
+                    <button class:active={toolValue("vertical_layout")==="blur"} onclick={()=>setVerticalLayout("blur")}>{language==="tr"?"BULANIK":"BLUR"}</button>
+                    <button class:active={toolValue("vertical_layout")==="fill"} onclick={()=>setVerticalLayout("fill")}>{language==="tr"?"DOLDUR":"FILL"}</button>
+                    <button class:active={toolValue("vertical_layout")==="split"} onclick={()=>setVerticalLayout("split")}>{language==="tr"?"BÖL":"SPLIT"}</button>
+                    <button class:active={toolValue("vertical_layout")==="squares"} onclick={()=>setVerticalLayout("squares")}>{language==="tr"?"KARELER":"SQUARES"}</button>
                     <button class:active={toolValue("vertical_layout")==="freecam"} onclick={()=>setVerticalLayout("freecam")}>FREECAM</button>
                   </div>
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
-                    <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title="Experimental feature">EXPERIMENTAL</em></button>
+                    <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title={language==="tr"?"Deneysel özellik":"Experimental feature"}>{language==="tr"?"DENEYSEL":"EXPERIMENTAL"}</em></button>
                     {#if cameraDetectionMessage}<p class="auto-camera-result">{cameraDetectionMessage}</p>{/if}
                   {/if}
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
@@ -2758,9 +2767,9 @@
               {/if}
               {#if selected.id==="transform"}
               <section>
-                <header><b>CROP</b><small>{toolValue("crop_mode")==="off" ? (language==="tr"?"kapalı":"off") : `${toolNumber("crop_w").toFixed(1)}% × ${toolNumber("crop_h").toFixed(1)}%`}</small></header>
+                <header><b>{language==="tr"?"KIRP":"CROP"}</b><small>{toolValue("crop_mode")==="off" ? (language==="tr"?"kapalı":"off") : `${toolNumber("crop_w").toFixed(1)}% × ${toolNumber("crop_h").toFixed(1)}%`}</small></header>
                 <div class="transform-options crop-options">
-                  {#each transformPresets.filter(preset=>(media?.kind==="image"||!["5:4","3:4"].includes(preset))&&!(media?.kind==="image"&&toolValue("fit_mode")==="contain"&&preset==="free")) as preset}<button class:active={toolValue("crop_mode")===preset} onclick={()=>setCropPreset(preset)}>{preset==="off"?(media?.kind==="image"?"ORIGINAL":"OFF"):preset==="191:100"?"1.91:1":preset.toUpperCase()}</button>{/each}
+                  {#each transformPresets.filter(preset=>(media?.kind==="image"||!["5:4","3:4"].includes(preset))&&!(media?.kind==="image"&&toolValue("fit_mode")==="contain"&&preset==="free")) as preset}<button class:active={toolValue("crop_mode")===preset} onclick={()=>setCropPreset(preset)}>{preset==="off"?(media?.kind==="image"?(language==="tr"?"ORİJİNAL":"ORIGINAL"):(language==="tr"?"KAPALI":"OFF")):preset==="free"?(language==="tr"?"SERBEST":"FREE"):preset==="191:100"?"1.91:1":preset.toUpperCase()}</button>{/each}
                 </div>
                 {#if toolValue("crop_mode")!=="off" && toolValue("fit_mode")!=="contain"}<p>{language==="tr"?"Kadrajı önizlemede sürükle; kenar ve köşelerden serbestçe boyutlandır.":"Drag the frame in the preview; resize freely from its edges and corners."}</p>{/if}
                 {#if media.kind === "image"}
@@ -2772,18 +2781,18 @@
                 {/if}
               </section>
               <section>
-                <header><b>ROTATE</b><small>{toolValue("rotate")}°</small></header>
+                <header><b>{language==="tr"?"DÖNDÜR":"ROTATE"}</b><small>{toolValue("rotate")}°</small></header>
                 <div class="transform-options four"><button class:active={toolValue("rotate")==="0"} onclick={()=>setTransformRotation(0)}>0°</button><button onclick={()=>rotateTransform(-90)}>↶ 90°</button><button onclick={()=>rotateTransform(90)}>↷ 90°</button><button onclick={()=>rotateTransform(180)}>180°</button></div>
               </section>
               <section>
-                <header><b>FLIP</b></header>
+                <header><b>{language==="tr"?"ÇEVİR":"FLIP"}</b></header>
                 <div class="transform-options two"><button class:active={toolValue("flip_h")==="true"} onclick={()=>setToolValue("flip_h",toolValue("flip_h")==="true"?"false":"true")}>↔ {language==="tr"?"Yatay":"Horizontal"}</button><button class:active={toolValue("flip_v")==="true"} onclick={()=>setToolValue("flip_v",toolValue("flip_v")==="true"?"false":"true")}>↕ {language==="tr"?"Dikey":"Vertical"}</button></div>
               </section>
               <section>
                 <header><b>{language==="tr"?"ÇIKTI BOYUTU":"OUTPUT SIZE"}</b></header>
                 <div class="transform-options two"><button class:active={toolValue("size_mode")==="source"} onclick={()=>setToolValue("size_mode","source")}>{language==="tr"?"Kırpılan boyutu koru":"Keep crop size"}</button><button class:active={toolValue("size_mode")==="height"} onclick={()=>setToolValue("size_mode","height")}>{language==="tr"?"Yükseklik":"Height"}</button><button class:active={toolValue("size_mode")==="width"} onclick={()=>setToolValue("size_mode","width")}>{language==="tr"?"Genişlik":"Width"}</button><button class:active={toolValue("size_mode")==="exact"} onclick={()=>setToolValue("size_mode","exact")}>{language==="tr"?"Tam boyut":"Exact"}</button></div>
                 {#if ["height","width"].includes(toolValue("size_mode"))}
-                  <label><span>{toolValue("size_mode")==="height"?(language==="tr"?"Hedef yükseklik":"Target height"):(language==="tr"?"Hedef genişlik":"Target width")}</span><div class="size-entry"><select value={String(toolNumber("size"))} onchange={(event)=>setToolNumber("size",Number(event.currentTarget.value))}>{#each [480,720,1080,1440,2160,4320] as size}<option value={size}>{size}px</option>{/each}</select><input aria-label="Custom output size" type="number" min="2" max="7680" step="2" value={toolNumber("size")} oninput={(event)=>setToolNumber("size",Number(event.currentTarget.value))}></div></label>
+                  <label><span>{toolValue("size_mode")==="height"?(language==="tr"?"Hedef yükseklik":"Target height"):(language==="tr"?"Hedef genişlik":"Target width")}</span><div class="size-entry"><select value={String(toolNumber("size"))} onchange={(event)=>setToolNumber("size",Number(event.currentTarget.value))}>{#each [480,720,1080,1440,2160,4320] as size}<option value={size}>{size}px</option>{/each}</select><input aria-label={language==="tr"?"Özel çıktı boyutu":"Custom output size"} type="number" min="2" max="7680" step="2" value={toolNumber("size")} oninput={(event)=>setToolNumber("size",Number(event.currentTarget.value))}></div></label>
                 {:else if toolValue("size_mode")==="exact"}
                   <div class="exact-size"><label><span>{language==="tr"?"Genişlik":"Width"}</span><input type="number" min="2" max="7680" step="2" value={toolNumber("output_width")} oninput={(event)=>setToolNumber("output_width",Number(event.currentTarget.value))}></label><b>×</b><label><span>{language==="tr"?"Yükseklik":"Height"}</span><input type="number" min="2" max="7680" step="2" value={toolNumber("output_height")} oninput={(event)=>setToolNumber("output_height",Number(event.currentTarget.value))}></label></div>
                   <p>{media.kind==="image"?(language==="tr"?"Görsel esnetilmeden bu tuvale sığdırılır; boş alanlar şeffaf kalır.":"The image is fitted into this canvas without stretching; unused space remains transparent."):(language==="tr"?"Tam boyut, seçtiğin kadrajı bu ölçülere ölçekler; oranlar farklıysa görüntü esneyebilir.":"Exact size scales the crop to these dimensions; mismatched ratios may stretch the image.")}</p>
@@ -2792,7 +2801,7 @@
               {#if media.kind === "image"}
                 <section>
                   <header><b>{language==="tr"?"ÇIKTI FORMATI":"OUTPUT FORMAT"}</b></header>
-                  <div class="transform-options three"><button class:active={toolValue("format")==="png"} onclick={()=>setToolValue("format","png")}>PNG · LOSSLESS</button><button class:active={toolValue("format")==="webp"} onclick={()=>setToolValue("format","webp")}>WEBP</button><button class:active={toolValue("format")==="jpg"} onclick={()=>setToolValue("format","jpg")}>JPEG</button><button class:active={toolValue("format")==="bmp"} onclick={()=>setToolValue("format","bmp")}>BMP</button><button class:active={toolValue("format")==="tiff"} onclick={()=>setToolValue("format","tiff")}>TIFF</button><button class:active={toolValue("format")==="avif"} onclick={()=>setToolValue("format","avif")}>AVIF</button></div>
+                  <div class="transform-options three"><button class:active={toolValue("format")==="png"} onclick={()=>setToolValue("format","png")}>{language==="tr"?"PNG · KAYIPSIZ":"PNG · LOSSLESS"}</button><button class:active={toolValue("format")==="webp"} onclick={()=>setToolValue("format","webp")}>WEBP</button><button class:active={toolValue("format")==="jpg"} onclick={()=>setToolValue("format","jpg")}>JPEG</button><button class:active={toolValue("format")==="bmp"} onclick={()=>setToolValue("format","bmp")}>BMP</button><button class:active={toolValue("format")==="tiff"} onclick={()=>setToolValue("format","tiff")}>TIFF</button><button class:active={toolValue("format")==="avif"} onclick={()=>setToolValue("format","avif")}>AVIF</button></div>
                   {#if toolValue("format")==="jpg"}<label class="field"><span>{language==="tr"?"Şeffaf alan rengi":"Transparent area color"}</span><input type="text" maxlength="7" value={toolValue("jpeg_background")} oninput={(event)=>setToolValue("jpeg_background",event.currentTarget.value)}></label>{/if}
                 </section>
               {/if}

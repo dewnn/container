@@ -37,8 +37,8 @@ const number = (key: string, label: string, value: number, min: number, max: num
 export const tools: Tool[] = [
   {
     id: "transform", title: "Transform", category: "Transform", kind: ["video","image"], accent: "blue",
-    description: "Crop, rotate, flip and resize in one workspace.",
-    detail: "Choose a social preset or adjust the crop directly in the preview, then rotate, flip and set the output size.",
+    description: "Kırpma, döndürme, çevirme ve boyutlandırmayı tek yerde yapar.",
+    detail: "Hazır bir oran seç veya kadrajı önizlemede ayarla; ardından döndür, çevir ve çıktı boyutunu belirle.",
     fields: [
       select("crop_mode", "Crop", "off", [["off","Off"],["free","Free"],["16:9","16:9"],["9:16","9:16"],["1:1","1:1"],["4:5","4:5"],["4:3","4:3"],["2:3","2:3"],["3:2","3:2"],["191:100","1.91:1"]]),
       select("fit_mode", "Fit mode", "crop", [["crop","Crop / fill"],["contain","Fit / contain"]]),
@@ -57,8 +57,8 @@ export const tools: Tool[] = [
   },
   {
     id: "clipper", title: "Clipper", category: "Clipper", kind: ["video"], accent: "purple",
-    description: "Turns horizontal footage into ready-to-share 9:16 layouts.",
-    detail: "Choose Original, Blur, Fill, Split, Squares or Freecam; select camera and content regions directly in the preview.",
+    description: "Yatay videoyu paylaşmaya hazır 9:16 düzene dönüştürür.",
+    detail: "Dikey düzeni seç; kamera ve içerik bölgelerini doğrudan önizlemede ayarla.",
     fields: [
       select("crop_mode", "Crop", "9:16", [["9:16","9:16"]]),
       select("vertical_layout", "Vertical layout", "split", [["original","Original Size"],["blur","Blur"],["fill","Fill"],["split","Split"],["squares","Squares"],["freecam","Freecam"]]),
@@ -93,8 +93,8 @@ export const tools: Tool[] = [
   },
   {
     id: "upscale", title: "Upscale", category: "Upscale", kind: ["video"], accent: "green",
-    description: "Raises video resolution to a standard HD, 2K, 4K or 8K target.",
-    detail: "Detects the source dimensions, preserves its aspect ratio and frame rate, and uses high-quality Lanczos scaling. Audio is copied without re-encoding when the MP4 container supports it.",
+    description: "Video çözünürlüğünü HD, 2K, 4K veya 8K'ya yükseltir.",
+    detail: "Kaynağın boyutlarını algılar; görüntü oranını ve kare hızını koruyarak Lanczos yöntemiyle büyütür. MP4 uyumluysa sesi yeniden kodlamadan korur.",
     fields: [select("target_edge", "Output resolution", "1080", [["720","720p HD"],["1080","1080p Full HD"],["1440","1440p / 2K QHD"],["2160","2160p / 4K UHD"],["4320","4320p / 8K UHD"]])],
   },
   {
@@ -114,7 +114,7 @@ export const tools: Tool[] = [
   },
   {
     id: "speed", title: "Video Speed", category: "Motion", kind: ["video"], accent: "purple",
-    description: "Görüntü ve sesi birlikte hızlandırır veya yavaşlatır.", detail: "0.5× iki kat uzun, 2× yaklaşık yarı süre demektir. Lossless Video yalnızca zaman damgalarını değiştirir; görüntüyü yeniden kodlamaz fakat sesi bilinçli olarak kaldırır.",
+    description: "Görüntüyü ve sesi birlikte hızlandırır veya yavaşlatır.", detail: "0.5× videoyu yaklaşık iki kat uzatır, 2× süresini yarıya indirir. Kayıpsız video seçeneği yalnızca zaman bilgilerini değiştirir; görüntüyü yeniden kodlamaz ama sesi kaldırır.",
     fields: [number("speed", "Multiplier", 2, 0.05, 100, 0.05, "×"), select("speed_mode","Speed mode","synced",[["synced","Video + audio / synced"],["lossless_video","Lossless video only / no audio"]]), number("crf", "Quality / CRF", 16, 0, 30)],
   },
   {
@@ -150,18 +150,18 @@ export const tools: Tool[] = [
   },
   {
     id: "potatoify", title: "Potatoify", category: "Quality", kind: ["video"], accent: "purple",
-    description: "FPS, çözünürlük ve bitrate’i aynı anda bilinçli olarak bozar.", detail: "Düşük kaliteli internet videosu / meme görünümü üretir.",
+    description: "FPS, çözünürlük ve bit hızını bilerek düşürür.", detail: "Eski internet videosu havasında, bilerek düşük kaliteli bir görünüm verir.",
     fields: [select("profile","Quality profile","decent",[["decent","Decent"],["bad","Bad"],["terrible","Terrible"],["unbearable","Unbearable"],["custom","Custom"],["random","Random"]]), number("fps", "FPS", 12, 1, 120, 1), number("video_badness", "Video badness", 5, 1, 20, 1), number("audio_badness", "Audio badness", 5, 1, 20, 1), number("shrink", "Scale divisor", 4, 1, 20, 1)],
   },
   {
     id: "text", title: "Text", category: "Overlay", kind: ["video","image"], accent: "blue",
-    description: "Birden fazla yazıyı önizlemede sürükleyip boyutlandırarak yerleştirir.", detail: "Add Text ile katman ekle; önizlemedeki veya listedeki yazıya tıklayarak ayarlarını düzenle.",
+    description: "Yazıları önizlemede sürükleyip boyutlandırarak yerleştirir.", detail: "Yazı Ekle ile katman oluştur; önizlemedeki veya listedeki yazıyı seçip görünümünü ayarla.",
     fields: [],
   },
   {
     id: "image_overlay", title: "Image / Logo Overlay", category: "Overlay", kind: ["video","image"], accent: "green",
     description: "Medyanın üzerine görsel veya şeffaf logo yerleştirir.",
-    detail: "Logoyu önizlemede sürükleyip kenarlarından boyutlandır; opaklığı menüden ayarla. Videoda zaman aralığı timeline üzerinden seçilir.",
+    detail: "Logoyu önizlemede sürükleyip kenarlarından boyutlandır; saydamlığını ayarla. Videoda görüneceği aralığı zaman çizelgesinden seç.",
     fields: [
       {key:"image_path",label:"Overlay image",type:"file",value:"",accept:["png","jpg","jpeg","webp"]},
       select("position","Position","custom",[["custom","Custom / drag"],["top_left","Top left"],["top_right","Top right"],["bottom_left","Bottom left"],["bottom_right","Bottom right"],["center","Center"]]),
@@ -182,7 +182,7 @@ export const tools: Tool[] = [
   },
   {
     id: "noise", title: "Visual Noise", category: "Effects", kind: ["video"], accent: "purple",
-    description: "Hareketli analog gren/noise ekler.", detail: "720p için 3 güvenli, 6 dengeli bir başlangıçtır.",
+    description: "Hareketli, analog film greni ekler.", detail: "720p videoda hafif etki için 3, daha belirgin etki için 6 ile başlayabilirsin.",
     fields: [number("amount","Noise amount",6,1,100,1)],
   },
   {
@@ -192,7 +192,7 @@ export const tools: Tool[] = [
     fields: [select("effect","Mode","blur",[["blur","Blur"],["pixelate","Pixelate"]]),number("strength","Strength",20,2,60,1),number("region_x","Region X",25,0,99,.01,"%"),number("region_y","Region Y",25,0,99,.01,"%"),number("region_w","Region width",50,1,100,.01,"%"),number("region_h","Region height",50,1,100,.01,"%")],
   },
   {
-    id:"encode", title:"Encoding Engine", category:"Export", kind:["video"], accent:"green", description:"Videoyu seçilen CPU veya GPU encoder’ıyla yeniden kodlar.", detail:"Yalnızca bu bilgisayarda çalışan encoder’lar listelenir.",
+    id:"encode", title:"Encoding Engine", category:"Export", kind:["video"], accent:"green", description:"Videoyu seçtiğin CPU veya GPU kodlayıcısıyla yeniden işler.", detail:"Listede yalnızca bilgisayarında kullanılabilen kodlayıcılar görünür.",
     fields:[
       select("encoder","Encoder","libx264",[["libx264","CPU H.264"],["h264_amf","AMD H.264"],["h264_nvenc","NVIDIA H.264"],["h264_qsv","Intel H.264"],["libx265","CPU HEVC"],["hevc_amf","AMD HEVC"],["hevc_nvenc","NVIDIA HEVC"],["libvpx-vp9","CPU VP9"],["libsvtav1","CPU AV1"],["av1_nvenc","NVIDIA AV1"],["av1_amf","AMD AV1"],["av1_qsv","Intel AV1"]]),
       number("crf","Quality",18,0,40,1,"","Lower means cleaner and larger. The selected encoder uses its own equivalent quality mode."),
@@ -313,9 +313,12 @@ const enText: Record<string, [string, string]> = {
 };
 
 const trTitles: Record<string,string> = {clipper:"Clipper",ratio:"Oran / Kırp",resize:"Boyutlandır",upscale:"Upscale",fps:"FPS Değiştir",interpolation:"FPS İnterpolasyonu",frame_blend:"Kare Harmanlama",speed:"Video Hızı",stabilizer:"Video Sabitleyici",compression:"Kalite / Sıkıştırma",discord_compressor:"Discord Sıkıştırıcı",text:"Yazı",image_overlay:"Görsel / Logo Kaplama",color:"Renk Ayarı",noise:"Görsel Gürültü",blur_pixelate:"Bulanıklaştır / Pikselleştir",encode:"Kodlama Motoru",proxy:"Proxy Oluşturucu",merge_videos:"Videoları Birleştir",subtitles:"Altyazılar",fix_timestamps:"Zaman Damgalarını Onar",file_hash:"Dosya Özeti",cut:"Video Kes",screenshot:"Ekran Görüntüsü",gif:"GIF Oluştur",remove_audio:"Sesi Kaldır",extract_audio:"Sesi Çıkar",replace_audio:"Sesi Değiştir",distortion:"Basit Distortion",audio_convert:"Sesi Dönüştür",image_ratio:"Sosyal Medya Oranı / Kırp",image_compressor:"Görsel Sıkıştırıcı",metadata_cleaner:"Metadata Temizleyici",image_potatoify:"Görsel Potatoify"};
-const trCategories: Record<string,string> = {Transform:"Dönüştürme",Clipper:"Clipper",Upscale:"Upscale",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Utilities:"Araçlar",Audio:"Ses",Image:"Görsel"};
+const trCategories: Record<string,string> = {Transform:"Dönüştürme",Clipper:"Dikey Klipler",Upscale:"Çözünürlük",Motion:"Hareket",Quality:"Kalite",Overlay:"Kaplama",Effects:"Efektler",Export:"Dışa Aktarma",Utilities:"Araçlar",Audio:"Ses",Image:"Görsel"};
 trTitles.transform = "Dönüştür";
 const trFields: Record<string,string> = {"Target ratio":"Hedef oran",Dimension:"Boyut yönü",Pixels:"Piksel","Output resolution":"Çıktı çözünürlüğü","Compression mode":"Sıkıştırma modu","Quality / CRF":"Kalite / CRF","Quality goal":"Kalite hedefi","Sample duration":"Örnek süresi","Target FPS":"Hedef FPS",Multiplier:"Hız çarpanı","Speed mode":"Hız yöntemi",CRF:"CRF","CPU preset":"CPU ön ayarı","Target bitrate":"Hedef bitrate","Discord size limit":"Discord boyut sınırı","Video codec":"Video codec'i","Maximum resolution":"En yüksek çözünürlük","Frame rate limit":"Kare hızı sınırı","Audio bitrate":"Ses bitrate'i","Compression speed":"Sıkıştırma hızı","Video badness":"Video bozulması","Audio badness":"Ses bozulması","Scale divisor":"Ölçek böleni",Text:"Yazı",Position:"Konum",Color:"Renk","Font size":"Yazı boyutu",Opacity:"Opaklık",Contrast:"Kontrast",Saturation:"Doygunluk",Brightness:"Parlaklık",Gamma:"Gama",Hue:"Renk tonu",Temperature:"Sıcaklık",Sharpen:"Keskinlik","Gaussian Blur":"Gauss Bulanıklığı",Denoise:"Gürültü azaltma",Deband:"Bant giderme",Vignette:"Vinyet",Grayscale:"Gri tonlama",Interlace:"Tarama","Noise amount":"Gürültü miktarı",Severity:"Şiddet",Encoder:"Kodlayıcı",Quality:"Kalite","Pixel format":"Piksel formatı","Audio tracks":"Ses parçaları","Selected audio track":"Seçili ses parçası",Start:"Başlangıç",End:"Bitiş","Cut mode":"Kesim yöntemi",Container:"Kapsayıcı",Timestamp:"Zaman",Format:"Format",Duration:"Süre",Height:"Yükseklik","Maximum colors":"En fazla renk","Palette mode":"Palet yöntemi",Dithering:"Renk geçişi",Transparency:"Şeffaflık",Loop:"Tekrar","Audio format":"Ses formatı","Replacement audio":"Yeni ses dosyası","Output format":"Çıktı formatı",Badness:"Bozulma","Times to compress":"Sıkıştırma sayısı","Detection profile":"Algılama profili","Proxy resolution":"Proxy çözünürlüğü","Proxy quality":"Proxy kalitesi","Repair method":"Onarım yöntemi",Strength:"Şiddet","Overlay image":"Kaplama görseli",Size:"Boyut",Margin:"Kenar boşluğu",Mode:"Mod","Merge mode":"Birleştirme modu",Videos:"Videolar",Action:"İşlem","Subtitle file":"Altyazı dosyası","Subtitle track":"Altyazı parçası"};
+Object.assign(trFields,{"Target bitrate":"Hedef bit hızı","Video codec":"Video kodeği","Audio bitrate":"Ses bit hızı","Pixel format":"Piksel biçimi",Format:"Biçim","Output format":"Çıktı biçimi","Audio format":"Ses biçimi","Maximum colors":"En fazla renk sayısı","Palette mode":"Palet seçimi","Repair method":"Onarım yöntemi","Crop":"Kırpma","Fit mode":"Yerleşim","Fit background":"Boş alanın arka planı","Custom background":"Özel arka plan rengi","Crop X":"Kırpma X","Crop Y":"Kırpma Y","Crop width":"Kırpma genişliği","Crop height":"Kırpma yüksekliği","Rotate":"Döndür","Horizontal flip":"Yatay çevir","Vertical flip":"Dikey çevir","Output size":"Çıktı boyutu","JPEG background":"JPEG arka planı","Vertical layout":"Dikey düzen","Camera width":"Kamera genişliği","Camera height":"Kamera yüksekliği","Content width":"İçerik genişliği","Content height":"İçerik yüksekliği","Region order":"Bölüm sırası","Top region height":"Üst bölüm yüksekliği","Camera output size":"Kamera boyutu","Watermark":"Filigran","Watermark text":"Filigran yazısı","Watermark size":"Filigran boyutu","Watermark opacity":"Filigran saydamlığı","Watermark background":"Filigran arka planı","Social Tag":"Sosyal etiket","Social Tag platform":"Sosyal etiket platformu","Social Tag username":"Sosyal etiket kullanıcı adı","Social Tag style":"Sosyal etiket görünümü","Social Tag size":"Sosyal etiket boyutu","Canvas background":"Tuval arka planı","Region X":"Bölge X","Region Y":"Bölge Y","Region width":"Bölge genişliği","Region height":"Bölge yüksekliği","Target size":"Hedef dosya boyutu"});
+Object.assign(trFields,{Width:"Genişlik","Camera X":"Kamera X","Camera Y":"Kamera Y","Content X":"İçerik X","Content Y":"İçerik Y","Camera output X":"Kamera konumu X","Camera output Y":"Kamera konumu Y","Position X":"Konum X","Position Y":"Konum Y","Boxed Social Tag position":"Kutulu etiketin konumu","Plain Social Tag position":"Düz etiketin konumu"});
+const trHints:Record<string,string>={"0 lossless; 16 very high quality; 20 balanced; 24 smaller.":"0 kayıpsızdır; 16 çok yüksek kalite, 20 dengeli, 24 daha küçük dosya verir.","Use this only when you need a predictable file size.":"Dosya boyutunu öngörmen gerekiyorsa kullan.","Lower means cleaner and larger. The selected encoder uses its own equivalent quality mode.":"Düşük değer daha temiz görüntü ve daha büyük dosya demektir. Her kodlayıcı kendi kalite ölçeğini kullanır."};
 
 export function localizedTool(tool: Tool, language: "tr"|"en"): Tool {
   const copy=cloneTool(tool);
@@ -331,8 +334,10 @@ export function localizedTool(tool: Tool, language: "tr"|"en"): Tool {
   Object.assign(optionNames,{"Smart / precise + source quality":"Akıllı / hassas + kaynak kalitesi","Fast / nearest keyframe":"Hızlı / en yakın ana kare","Fast / lossless stream copy":"Hızlı / kayıpsız akış kopyası","Frame accurate / re-encode":"Kare hassas / yeniden kodlama"});
   Object.assign(optionNames,{Custom:"Özel",Random:"Rastgele"});
   Object.assign(optionNames,{Light:"Hafif",Strong:"Güçlü",Blur:"Bulanıklaştır",Pixelate:"Pikselleştir",Add:"Ekle",Burn:"Görüntüye işle",Extract:"Çıkar",Remove:"Kaldır","Re-encode":"Yeniden kodla","MKV / preserves styling":"MKV / biçimi korur","MP4 / compatible":"MP4 / uyumlu"});
+  Object.assign(optionNames,{"Smart for available bitrate":"Bit hızına göre otomatik","Smart audio budget":"Sese otomatik pay ayır","Video + audio / synced":"Görüntü ve ses birlikte","Lossless video only / no audio":"Kayıpsız görüntü · ses yok","Fast / lossless remux":"Hızlı · yeniden kodlamadan","Deep / re-encode":"Kapsamlı · yeniden kodlayarak","Off / opaque":"Kapalı · şeffaf değil","Preserve alpha":"Şeffaflığı koru","Fast / lossless stream copy":"Hızlı · yeniden kodlamadan","Frame accurate / re-encode":"Kare hassasiyetinde · yeniden kodla","Custom / drag":"Özel · sürükleyerek ayarla","Keep source format":"Kaynak biçimini koru","Target size":"Hedef dosya boyutu"});
+  Object.assign(optionNames,{Off:"Kapalı",On:"Açık",Free:"Serbest","Crop / fill":"Kırpıp doldur","Fit / contain":"Sığdır","Black":"Siyah","White":"Beyaz","Custom color":"Özel renk",Transparent:"Şeffaf","90° right":"90° sağa","90° left":"90° sola","Keep cropped resolution":"Kırpılan çözünürlüğü koru","Exact dimensions":"Ölçüleri belirle","WebP · lossless":"WebP · kayıpsız","Original Size":"Orijinal boyut",Fill:"Doldur",Split:"Bölünmüş",Squares:"İki eşit bölüm",Freecam:"Serbest kamera","Camera above content":"Kamera üstte","Content above camera":"İçerik üstte",Left:"Sol",Right:"Sağ",Low:"Düşük",High:"Yüksek",Auto:"Otomatik",Decent:"Hafif",Bad:"Kötü",Terrible:"Çok kötü",Unbearable:"Aşırı kötü",Lossless:"Kayıpsız",Quality:"Kalite","Kick badge":"Kick rozeti","Kick wordmark":"Kick yazısı","32 / smallest":"32 · en küçük","64 / compact":"64 · küçük","128 / balanced":"128 · dengeli","256 / best":"256 · en kaliteli","2 times":"2 kez","3 times":"3 kez","Track 1":"Parça 1"});
   Object.assign(trFields,{"Quality profile":"Kalite profili"});
-  copy.fields=copy.fields.map(field=>({...field,label:trFields[field.label]??field.label,options:field.options?.map(option=>({...option,label:optionNames[option.label]??option.label}))}));
+  copy.fields=copy.fields.map(field=>({...field,label:trFields[field.label]??field.label,hint:field.hint?trHints[field.hint]??field.hint:field.hint,options:field.options?.map(option=>({...option,label:optionNames[option.label]??option.label}))}));
   return copy;
 }
 export function preserveToolValues(fresh: Tool, previous: Tool): Tool {

@@ -138,10 +138,7 @@ jobs:
           New-Item -ItemType Directory -Force $releaseDir | Out-Null
           New-Item -ItemType Directory -Force $updaterDir | Out-Null
 
-          $app = Get-ChildItem src-tauri/target/release -Filter '*.exe' -File |
-            Where-Object Name -NotMatch '^(ffmpeg|ffprobe|yt-dlp|deno)' |
-            Select-Object -First 1
-          if (-not $app) { throw 'Portable application executable was not found.' }
+          $app = Get-Item -LiteralPath 'src-tauri/target/release/container-studio.exe' -ErrorAction Stop
 
           $portableDir = Join-Path $PWD 'portable-package'
           New-Item -ItemType Directory -Force $portableDir | Out-Null
@@ -164,7 +161,7 @@ jobs:
           Copy-Item -LiteralPath 'src-tauri\resources\face_detection_yunet-LICENSE.txt' -Destination (Join-Path $portableDir 'face_detection_yunet-LICENSE.txt')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath (Join-Path $releaseDir "CONTAINER-Portable-$version-x64.zip") -CompressionLevel Optimal
 
-          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File | Select-Object -First 1
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter "CONTAINER_${version}_x64-setup.exe" -File | Select-Object -First 1
           if (-not $installer) { throw 'NSIS installer was not found.' }
           $setupPath = Join-Path $releaseDir "CONTAINER-Setup-$version-x64.exe"
           Copy-Item -LiteralPath $installer.FullName -Destination $setupPath

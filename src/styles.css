@@ -1,5 +1,5 @@
 :root {
-  font-family: "Geist", "Inter", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  font-family: "Geist Variable", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
   color: hsl(0 0% 98%);
   background: hsl(240 10% 3.9%);
   font-synthesis: none;
@@ -22,8 +22,8 @@
   --red: hsl(0 84% 65%);
   --yellow: #e7c84f;
   --radius: 6px;
-  --sans: "Geist", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
-  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "Geist Variable", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
   --type-micro: 10px;
   --type-small: 10.5px;
   --type-label: 11.5px;
@@ -47,8 +47,8 @@ button { color: inherit; }
 .batch-row-actions button:hover:not(:disabled){color:var(--text)}
 .topbar { display: flex; align-items: center; gap: 14px; padding: 0 20px; border-bottom: 1px solid var(--border); min-width: 0; }
 .brand { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; letter-spacing: .02em; }
-.brand-logo{width:25px;height:25px;border-radius:6px;object-fit:cover;border:1px solid var(--border-strong);box-shadow:0 2px 8px rgba(0,0,0,.2)}
-.brand-logo-stack{position:relative;width:25px;height:25px;flex:0 0 25px}.brand-logo-stack .brand-logo{position:absolute;inset:0}.brand-logo-light{visibility:hidden}:root[data-theme="light"] .brand-logo-dark{visibility:hidden}:root[data-theme="light"] .brand-logo-light{visibility:visible}
+.brand-logo{width:28px;height:28px;object-fit:contain}
+.brand-logo-stack{position:relative;width:28px;height:28px;flex:0 0 28px}.brand-logo-stack .brand-logo{position:absolute;inset:0}.brand-logo-light{visibility:hidden}:root[data-theme="light"] .brand-logo-dark{visibility:hidden}:root[data-theme="light"] .brand-logo-light{visibility:visible}
 .brand i, .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 12px rgba(107,168,255,.8); }
 .slash { color: var(--border-strong); }
 .filename { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
@@ -251,19 +251,17 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
   .workspace { grid-template-columns: 205px minmax(340px,1fr) 245px; }
 }
 
-/* AutoCut workspace: compact zinc panels, inspired by the same editing grammar
-   while keeping CONTAINER's blue identity and original implementation. */
+/* SmartCut workspace: compact panels with CONTAINER's blue identity. */
 .ac-layout { min-height: 0; display: grid; grid-template-columns: 250px minmax(480px,1fr) 330px; gap: 10px; padding: 10px; overflow: hidden; }
 .ac-card,.ac-side { background: #0d0d10; border: 1px solid var(--border); border-radius: 8px; min-width: 0; overflow: hidden; }
 .ac-card>header,.ac-right>header { min-height: 58px; padding: 12px 14px; border-bottom: 1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
 .ac-card header h3,.ac-right header h3 { margin:0; color:#c6c6ce; font:720 10px var(--mono); letter-spacing:.11em; }
 .ac-card header p,.ac-right header p { margin:3px 0 0; color:var(--muted-2); font:10px var(--mono); }
-.ac-card>header>div:first-child{min-width:0}.ac-card header p.auto-result{max-width:100%;overflow:hidden;color:var(--blue);text-overflow:ellipsis;white-space:nowrap}
-.ac-dot { width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(56,214,122,.7); }.ac-dot.red{background:var(--red);box-shadow:0 0 8px rgba(250,100,109,.6)}
-.detect-actions{display:flex;align-items:center;gap:9px}.detect-actions button{height:25px;padding:0 8px;border:1px solid rgba(107,168,255,.35);border-radius:4px;background:rgba(107,168,255,.07);color:var(--blue);font:700 8px var(--mono);letter-spacing:.08em;cursor:pointer}.detect-actions button:hover:not(:disabled){background:rgba(107,168,255,.16);border-color:var(--blue)}.detect-actions button:disabled{opacity:.45}.auto-summary{margin:-7px 0 0;padding:7px 8px;border:1px solid rgba(107,168,255,.2);border-radius:4px;background:rgba(107,168,255,.04);color:#91bbf6;font:8px var(--mono)}
+.ac-card>header>div:first-child{min-width:0}
 .ac-side { display:flex;flex-direction:column;gap:10px;padding-bottom:10px;background:transparent;border:0;border-radius:0;overflow:auto;scrollbar-width:thin;scrollbar-gutter:stable; }
 .ac-fields { padding:14px;display:grid;gap:15px; }
-.ac-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}.ac-presets button{min-width:0;padding:7px 2px;border:1px solid var(--border);border-radius:4px;background:#111115;color:#777781;font:7px var(--mono);cursor:pointer}.ac-presets button.active{border-color:var(--purple);background:rgba(0,241,255,.08);color:var(--purple)}.ac-advanced{border-top:1px solid var(--border);padding-top:10px}.ac-advanced summary{color:#777781;font:8px var(--mono);letter-spacing:.08em;cursor:pointer;list-style:none}.ac-advanced summary:after{content:"+";float:right}.ac-advanced[open] summary:after{content:"−"}.ac-advanced>div{display:grid;gap:13px;padding-top:14px}
+.ac-advanced{border-top:1px solid var(--border);padding-top:10px}.ac-advanced summary{color:#777781;font:8px var(--mono);letter-spacing:.08em;cursor:pointer;list-style:none}.ac-advanced summary:after{content:"+";float:right}.ac-advanced[open] summary:after{content:"−"}.ac-advanced>div{display:grid;gap:13px;padding-top:14px}
+.ac-detect-fields{gap:12px}.ac-detect-trigger{min-height:38px;width:100%;font-size:12px;letter-spacing:0;text-transform:lowercase}.ac-fields label.ac-parameter{position:relative;display:flex;align-items:center;min-height:39px;overflow:hidden;border:1px solid var(--border);border-radius:6px;background:var(--surface-2)}.ac-fields label.ac-parameter>span{position:relative;z-index:1;display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:0 13px;pointer-events:none;color:var(--muted);font:600 10px var(--mono);letter-spacing:.04em}.ac-fields label.ac-parameter b{color:var(--text);font:650 12px var(--mono)}.ac-fields label.ac-parameter input[type=range]{position:absolute;inset:0;width:100%;height:100%;margin:0;cursor:ew-resize}.ac-fields label.ac-parameter input[type=range]::-webkit-slider-runnable-track{height:100%;border-radius:0;background:linear-gradient(90deg,rgba(255,255,255,.10) 0 var(--range-pct),transparent var(--range-pct) 100%)}.ac-fields label.ac-parameter input[type=range]::-webkit-slider-thumb{width:3px;height:38px;margin-top:0;border-radius:0;background:var(--blue);box-shadow:none;opacity:0}.ac-fields label.ac-parameter:hover input[type=range]::-webkit-slider-thumb,.ac-fields label.ac-parameter input[type=range]:focus-visible::-webkit-slider-thumb{opacity:1}.ac-pad-parameter{padding:10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2)}.ac-pad-head{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font:600 10px var(--mono);letter-spacing:.04em}.ac-pad-head b{color:var(--text);font:650 12px var(--mono);letter-spacing:0}.ac-pad-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:9px}.ac-fields .ac-pad-pair label{min-width:0;gap:2px}.ac-fields .ac-pad-pair label>span{font:9px var(--mono);letter-spacing:0}.ac-fields .ac-pad-pair label b{font:10px var(--mono)}.ac-fields .ac-pad-pair input[type=range]{height:13px}.ac-fine-hint{margin:-3px 0 1px;color:var(--muted-2);font:10px var(--mono)}.ac-detect-fields .ac-advanced{margin-top:3px}.ac-detect-fields .ac-advanced>div{gap:9px}.ac-detect-fields .ac-advanced .listen{width:100%}
 .ac-fields label { display:grid;gap:7px; }
 .ac-fields label>span { display:flex;justify-content:space-between;color:#96969f;font:9px var(--mono);letter-spacing:.08em; }
 .ac-fields label b { color:#ededf0;font-weight:500;letter-spacing:0; }
@@ -309,7 +307,6 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 :root[data-theme="light"]{color-scheme:light;color:#171a1f;background:#f3f5f8;--bg:#f3f5f8;--panel:#ffffff;--surface:#f1f3f6;--surface-2:#e6e9ee;--border:#d9dde4;--border-strong:#aeb5c0;--muted:#505965;--muted-2:#68727f;--text:#171a1f;--line:#d9dde4;--range-active:#252a31;--range-inactive:#dfe3e8;--range-thumb:#252a31;--blue:#176ccf;--green:#117d43;--purple:#00aeba;--red:#c9343e;--yellow:#876800}
 :root[data-theme="light"] .shell{background:radial-gradient(circle at 50% -20%,rgba(36,118,217,.09),transparent 38%),var(--bg)}
 :root[data-theme="light"] .topbar{background:rgba(255,255,255,.84)}
-:root[data-theme="light"] .brand-logo{border-color:#c4c9d1;box-shadow:0 2px 8px rgba(22,28,36,.12)}
 :root[data-theme="light"] .filename,:root[data-theme="light"] .tool-row b,:root[data-theme="light"] .selected-title h2{color:#171a1f}
 :root[data-theme="light"] .chips{color:#4f5661}
 :root[data-theme="light"] .tagline,:root[data-theme="light"] .pane-head p,:root[data-theme="light"] .job-head p{color:#68717d}
@@ -364,26 +361,23 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 :root[data-theme="light"] .tool-timeline>header>b{color:#5f6874}
 :root[data-theme="light"] .ac-card>header,:root[data-theme="light"] .ac-right>header{background:#fafbfc}
 :root[data-theme="light"] .ac-card header h3,:root[data-theme="light"] .ac-right header h3{color:#343b46}
-:root[data-theme="light"] .ac-card header p,:root[data-theme="light"] .ac-right header p,:root[data-theme="light"] .ac-help{color:#747e8b}
-:root[data-theme="light"] .detect-actions button{background:rgba(36,118,217,.07);color:#1d68bf}
-:root[data-theme="light"] .auto-summary{background:rgba(36,118,217,.055);color:#1c63b5}
+:root[data-theme="light"] .ac-card header p,:root[data-theme="light"] .ac-right header p,:root[data-theme="light"] .ac-help{color:#596675}
 :root[data-theme="light"] .ac-fields label>span{color:#525b67}
 :root[data-theme="light"] .ac-fields label b{color:#171a1f}
 :root[data-theme="light"] .ac-fields select,:root[data-theme="light"] .linked-row input{background:#fff;color:#171a1f}
 :root[data-theme="light"] .ac-secondary,:root[data-theme="light"] .ac-mini{background:#f6f7f9;color:#303640}
-:root[data-theme="light"] .ac-presets button{background:#f6f7f9;color:#626b77}:root[data-theme="light"] .ac-presets button.active{background:rgba(0,180,195,.09);color:#087c86;border-color:#00a9b5}
 :root[data-theme="light"] .ac-primary{background:#1b1e23;color:#fff;border-color:#1b1e23}
 :root[data-theme="light"] .linked-row span{color:#626b77}
 :root[data-theme="light"] .ac-timeline,:root[data-theme="light"] .ac-right{background:#fff}
 :root[data-theme="light"] .tl-buttons button{background:#f5f7f9;color:#333a44}
 :root[data-theme="light"] .wave,:root[data-theme="light"] .navigator{background:#eef1f4;border-color:#d9dde4}
 :root[data-theme="light"] .wave svg,:root[data-theme="light"] .navigator svg{fill:#767f8b;opacity:.42}
-:root[data-theme="light"] .tl-status>b,:root[data-theme="light"] .ruler{color:#737d89}
-:root[data-theme="light"] .cut-summary{color:#747d89}
+:root[data-theme="light"] .tl-status>b,:root[data-theme="light"] .ruler{color:#596675}
+:root[data-theme="light"] .cut-summary{color:#596675}
 :root[data-theme="light"] .cut-summary b{color:#252a31}
 :root[data-theme="light"] .cut-list article{background:#f8f9fb}
 :root[data-theme="light"] .cut-list input{color:#22272e}
-:root[data-theme="light"] .cut-empty{color:#7b8490}
+:root[data-theme="light"] .cut-empty{color:#596675}
 :root[data-theme="light"] .drop-overlay{background:rgba(243,245,248,.9);color:#171a1f}
 .update-dialog,.update-dialog h2{color:#e8e8eb}
 :root[data-theme="light"] .update-dialog,:root[data-theme="light"] .update-dialog h2{color:#1b1e23}
@@ -402,7 +396,7 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 .shell .ac-side{scrollbar-gutter:auto}
 @media(max-width:620px){.recovery-card{align-items:stretch;flex-direction:column}.recovery-card aside{justify-content:flex-end}.output-clean-trigger{right:12px;bottom:12px}}
 
-/* AutoCut typography: Geist at a readable 10–14 px scale with restrained
+/* CONTAINER typography: Geist at a readable 10–14 px scale with restrained
    500/600 weights. Mono is reserved for values and technical metadata. */
 .pane-head h3,.preview-head>span:first-child,.tool-timeline h3,.ac-card header h3,.ac-right header h3{font-size:11px;font-weight:600;letter-spacing:.08em}
 .pane-head p,.job-head p,.ac-card header p,.ac-right header p{font-size:12px;line-height:1.5}
@@ -415,10 +409,10 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 .quality-guide h4,.discord-guide h4{font-size:11px;font-weight:600}.quality-guide p,.quality-result>p,.quality-guide li,.discord-guide li,.text-help,.text-empty{font-size:11px;line-height:1.5}
 .quality-guide li b,.quality-table article,.quality-table article b,.quality-table article strong{font-size:11px}.quality-guide>small,.quality-verdict>small,.quality-table article small,.discord-guide>small{font-size:10px}
 .color-group h4,.color-control>span,.color-toggle,.text-color-editor>span{font-size:11px}.color-control em,.color-presets h4,.color-presets button,.text-color-row input,.text-style-options summary{font-size:10px;font-weight:500}
-.ac-card header h3,.ac-right header h3{font-weight:600}.detect-actions button,.ac-presets button,.ac-advanced summary,.auto-summary,.linked-head,.linked-head button,.clear-source{font-size:10px;font-weight:500}.ac-fields label>span{font-size:11px;font-weight:500}.ac-fields label b{font-size:12px;font-weight:500}.ac-fields select,.ac-primary,.ac-secondary,.ac-mini{font-size:11px;font-weight:500}.ac-help,.linked-row span,.linked-row input{font-size:11px;line-height:1.5}.cut-summary,.cut-number,.cut-list input,.cut-empty,.ac-time{font-size:11px}.cut-list label,.cut-list small,.cut-toggle,.tl-status>b,.ruler{font-size:10px}
+.ac-card header h3,.ac-right header h3{font-weight:600}.ac-advanced summary,.linked-head,.linked-head button,.clear-source{font-size:10px;font-weight:500}.ac-fields label>span{font-size:11px;font-weight:500}.ac-fields label b{font-size:12px;font-weight:500}.ac-fields select,.ac-primary,.ac-secondary,.ac-mini{font-size:11px;font-weight:500}.ac-help,.linked-row span,.linked-row input{font-size:11px;line-height:1.5}.cut-summary,.cut-number,.cut-list input,.cut-empty,.ac-time{font-size:11px}.cut-list label,.cut-list small,.cut-toggle,.tl-status>b,.ruler{font-size:10px}
 .run{font-size:13px;font-weight:500}.run-box p,.output-link{font-size:10px}.mode-tabs button{font-size:12px;font-weight:500}
 
-/* AutoCut's exact zinc dark tokens. Light mode keeps CONTAINER's light palette. */
+/* SmartCut's dark tokens. Light mode keeps CONTAINER's light palette. */
 :root:not([data-theme="light"]) .shell{background:var(--bg)}
 :root:not([data-theme="light"]) .topbar{background:var(--panel)}
 :root:not([data-theme="light"]) .panel,:root:not([data-theme="light"]) .ac-card,:root:not([data-theme="light"]) .ac-right,:root:not([data-theme="light"]) .ac-timeline{background:var(--panel)}
@@ -426,7 +420,7 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 :root:not([data-theme="light"]) .search,:root:not([data-theme="light"]) .field input,:root:not([data-theme="light"]) .field select,:root:not([data-theme="light"]) .file-field,:root:not([data-theme="light"]) .transform-controls select,:root:not([data-theme="light"]) .transform-controls input,:root:not([data-theme="light"]) .ac-fields select,:root:not([data-theme="light"]) .linked-row input{background:var(--surface-2);color:var(--text)}
 :root:not([data-theme="light"]) .tool-row:hover,:root:not([data-theme="light"]) .tool-row.active,:root:not([data-theme="light"]) .tabs button.active,:root:not([data-theme="light"]) .transform-controls>section,:root:not([data-theme="light"]) .upscale-summary,:root:not([data-theme="light"]) .explain,:root:not([data-theme="light"]) .quality-guide,:root:not([data-theme="light"]) .quality-result,:root:not([data-theme="light"]) .cut-list article{background:var(--surface)}
 :root:not([data-theme="light"]) .ac-side,:root:not([data-theme="light"]) .ac-controls,:root:not([data-theme="light"]) .ac-timeline .tl-head{background:var(--panel)}
-:root:not([data-theme="light"]) .ac-presets button,:root:not([data-theme="light"]) .ac-fields select,:root:not([data-theme="light"]) .linked-row input,:root:not([data-theme="light"]) .tl-buttons button,:root:not([data-theme="light"]) .ac-secondary,:root:not([data-theme="light"]) .ac-mini{background:var(--surface-2);color:var(--text)}
+:root:not([data-theme="light"]) .ac-fields select,:root:not([data-theme="light"]) .linked-row input,:root:not([data-theme="light"]) .tl-buttons button,:root:not([data-theme="light"]) .ac-secondary,:root:not([data-theme="light"]) .ac-mini{background:var(--surface-2);color:var(--text)}
 :root:not([data-theme="light"]) .ac-controls,:root:not([data-theme="light"]) .wave,:root:not([data-theme="light"]) .navigator{border-color:var(--border)}
 :root:not([data-theme="light"]) .tool-timeline header>b,:root:not([data-theme="light"]) .cut-list label,:root:not([data-theme="light"]) .cut-list small,:root:not([data-theme="light"]) .linked-row span,:root:not([data-theme="light"]) .ac-advanced summary{color:var(--muted-2)}
 
@@ -496,11 +490,10 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 
 /* SmartCut contains the densest data UI, so labels and values get a slightly
    stronger floor than decorative timeline annotations. */
-.detect-actions button,.auto-summary,.ac-presets button,.ac-advanced summary,
+.ac-advanced summary,
 .clear-source,.linked-head,.linked-head button,.linked-row span,.linked-row input,
 .ac-primary,.ac-secondary,.ac-mini,.ac-switch,.tl-buttons button,
 .tl-status>b,.ruler,.cut-list label,.cut-list small,.cut-toggle{font-size:10.5px;font-weight:550}
-.ac-presets button{min-height:30px;padding:7px 3px;font-weight:650}
 .ac-fields label>span{font-size:11.5px;font-weight:600}
 .ac-fields label b{font-size:12px;font-weight:600}
 .ac-help{font-size:11.5px;color:var(--muted);line-height:1.5}
@@ -553,7 +546,6 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 }
 
 @media(max-width:1150px){
-  .ac-presets{grid-template-columns:repeat(2,1fr)}
   .ac-timeline .tl-head{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"title status" "buttons buttons";align-items:center;row-gap:3px}
   .ac-timeline .tl-title{grid-area:title;min-width:0}.ac-timeline .tl-title p{overflow:hidden;text-overflow:ellipsis}
   .ac-timeline .tl-buttons{grid-area:buttons;justify-content:center}.ac-timeline .tl-status{grid-area:status;min-width:0}
@@ -574,7 +566,7 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 :root[data-theme] .pane-head h3,:root[data-theme] .preview-head>span:first-child,:root[data-theme] .ac-card header h3,:root[data-theme] .ac-right header h3{font-size:12px;font-weight:600}
 :root[data-theme] .selected-title p,:root[data-theme] .explain p,:root[data-theme] .hint,:root[data-theme] .transform-controls p{font-size:12px;line-height:1.6;color:var(--muted)}
 :root[data-theme] .field>span,:root[data-theme] .transform-controls header b{font-size:11.5px;font-weight:600;color:var(--muted)}
-:root[data-theme] .ac-presets button,:root[data-theme] .detect-actions button,:root[data-theme] .ac-primary,:root[data-theme] .ac-secondary,
+:root[data-theme] .ac-primary,:root[data-theme] .ac-secondary,
 :root[data-theme] .reset-filters,:root[data-theme] .add-text,:root[data-theme] .compare-color{font-family:var(--sans);font-size:11px;letter-spacing:0}
 :root[data-theme] .batch-check input{accent-color:var(--blue)}
 :root[data-theme] .ac-fields label>span{gap:10px}
@@ -595,7 +587,24 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 .tool-group[data-category="Utilities"]{--category-color:#9ba8bc}
 .tool-group[data-category="Audio"]{--category-color:#d79970}
 .tool-group[data-category="Image"]{--category-color:#8cb978}
-:root[data-theme="light"] .tool-row>i{background:color-mix(in srgb,var(--category-color,var(--blue)) 75%,#263244)}
+:root[data-theme="light"] .tool-group[data-category="Transform"]{--category-color:#326fbb}
+:root[data-theme="light"] .tool-group[data-category="Clipper"]{--category-color:#7357b9}
+:root[data-theme="light"] .tool-group[data-category="Upscale"]{--category-color:#278052}
+:root[data-theme="light"] .tool-group[data-category="Motion"]{--category-color:#277b8f}
+:root[data-theme="light"] .tool-group[data-category="Quality"]{--category-color:#9b7424}
+:root[data-theme="light"] .tool-group[data-category="Overlay"]{--category-color:#a55784}
+:root[data-theme="light"] .tool-group[data-category="Effects"]{--category-color:#845dac}
+:root[data-theme="light"] .tool-group[data-category="Export"]{--category-color:#2c796f}
+:root[data-theme="light"] .tool-group[data-category="Utilities"]{--category-color:#637187}
+:root[data-theme="light"] .tool-group[data-category="Audio"]{--category-color:#9a6441}
+:root[data-theme="light"] .tool-group[data-category="Image"]{--category-color:#4f7d4b}
+:root[data-theme="light"] .tool-row>i{height:16px;background:var(--category-color,var(--blue))}
+:root[data-theme="light"] .tool-row:hover>i,:root[data-theme="light"] .tool-row.active>i{height:24px}
+:root[data-theme="light"] .favorites-filter span,
+:root[data-theme="light"] .favorite-toggle:hover,
+:root[data-theme="light"] .favorite-toggle.active{color:#c28100}
+:root[data-theme="light"] .favorites-filter.active{border-color:#e5b94f;background:#fff8e3}
+:root[data-theme="light"] .favorites-filter.active b{color:#775000}
 :root[data-theme] .tool-row.active{border-color:transparent;background:var(--selection-bg)}
 :root[data-theme] .tool-group h4{font-size:11px;font-weight:600;color:var(--muted);padding-top:16px}
 :root[data-theme] .transform-controls{gap:16px}
@@ -605,7 +614,7 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 :root[data-theme] .transform-options{gap:6px}
 :root[data-theme] .transform-options button{min-height:34px;color:var(--muted);font-size:11px;font-weight:500}
 :root[data-theme] .transform-options button.active,:root[data-theme] .segmented button.active,
-:root[data-theme] .text-tabs button.active,:root[data-theme] .ac-presets button.active,:root[data-theme] .compare-color.active{
+:root[data-theme] .text-tabs button.active,:root[data-theme] .compare-color.active{
   border-color:var(--selection-border);background:var(--selection-bg);color:var(--blue);box-shadow:none
 }
 :root[data-theme] .selected-title .index{border-color:var(--selection-border);color:var(--blue)}
@@ -646,3 +655,34 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
   :root[data-theme] .settings>.field-list{padding:12px 14px}
   :root[data-theme] .settings>.run-box{padding:10px 14px}
 }
+
+/* Keep SmartCut's control geometry while following the selected application theme. */
+:root[data-theme] .ac-left>.ac-detect-panel{--detect-border:var(--border);--detect-bar:var(--surface-2);--detect-fill:color-mix(in srgb,var(--surface-2) 88%,var(--text));--detect-label:var(--muted);--detect-value:var(--text);--detect-hint:var(--muted-2);--detect-key:var(--surface-2);--detect-key-text:var(--muted);--detect-button:#f4f4f5;--detect-button-text:#101014;--detect-button-hover:#e9e9ef;min-height:400px;background:var(--panel);border-color:var(--border);box-shadow:none}
+:root[data-theme="light"] .ac-left>.ac-detect-panel{--detect-bar:var(--surface);--detect-fill:var(--surface-2);--detect-button:#1b1e23;--detect-button-text:#fff;--detect-button-hover:#343941}
+:root[data-theme] .ac-left .ac-detect-fields{display:flex;flex-direction:column;gap:18px;padding:14px 13px}
+:root[data-theme] .ac-left .ac-detect-trigger{flex:0 0 38px;width:100%;min-height:38px;padding:0 10px;border:0;border-radius:6px;background:var(--detect-button);color:var(--detect-button-text);font:600 13px var(--sans);letter-spacing:0;text-transform:lowercase}
+:root[data-theme] .ac-left .ac-detect-trigger:hover:not(:disabled){background:var(--detect-button-hover)}
+:root[data-theme] .ac-left .ac-detect-fields label.ac-parameter{display:flex;flex:0 0 38px;min-height:38px;height:38px;gap:0;border:1px solid var(--detect-border);border-radius:6px;background:var(--detect-bar)}
+:root[data-theme] .ac-left .ac-detect-fields label.ac-parameter>span{padding:0 14px;color:var(--detect-label);font:500 10px var(--mono);letter-spacing:.055em}
+:root[data-theme] .ac-left .ac-detect-fields label.ac-parameter b{color:var(--detect-value);font:700 13px var(--mono);letter-spacing:0}
+:root[data-theme] .ac-left .ac-detect-fields label.ac-parameter input[type=range]{height:100%}
+:root[data-theme] .ac-left .ac-detect-fields label.ac-parameter input[type=range]::-webkit-slider-runnable-track{height:100%;border-radius:0;background:linear-gradient(90deg,var(--detect-fill) 0 var(--range-pct),transparent var(--range-pct) 100%)}
+:root[data-theme] .ac-left .ac-detect-fields label.ac-parameter input[type=range]::-webkit-slider-thumb{width:2px;height:38px;margin:0;border:0;border-radius:0;background:#aaa;opacity:0}
+:root[data-theme] .ac-left .ac-fine-hint{margin:5px 0 0;color:var(--detect-hint);font:10px var(--mono);letter-spacing:.015em}
+:root[data-theme] .ac-left .ac-fine-hint kbd{padding:2px 4px;border:1px solid var(--detect-border);border-radius:3px;background:var(--detect-key);color:var(--detect-key-text);font:inherit}
+:root[data-theme] .ac-left .ac-detect-details{margin-top:20px;color:var(--detect-hint)}
+
+/* SmartCut's timeline spans the video and Cuts columns; only its top edge moves. */
+:root[data-theme] .ac-layout.resizable{grid-template-rows:minmax(0,1fr) 8px minmax(0,var(--ac-timeline));position:relative}
+:root[data-theme] .ac-layout>.ac-left{grid-column:1;grid-row:1/4}
+:root[data-theme] .ac-layout>.ac-left-resizer{grid-column:2;grid-row:1/4}
+:root[data-theme] .ac-layout>.ac-main{display:contents}
+:root[data-theme] .ac-layout .ac-player{grid-column:3;grid-row:1;min-height:0}
+:root[data-theme] .ac-layout>.ac-right-resizer{grid-column:4;grid-row:1}
+:root[data-theme] .ac-layout>.ac-right{grid-column:5;grid-row:1;min-height:0}
+:root[data-theme] .ac-layout>.ac-timeline-resizer{grid-column:3/6;grid-row:2;position:relative;height:8px;cursor:row-resize;touch-action:none;outline:none}
+:root[data-theme] .ac-timeline-resizer::after{content:"";position:absolute;left:12px;right:12px;top:3px;height:2px;border-radius:2px;background:transparent;transition:background .12s}
+:root[data-theme] .ac-timeline-resizer:hover::after,:root[data-theme] .ac-timeline-resizer:focus-visible::after,:root[data-theme] .ac-timeline-resizer:active::after{background:var(--blue)}
+:root[data-theme] .ac-timeline-resizer:focus-visible{outline:2px solid var(--blue);outline-offset:-1px}
+:root[data-theme] .ac-layout .ac-timeline{grid-column:3/6;grid-row:3;min-width:0;min-height:0}
+:root[data-theme] .ac-layout .ac-error{grid-column:3/6;grid-row:1;position:relative;align-self:end;justify-self:stretch;left:auto;right:auto;bottom:auto;margin:0 15px 10px}

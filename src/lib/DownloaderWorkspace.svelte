@@ -73,16 +73,16 @@
     <div class="downloader-engine">
       <b>{language==="tr"?"İNDİRME MOTORU":"DOWNLOAD ENGINE"}</b>
       <strong class:ready={!!status?.ready}>{status?.ready ? `yt-dlp ${status.version}` : (language==="tr"?"yt-dlp gerekli":"yt-dlp required")}</strong>
-      <p>{language==="tr"?"Doğrulanmış yt-dlp CONTAINER ile birlikte gelir. İstersen resmî bir sürümle değiştirebilirsin; çerezlere erişilmez.":"A verified yt-dlp build is included with CONTAINER. You can replace it with an official build; cookies are never accessed."}</p>
+      <p>{language==="tr"?"CONTAINER, doğrulanmış bir yt-dlp sürümüyle gelir. İstersen kendi resmî sürümünü seçebilirsin. Tarayıcı çerezlerine erişilmez.":"A verified yt-dlp build is included with CONTAINER. You can replace it with an official build; cookies are never accessed."}</p>
       <button class="ghost" onclick={chooseBinary} disabled={busy}>{status?.ready ? (language==="tr"?"YT-DLP’Yİ DEĞİŞTİR":"CHANGE YT-DLP") : (language==="tr"?"YT-DLP.EXE SEÇ":"CHOOSE YT-DLP.EXE")}</button>
       <a href="https://github.com/yt-dlp/yt-dlp/releases/latest" target="_blank" rel="noreferrer">{language==="tr"?"Resmî indirme sayfası ↗":"Official download page ↗"}</a>
     </div>
   </details>
   <main class="downloader-main">
     <header class="download-intro">
-      <span class="brand-logo-stack download-mark" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/logo-dark.png" alt=""><img class="brand-logo brand-logo-light" src="/logo-light.png" alt=""></span>
+      <span class="brand-logo-stack download-mark" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt=""><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt=""></span>
       <h2>DWLNDR</h2>
-      <p>{language==="tr"?"Bağlantıyı yapıştır. Dosyanı al.":"Paste a link. Make it yours."}</p>
+      <p>{language==="tr"?"Bağlantıyı yapıştır, ne indireceğini seç.":"Paste a link. Make it yours."}</p>
     </header>
     <label><span>{language==="tr"?"Bağlantıyı yapıştır":"Paste a link"}</span><div class="downloader-url"><input value={url} oninput={(event)=>{releaseThumbnail(analysis?.thumbnail_path);url=event.currentTarget.value;analysis=null;outputFile="";message=""}} onkeydown={(event)=>{if(event.key==="Enter")analyze()}} placeholder="https://…" disabled={!status?.ready||busy||analyzing}><button onclick={analyze} disabled={!status?.ready||!url.trim()||busy||analyzing}>{analyzing?(language==="tr"?"ANALİZ…":"ANALYZING…"):(language==="tr"?"BAĞLANTIYI ANALİZ ET":"ANALYZE LINK")}</button></div></label>
     {#if analysis}
@@ -97,7 +97,7 @@
     {#if message}<div class:failure={message.toLowerCase().includes("failed")||message.toLowerCase().includes("valid")||message.toLowerCase().includes("gerekli")} class="downloader-message">{message}</div>{/if}
     {#if outputFile}<button class="downloader-output" onclick={()=>revealItemInDir(outputFile).catch(reportProblem)}>{language==="tr"?"İNDİRİLEN DOSYAYI GÖSTER":"SHOW DOWNLOADED FILE"}</button>{/if}
   </main>
-  <footer class="download-note">{language==="tr"?"Doğrudan cihazına · Hesap veya tarayıcı çerezi kullanılmaz":"Saved to your device · No account or browser cookies"}</footer>
+  <footer class="download-note">{language==="tr"?"Doğrudan cihazına kaydedilir · Hesap ve tarayıcı çerezi kullanılmaz":"Saved to your device · No account or browser cookies"}</footer>
 </section>
 
 <style>

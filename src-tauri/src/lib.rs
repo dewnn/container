@@ -15,7 +15,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -34,6 +38,47 @@ use std::os::windows::{fs::MetadataExt, process::CommandExt};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+struct TrayMenuItems {
+    open: MenuItem<tauri::Wry>,
+    updates: Option<MenuItem<tauri::Wry>>,
+    exit: MenuItem<tauri::Wry>,
+}
+
+#[tauri::command]
+fn set_tray_language(language: &str, items: State<'_, TrayMenuItems>) -> Result<(), String> {
+    let turkish = language == "tr";
+    items
+        .open
+        .set_text(if turkish {
+            "CONTAINER'ı Aç"
+        } else {
+            "Open CONTAINER"
+        })
+        .map_err(|error| error.to_string())?;
+    if let Some(updates) = &items.updates {
+        updates
+            .set_text(if turkish {
+                "Güncellemeleri Denetle"
+            } else {
+                "Check for Updates"
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    items
+        .exit
+        .set_text(if turkish { "Çıkış" } else { "Exit" })
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
 
 const FFMPEG_RUNTIME_VERSION: &str = env!("CONTAINER_FFMPEG_RUNTIME_VERSION");
 
@@ -7637,9 +7682,66 @@ pub fn run() {
             cancel_job,
             startup_media_path,
             previous_session_interrupted,
-            clean_output_folder
+            clean_output_folder,
+            set_tray_language
         ])
         .setup(|app| {
+            let open = MenuItem::with_id(app, "tray-open", "Open CONTAINER", true, None::<&str>)?;
+            let exit = MenuItem::with_id(app, "tray-exit", "Exit", true, None::<&str>)?;
+            let updates = if is_development_build() {
+                None
+            } else {
+                Some(MenuItem::with_id(
+                    app,
+                    "tray-updates",
+                    "Check for Updates",
+                    true,
+                    None::<&str>,
+                )?)
+            };
+            let menu = if let Some(updates_item) = &updates {
+                Menu::with_items(app, &[&open, updates_item, &exit])?
+            } else {
+                Menu::with_items(app, &[&open, &exit])?
+            };
+            let icon = app
+                .default_window_icon()
+                .ok_or("Missing default window icon")?
+                .clone();
+            TrayIconBuilder::new()
+                .icon(icon)
+                .tooltip(if is_development_build() {
+                    "CONTAINER DEV"
+                } else {
+                    "CONTAINER"
+                })
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "tray-open" => show_main_window(app),
+                    "tray-updates" => {
+                        show_main_window(app);
+                        let _ = app.emit("tray-check-updates", ());
+                    }
+                    "tray-exit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+            app.manage(TrayMenuItems {
+                open,
+                updates,
+                exit,
+            });
             cleanup_legacy_download_thumbnail_cache();
             let migration = app.state::<RuntimeMigrationState>();
             let _ = record_runtime_migration(&migration);
@@ -7664,6 +7766,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building CONTAINER")
         .run(|app, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } = &event
+            {
+                if label == "main" {
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                        let _ = window.emit("container-tray-hidden", ());
+                    }
+                }
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 cleanup_current_image_previews();
                 // yt-dlp must be tied to this application session. Without

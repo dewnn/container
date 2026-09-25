@@ -16,13 +16,13 @@
   <a href="#features">Features</a>
 </p>
 
-![CONTAINER Toolbox — light and dark mode](docs/container-toolbox-themes.gif)
-
 ## What is CONTAINER?
 
 CONTAINER brings practical FFmpeg workflows into one desktop app. The source file is never overwritten: every operation creates a new result under `Downloads/CONTAINER Output/<category>`.
 
 Processing happens locally. CONTAINER does not upload your video, audio or images to a server.
+
+On Windows, closing the window with **X** keeps CONTAINER in the notification area so an active export or download can continue. Preview playback pauses while hidden. Left-click the tray icon to reopen; right-click for **Open CONTAINER**, **Check for Updates** (release builds), and **Exit**. Choose **Exit** to stop background work and fully quit.
 
 ## Features
 

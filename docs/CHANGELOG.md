@@ -6,6 +6,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-25
+
+- Refreshed CONTAINER branding and logo across the editor, app icon, installer and project files.
+- Simplified SmartCut around automatic silence detection, with re-detect and fine-tuning controls.
+- Expanded the SmartCut timeline and improved resizable panel behavior.
+- Refined typography, light-theme accents and Turkish interface text across Toolbox, SmartCut and Batch.
+- Added a Windows notification-area menu: closing the window preserves the session and active jobs, while Exit fully quits.
+
 ## [0.17.0] - 2026-09-24
 
 - Added resizable panels with remembered widths in Toolbox, SmartCut and Batch, plus a theme-matched reset confirmation.

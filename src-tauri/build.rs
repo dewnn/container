@@ -138,6 +138,7 @@ fn main() {
         configured_tool_version("FFMPEG_VERSION")
     );
     println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=icons/icon.ico");
     prepare_windows_sidecars();
     tauri_build::build()
 }

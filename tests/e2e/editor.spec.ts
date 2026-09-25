@@ -56,6 +56,7 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
         if (cmd === "project_media_available") return !missingProjectSource;
         if (cmd === "compute_video_filmstrip") return "";
         if (cmd === "autocut_presets" || cmd === "compute_autocut_waveform") return [];
+        if (cmd === "recommend_autocut_settings") return {threshold:0.57,min_silence:0.12,min_speech:0.16,minimum_pause:0.41,keep_before_speech:0.11,keep_after_speech:0.19,noise_floor_db:-82.4,speech_level_db:-30.2};
         if (cmd === "analyze_autocut") return {cuts:[{start:2,end:8,enabled:true},{start:15,end:25,enabled:true}],waveform:[],duration:60};
         return null;
       },
@@ -64,6 +65,10 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
     (window as any).__TEST_DROP__ = (path: string) => {
       const id = events.get("tauri://drag-drop");
       if (id) callbacks.get(id)?.({ event: "tauri://drag-drop", payload: { paths: [path], position: { x: 0, y: 0 } } });
+    };
+    (window as any).__TEST_EVENT__ = (name: string) => {
+      const id = events.get(name);
+      if (id) callbacks.get(id)?.({ event: name, payload: null });
     };
     Object.defineProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__", { value: { unregisterListener() {} } });
     if (!localStorage.getItem("container-language")) localStorage.setItem("container-language", "en");
@@ -77,6 +82,70 @@ async function openFixture(page: Page) {
   await page.locator(".dropzone").click();
   await expect(page.locator(".settings")).toBeVisible();
 }
+
+test("Geist typography loads throughout Container at full and compact widths",async({page})=>{
+  await mockDesktop(page);
+  for(const width of [1440,900]){
+    await page.setViewportSize({width,height:800});
+    await page.evaluate(()=>document.fonts.ready);
+    const landing=await page.evaluate(async()=>{
+      const [sans,mono]=await Promise.all([document.fonts.load('400 14px "Geist Variable"'),document.fonts.load('500 12px "Geist Mono Variable"')]);
+      return {sans:sans.some(face=>face.status==="loaded"),mono:mono.some(face=>face.status==="loaded"),brand:getComputedStyle(document.querySelector(".brand")!).fontFamily,headline:getComputedStyle(document.querySelector(".landing-copy")!).fontFamily,size:parseFloat(getComputedStyle(document.body).fontSize)};
+    });
+    expect(landing.sans).toBe(true);expect(landing.mono).toBe(true);
+    expect(landing.brand).toContain("Geist Variable");expect(landing.headline).toContain("Geist Variable");expect(landing.size).toBe(14);
+    if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:`test-results/typography-landing-${width}.png`});
+  }
+  await openFixture(page);
+  const font=(selector:string)=>page.locator(selector).first().evaluate(element=>getComputedStyle(element).fontFamily);
+  expect(await font(".tool-row b")).toContain("Geist Variable");
+  expect(await font(".chips")).toContain("Geist Mono Variable");
+  expect(await font(".settings .selected-title h2")).toContain("Geist Variable");
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/typography-toolbox-900.png"});
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  expect(await font(".ac-card header h3")).toContain("Geist Variable");
+  expect(await font(".ac-time")).toContain("Geist Mono Variable");
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/typography-smartcut-900.png"});
+  await page.getByRole("button",{name:"BATCH",exact:true}).click();
+  expect(await font(".batch-control")).toContain("Geist Variable");
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/typography-batch-900.png"});
+});
+
+test("visible workspaces use Container branding rather than the inspiration project name",async({page})=>{
+  await mockDesktop(page);
+  await expect(page.locator("body")).not.toContainText(/autocut/i);
+  await openFixture(page);
+  for(const mode of ["TOOLBOX","SMARTCUT","BATCH"]){
+    await page.getByRole("button",{name:mode,exact:true}).click();
+    await expect(page.locator("body")).not.toContainText(/autocut/i);
+    await expect(page.locator(".topbar .brand-logo-dark")).toHaveAttribute("src","/mark-dark.svg");
+    await expect(page.locator(".topbar .brand-logo-light")).toHaveAttribute("src","/mark-light.svg");
+  }
+  await page.evaluate(()=>document.documentElement.dataset.theme="light");
+  await expect(page.locator(".topbar .brand-logo-light")).toBeVisible();
+  await expect(page.locator(".topbar .brand-logo-dark")).toBeHidden();
+});
+
+test("tray hide pauses only media previews, keeps the editing session, and follows language",async({page})=>{
+  await page.addInitScript(()=>{(window as any).isTauri=true});
+  await mockDesktop(page);
+  await expect.poll(()=>page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="set_tray_language"&&call.args.language==="en"))).toBe(true);
+  await page.locator(".landing-language").getByRole("button",{name:"TR"}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="set_tray_language"&&call.args.language==="tr"))).toBe(true);
+  await openFixture(page);
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  await page.evaluate(()=>{
+    const video=document.querySelector(".ac-player video") as HTMLVideoElement;
+    (window as any).__TRAY_PAUSED__=false;
+    video.pause=()=>{(window as any).__TRAY_PAUSED__=true};
+    (window as any).__TEST_EVENT__("container-tray-hidden");
+  });
+  expect(await page.evaluate(()=>(window as any).__TRAY_PAUSED__)).toBe(true);
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-recovery-v1")??"null")?.workspaceMode)).toBe("autocut");
+  await expect(page.getByRole("button",{name:"SMARTCUT",exact:true})).toBeVisible();
+  await page.evaluate(()=>(window as any).__TEST_EVENT__("tray-check-updates"));
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="plugin:updater|check").length)).toBe(0);
+});
 
 test("Toolbox side panels resize, preserve preview space and remember widths",async({page})=>{
   await mockDesktop(page);await openFixture(page);
@@ -183,7 +252,7 @@ test("SmartCut and Batch panels resize, persist independently, and reset only th
   await mockDesktop(page);await openFixture(page);
   await page.setViewportSize({width:1440,height:850});
   await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
-  const smart=page.locator(".ac-layout"),smartLeft=smart.locator(".ac-left"),smartMiddle=smart.locator(".ac-main"),smartRight=smart.locator(".ac-right");
+  const smart=page.locator(".ac-layout"),smartLeft=smart.locator(".ac-left"),smartMiddle=smart.locator(".ac-player"),smartRight=smart.locator(".ac-right");
   const smartDividers=smart.locator(".workspace-resizer");
   await expect(smartDividers).toHaveCount(2);
   const leftBefore=(await smartLeft.boundingBox())!.width,rightBefore=(await smartRight.boundingBox())!.width;
@@ -226,8 +295,8 @@ test("SmartCut and Batch panels resize, persist independently, and reset only th
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
   if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/smartcut-resizable-compact.png"});
   await page.setViewportSize({width:1440,height:850});
-  expect(Math.abs((await smartLeft.boundingBox())!.width-smartFinal.left)).toBeLessThan(3);
-  expect(Math.abs((await smartRight.boundingBox())!.width-smartFinal.right)).toBeLessThan(3);
+  await expect.poll(async()=>Math.abs((await smartLeft.boundingBox())!.width-smartFinal.left)).toBeLessThan(3);
+  await expect.poll(async()=>Math.abs((await smartRight.boundingBox())!.width-smartFinal.right)).toBeLessThan(3);
   await page.reload();await openFixture(page);
   await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
   expect(Math.abs((await smartLeft.boundingBox())!.width-smartFinal.left)).toBeLessThan(3);
@@ -239,7 +308,7 @@ test("SmartCut and Batch panels resize, persist independently, and reset only th
   await dialog.getByRole("button",{name:"CANCEL"}).click();
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"))).toEqual(smartFinal);
   await reset.click();await dialog.getByRole("button",{name:"RESET"}).click();
-  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"))).toEqual({left:null,right:null});
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"))).toEqual({left:null,right:null,timeline:null});
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("container-batch-panel-widths")??"null"))).toEqual(batchFinal);
 
   await page.getByRole("button",{name:"BATCH",exact:true}).click();
@@ -254,10 +323,119 @@ test("SmartCut and Batch panels resize, persist independently, and reset only th
   expect((await batchLeft.boundingBox())!.width).toBeLessThan(batchFinal.left-40);
 });
 
+test("SmartCut timeline spans preview and Cuts, resizes upward and remembers its height",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.setViewportSize({width:1440,height:850});
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  const layout=page.locator(".ac-layout"),player=layout.locator(".ac-player"),cuts=layout.locator(".ac-right"),timeline=layout.locator(".ac-timeline"),divider=layout.getByRole("slider",{name:"SmartCut timeline height"});
+  const before={player:(await player.boundingBox())!,cuts:(await cuts.boundingBox())!,timeline:(await timeline.boundingBox())!,divider:(await divider.boundingBox())!};
+  expect(Math.abs(before.timeline.x-before.player.x)).toBeLessThan(2);
+  expect(Math.abs(before.timeline.x+before.timeline.width-before.cuts.x-before.cuts.width)).toBeLessThan(2);
+  expect(before.timeline.y).toBeGreaterThanOrEqual(before.player.y+before.player.height+7);
+  expect(before.timeline.y).toBeGreaterThanOrEqual(before.cuts.y+before.cuts.height+7);
+  await page.mouse.move(before.divider.x+before.divider.width/2,before.divider.y+4);await page.mouse.down();
+  await page.mouse.move(before.divider.x+before.divider.width/2,before.divider.y-95,{steps:8});await page.mouse.up();
+  const after={player:(await player.boundingBox())!,cuts:(await cuts.boundingBox())!,timeline:(await timeline.boundingBox())!};
+  expect(after.timeline.height-before.timeline.height).toBeGreaterThan(80);
+  expect(before.player.height-after.player.height).toBeGreaterThan(80);
+  expect(before.cuts.height-after.cuts.height).toBeGreaterThan(80);
+  expect(Math.abs(after.timeline.x-before.timeline.x)).toBeLessThan(2);
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem("container-smartcut-panel-widths")??"null"));
+  expect(saved.timeline).toBeGreaterThan(before.timeline.height+80);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/smartcut-wide-timeline.png"});
+  await page.reload();await openFixture(page);await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  expect(Math.abs((await timeline.boundingBox())!.height-saved.timeline)).toBeLessThan(3);
+  await divider.focus();await page.keyboard.press("ArrowDown");
+  expect((await timeline.boundingBox())!.height).toBeLessThan(saved.timeline-15);
+  await page.getByRole("button",{name:"Reset panel widths"}).click();
+  await page.getByRole("dialog",{name:"Reset panel layout"}).getByRole("button",{name:"RESET"}).click();
+  expect((await timeline.boundingBox())!.height).toBeLessThan(saved.timeline-60);
+  for(const width of [1024,900,860]){
+    await page.setViewportSize({width,height:700});
+    await expect.poll(()=>page.evaluate(()=>{
+      const player=document.querySelector(".ac-player")!.getBoundingClientRect(),cuts=document.querySelector(".ac-right")!.getBoundingClientRect(),timeline=document.querySelector(".ac-timeline")!.getBoundingClientRect();
+      return {left:Math.round(Math.abs(timeline.left-player.left)),right:Math.round(Math.abs(timeline.right-cuts.right)),overflow:document.documentElement.scrollWidth>innerWidth+1};
+    })).toEqual({left:0,right:0,overflow:false});
+  }
+});
+
+test("SmartCut keeps Auto's recommendation and analysis path in the simplified panel",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  const detection=page.locator(".ac-left>.ac-card").first();
+  await expect(detection.locator(".ac-presets")).toHaveCount(0);
+  await expect(detection.locator(".ac-parameter")).toHaveCount(4);
+  await expect(detection.getByRole("button",{name:"DETECT SILENCES",exact:true})).toBeVisible();
+  if(process.env.UI_AUDIT_SCREENSHOTS){
+    await page.screenshot({path:"test-results/smartcut-auto-before.png"});
+    await page.evaluate(()=>document.documentElement.dataset.theme="dark");
+    await page.screenshot({path:"test-results/smartcut-auto-before-dark.png"});
+    await page.evaluate(()=>document.documentElement.dataset.theme="light");
+  }
+  await detection.getByRole("button",{name:"DETECT SILENCES",exact:true}).click();
+  await expect(detection.getByRole("button",{name:"RE-DETECT",exact:true})).toBeVisible();
+  await expect(detection.getByRole("slider",{name:"THRESHOLD"})).toHaveValue("0.57");
+  await expect(detection.getByRole("slider",{name:"PAD"})).toHaveValue("0.3");
+  await expect(detection.locator(".ac-parameter").nth(1).locator("b")).toHaveText("0.30s");
+  await expect(detection.getByRole("slider",{name:"MIN SILENCE"})).toHaveValue("0.12");
+  await expect(detection.getByRole("slider",{name:"MIN SPEECH"})).toHaveValue("0.16");
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/smartcut-auto-simplified.png"});
+  await detection.getByText("OTHER SETTINGS").click();
+  await expect(detection.getByRole("slider",{name:"BEFORE"})).toHaveValue("0.11");
+  await expect(detection.getByRole("slider",{name:"AFTER"})).toHaveValue("0.19");
+  await expect(detection.getByRole("slider",{name:"MINIMUM PAUSE"})).toHaveValue("0.41");
+  const calls=()=>page.evaluate(()=>(window as any).__TEST_CALLS__);
+  await expect.poll(async()=>((await calls()) as any[]).filter(call=>call.cmd==="analyze_autocut").length).toBe(1);
+  const initial=(await calls()) as any[];
+  expect(initial.filter(call=>call.cmd==="recommend_autocut_settings")).toHaveLength(1);
+  expect(initial.find(call=>call.cmd==="analyze_autocut").args.request).toMatchObject({threshold:0.57,min_silence:0.12,min_speech:0.16,minimum_pause:0.41,keep_before_speech:0.11,keep_after_speech:0.19,boundary_refinement:true});
+  await detection.getByRole("slider",{name:"THRESHOLD"}).focus();
+  await page.keyboard.press("Shift+ArrowRight");
+  await expect(detection.getByRole("slider",{name:"THRESHOLD"})).toHaveValue("0.571");
+  await expect.poll(async()=>((await calls()) as any[]).filter(call=>call.cmd==="analyze_autocut").length).toBe(2);
+  await detection.getByRole("button",{name:"RE-DETECT",exact:true}).click();
+  await expect.poll(async()=>((await calls()) as any[]).filter(call=>call.cmd==="analyze_autocut").length).toBe(3);
+  expect(((await calls()) as any[]).filter(call=>call.cmd==="recommend_autocut_settings")).toHaveLength(2);
+  expect(((await calls()) as any[]).filter(call=>call.cmd==="analyze_autocut").at(-1)?.args.request.threshold).toBe(0.57);
+});
+
+test("SmartCut fine tuning updates cuts and re-detect restores Auto recommendations",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.evaluate(()=>{
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="analyze_autocut"
+      ? {cuts:[{start:args.request.min_silence*10,end:8,enabled:true}],waveform:[],duration:60}
+      : undefined;
+  });
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  const detection=page.locator(".ac-detect-panel");
+  await detection.getByRole("button",{name:"DETECT SILENCES",exact:true}).click();
+  const cutStart=page.locator(".cut-list article input").first();
+  await expect(cutStart).toHaveValue("1.200");
+  await detection.getByRole("slider",{name:"MIN SILENCE"}).fill("0.18");
+  await expect(cutStart).toHaveValue("1.800");
+  await detection.getByRole("slider",{name:"MIN SPEECH"}).fill("0.2");
+  await detection.getByRole("slider",{name:"PAD"}).fill("0.4");
+  const pad=detection.getByRole("slider",{name:"PAD"});
+  await expect(pad).toHaveValue("0.4");
+  await pad.focus();await page.keyboard.press("Shift+ArrowRight");
+  await expect(pad).toHaveValue("0.401");
+  await expect.poll(()=>page.evaluate(()=>{
+    const calls=(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="analyze_autocut");
+    return calls.at(-1)?.args.request;
+  })).toMatchObject({min_silence:0.18,min_speech:0.2,keep_before_speech:0.147,keep_after_speech:0.254});
+  await detection.getByRole("button",{name:"RE-DETECT",exact:true}).click();
+  await expect(cutStart).toHaveValue("1.200");
+  await expect(detection.getByRole("slider",{name:"MIN SILENCE"})).toHaveValue("0.12");
+  await expect(detection.getByRole("slider",{name:"MIN SPEECH"})).toHaveValue("0.16");
+  await expect(detection.getByRole("slider",{name:"PAD"})).toHaveValue("0.3");
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="recommend_autocut_settings").length)).toBe(2);
+});
+
 test("Image favorites count and crop controls stay separate at compact widths",async({page})=>{
   await page.addInitScript(()=>localStorage.setItem("container-favorites",JSON.stringify(["clipper","transform","text","image_compressor","audio_convert"])));
   await mockDesktop(page,{fixture:{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:0.04,width:140,height:140,fps:25,codec:"mjpeg"}});
   await openFixture(page);
+  await page.evaluate(()=>document.documentElement.dataset.theme="light");
   await expect(page.locator(".favorites-filter b")).toHaveText("3");
   await expect(page.locator(".chips")).not.toContainText("dur");
   await expect(page.locator(".chips")).not.toContainText("fps");
@@ -285,6 +463,40 @@ test("Image favorites count and crop controls stay separate at compact widths",a
   await expect(page.locator(".tool-row")).toHaveCount(3);
   await page.locator(".favorite-toggle.active").first().click();
   await expect(page.locator(".favorites-filter b")).toHaveText("2");
+});
+
+test("light theme favorites and category accents remain distinct and readable",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("container-favorites",JSON.stringify(["clipper","cut"])));
+  await mockDesktop(page);await openFixture(page);
+  await page.evaluate(()=>document.documentElement.dataset.theme="light");
+  const favorites=page.locator(".favorites-filter");
+  await favorites.click();
+  await expect(favorites).toHaveClass(/active/);
+  const palette=await page.evaluate(()=>{
+    const css=(selector:string)=>getComputedStyle(document.querySelector(selector)!);
+    return {
+      filterBackground:css(".favorites-filter").backgroundColor,
+      filterStar:css(".favorites-filter span").color,
+      activeStar:css(".favorite-toggle.active").color,
+      clipper:css('.tool-group[data-category="Clipper"] .tool-row>i').backgroundColor,
+      cut:css('.tool-group[data-category="Export"] .tool-row>i').backgroundColor,
+      idleHeight:css('.tool-group[data-category="Export"] .tool-row>i').height,
+    };
+  });
+  expect(palette).toMatchObject({filterBackground:"rgb(255, 248, 227)",filterStar:"rgb(194, 129, 0)",activeStar:"rgb(194, 129, 0)",idleHeight:"16px"});
+  expect(palette.clipper).not.toBe(palette.cut);
+  await page.locator('.tool-group[data-category="Clipper"] .tool-row').click();
+  expect(await page.locator('.tool-group[data-category="Clipper"] .tool-row>i').evaluate(el=>getComputedStyle(el).height)).toBe("24px");
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  const smartCutContrast=await page.evaluate(()=>{
+    const ratio=(color:string)=>{
+      const channels=color.match(/\d+/g)!.slice(0,3).map(value=>Number(value)/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4);
+      const luminance=.2126*channels[0]+.7152*channels[1]+.0722*channels[2];
+      return 1.05/(luminance+.05);
+    };
+    return [".ac-card header p",".ac-right header p",".cut-summary",".cut-empty",".tl-status>b"].map(selector=>ratio(getComputedStyle(document.querySelector(selector)!).color));
+  });
+  for(const ratio of smartCutContrast)expect(ratio).toBeGreaterThan(4.5);
 });
 
 test("Audio favorites exclude video and image tools",async({page})=>{
@@ -315,6 +527,32 @@ test("Video and its Audio tab show separate favorite counts",async({page})=>{
   await page.locator(".favorites-filter").click();
   await expect(page.locator(".tool-row")).toHaveCount(1);
   await expect(page.locator(".tool-row")).toContainText("Remove Audio");
+});
+
+test("Turkish tool descriptions and editing controls stay localized",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("container-language","tr"));
+  await mockDesktop(page);await openFixture(page);
+  await expect(page.locator(".selected-title p")).toHaveText("Kırpma, döndürme, çevirme ve boyutlandırmayı tek yerde yapar.");
+  await expect(page.locator(".transform-controls header b")).toContainText(["KIRP","DÖNDÜR","ÇEVİR","ÇIKTI BOYUTU"]);
+  await expect(page.locator(".crop-options button").first()).toHaveText("KAPALI");
+  await expect(page.locator(".crop-options button").nth(1)).toHaveText("SERBEST");
+  await expect(page.locator(".tool-group h4")).toContainText(["Dönüştürme","Dikey Klipler","Çözünürlük"]);
+  await page.locator(".search").fill("Clipper");
+  await page.locator(".tool-row").click();
+  await expect(page.locator(".selected-title p")).toHaveText("Yatay videoyu paylaşmaya hazır 9:16 düzene dönüştürür.");
+  await expect(page.locator(".transform-options button").first()).toHaveText("ORİJİNAL BOYUT");
+  await expect(page.locator(".auto-camera em")).toHaveText("DENEYSEL");
+  await page.locator(".search").fill("Upscale");
+  await page.locator(".tool-row").click();
+  await expect(page.locator(".selected-title p")).toHaveText("Video çözünürlüğünü HD, 2K, 4K veya 8K'ya yükseltir.");
+});
+
+test("Turkish image transform labels preserve format choices",async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem("container-language","tr"));
+  await mockDesktop(page,{fixture:{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:0.04,width:140,height:140,fps:25,codec:"mjpeg"}});
+  await openFixture(page);
+  await expect(page.locator(".crop-options button").first()).toHaveText("ORİJİNAL");
+  await expect(page.locator(".transform-options button").filter({hasText:"PNG · KAYIPSIZ"})).toHaveCount(1);
 });
 
 for(const language of ["en","tr"]){
@@ -360,7 +598,16 @@ for(const language of ["en","tr"]){
         expect(timeline.buttons.right).toBeLessThanOrEqual(timeline.panel.right);
         expect(timeline.status.right).toBeLessThanOrEqual(timeline.panel.right);
         await page.screenshot({path:`test-results/polish-smartcut-${language}-${theme}-${size.width}.png`});
+        if(theme==="light"&&[1440,900].includes(size.width)){
+          await page.getByRole("button",{name:language==="tr"?"TOPLU":"BATCH",exact:true}).click();
+          await page.screenshot({path:`test-results/polish-batch-${language}-${size.width}.png`});
+        }
         await page.getByRole("button",{name:language==="tr"?"ARAÇ KUTUSU":"TOOLBOX",exact:true}).click();
+        if(theme==="light"&&[1440,900].includes(size.width)){
+          await page.getByRole("button",{name:language==="tr"?"ses":"audio",exact:true}).click();
+          await page.screenshot({path:`test-results/polish-audio-${language}-${size.width}.png`});
+          await page.getByRole("button",{name:"video",exact:true}).click();
+        }
       }
     });
   }
@@ -699,7 +946,7 @@ test("missing historical source and failed continuation leave current stage inta
 test("SmartCut stages restore cuts and keep history compact in dark and light",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
   await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
-  await page.getByRole("button",{name:"DETECT SILENCE",exact:true}).click();
+  await page.getByRole("button",{name:"DETECT SILENCES",exact:true}).click();
   await page.getByRole("button",{name:"EXPORT MP4",exact:true}).click();
   await page.getByRole("button",{name:"continue editing",exact:true}).click();
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","2");
@@ -1024,12 +1271,16 @@ test("interrupted work restores the preview and editor", async ({ page }) => {
 
 test("language switch changes and remembers the landing UI", async ({ page }) => {
   await mockDesktop(page);
+  await expect(page.locator(".landing-copy h2")).toHaveText("one place. every tool.");
   await page.locator(".landing-language").getByRole("button", { name: "TR" }).click();
   await expect(page.locator(".landing-project-actions")).toHaveText("PROJE AÇ");
+  await expect(page.locator(".landing-copy h2")).toHaveText("tek yerde. tüm araçlar.");
   await page.reload();
   await expect(page.locator(".landing-project-actions")).toHaveText("PROJE AÇ");
+  await expect(page.locator(".landing-copy h2")).toHaveText("tek yerde. tüm araçlar.");
   await page.locator(".landing-language").getByRole("button", { name: "EN" }).click();
   await expect(page.locator(".landing-project-actions")).toHaveText("OPEN PROJECT");
+  await expect(page.locator(".landing-copy h2")).toHaveText("one place. every tool.");
 });
 
 test("save warns about missing project files without a header check button", async ({ page }) => {
@@ -1060,7 +1311,7 @@ test("workspace roundtrips preserve Clipper edits, SmartCut cuts and Batch input
   await page.getByText("Social Tag", {exact:true}).click();
   await page.getByPlaceholder("kanaladi").fill("keep_this_name");
   await page.getByRole("button", {name:"SMARTCUT",exact:true}).click();
-  await page.getByRole("button", {name:"DETECT SILENCE",exact:true}).click();
+  await page.getByRole("button", {name:"DETECT SILENCES",exact:true}).click();
   await expect(page.locator(".cut-list article")).toHaveCount(2);
   const cutStart=page.locator(".cut-list article").first().locator('input').first();
   await cutStart.fill("3");
@@ -1118,13 +1369,14 @@ test("SmartCut reanalyzes in-flight edits and only exports current results", asy
       ? new Promise(resolve=>(window as any).__TEST_PENDING__.push(()=>resolve({cuts:[{start:args.request.minimum_pause,end:8,enabled:true}],waveform:[],duration:60}))) : undefined;
   });
   await page.getByRole("button", {name:"SMARTCUT",exact:true}).click();
-  await page.getByRole("button", {name:"DETECT SILENCE",exact:true}).click();
+  await page.getByRole("button", {name:"DETECT SILENCES",exact:true}).click();
   await page.waitForFunction(()=>(window as any).__TEST_PENDING__.length===1);
-  await page.locator('.ac-fields input[type="range"]').first().fill("0.75");
+  await page.getByText("OTHER SETTINGS").click();
+  await page.getByRole("slider",{name:"MINIMUM PAUSE"}).fill("0.75");
   await page.evaluate(()=>(window as any).__TEST_PENDING__.shift()());
   await page.waitForFunction(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="analyze_autocut").length===2);
   await expect(page.getByRole("button",{name:"EXPORT MP4",exact:true})).toBeDisabled();
-  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="analyze_autocut").map((call:any)=>call.args.request.minimum_pause))).toEqual([0.35,0.75]);
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="analyze_autocut").map((call:any)=>call.args.request.minimum_pause))).toEqual([0.41,0.75]);
   await page.evaluate(()=>(window as any).__TEST_PENDING__.shift()());
   await expect(page.getByRole("button",{name:"EXPORT MP4",exact:true})).toBeEnabled();
   await expect(page.locator(".cut-list article input").first()).toHaveValue("0.750");

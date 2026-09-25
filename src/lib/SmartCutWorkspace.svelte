@@ -19,16 +19,18 @@
 
   let { media, mediaUrl, language, historyControl, oncontinue, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; historyControl?:Snippet; oncontinue?:(path:string)=>Promise<void>; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void; onbusychange?:(value:boolean)=>void } = $props();
   const words:Record<"tr"|"en",Record<string,string>>={
-    tr:{detection:"ALGILAMA",silenceParams:"sessizlik parametreleri",threshold:"EŞİK",minSilence:"EN AZ SESSİZLİK",minSpeech:"EN AZ KONUŞMA",padding:"KENAR PAYI",help:"Eşik, Silero modelinin bir parçayı konuşma sayması için gereken güven değeridir. Yükseldikçe daha çok yer kesilir. Kenar payı kelimelerin başını ve sonunu korur.",listen:"BAŞKA BİR KAYDI DİNLE",camera:"kamera sesini kullan",analyzing:"ANALİZ EDİLİYOR…",detect:"SESSİZLİĞİ ALGILA",export:"DIŞA AKTAR",kept:"tutuldu",removed:"kaldırıldı",format:"FORMAT",quality:"KALİTE",resolution:"ÇÖZÜNÜRLÜK",high:"Yüksek",medium:"Orta",small:"Küçük",source:"Kaynak",linked:"BAĞLANTILI KAYITLAR",add:"+ EKLE",exporting:"AKTARILIYOR",cancelExport:"AKTARMAYI İPTAL ET",showOutput:"ÇIKTIYI GÖSTER",timeline:"ZAMAN ÇİZELGESİ",waveform:"ses dalgası oluşturuluyor…",skipping:"kesimler atlanıyor",playingAll:"tümü oynatılıyor",cuts:"KESİMLER",editable:"düzenlenebilir tutma bölgeleri",regions:"bölge",output:"çıktı",keep:"TUT",off:"KAPALI",empty:"Kesim listesini oluşturmak için algılamayı çalıştır.",noise:"gürültü",voice:"konuşma"},
-    en:{detection:"DETECTION",silenceParams:"silence parameters",threshold:"THRESHOLD",minSilence:"MIN SILENCE",minSpeech:"MIN SPEECH",padding:"PADDING",help:"Threshold is the confidence Silero needs to count a segment as speech. Raising it cuts more. Padding protects word beginnings and endings.",listen:"LISTEN TO ANOTHER TRACK",camera:"use camera audio",analyzing:"ANALYZING…",detect:"DETECT SILENCE",export:"EXPORT",kept:"kept",removed:"removed",format:"FORMAT",quality:"QUALITY",resolution:"RESOLUTION",high:"High",medium:"Medium",small:"Small",source:"Source",linked:"LINKED TRACKS",add:"+ ADD",exporting:"EXPORTING",cancelExport:"CANCEL EXPORT",showOutput:"SHOW OUTPUT",timeline:"TIMELINE",waveform:"building waveform…",skipping:"skipping cuts",playingAll:"playing all",cuts:"CUTS",editable:"editable keep regions",regions:"regions",output:"output",keep:"KEEP",off:"OFF",empty:"Run detection to build a cut list.",noise:"noise",voice:"voice"}
+    tr:{detection:"SESSİZLİK ALGILAMA",silenceParams:"Konuşma aralarını bul",threshold:"EŞİK",minSilence:"EN KISA SESSİZLİK",minSpeech:"EN KISA KONUŞMA",padding:"KENAR PAYI",help:"Eşik, Silero’nun bir bölümü konuşma kabul etmesi için gereken güven düzeyidir. Yükseltirsen daha fazla bölüm kesilebilir. Kenar payı, kelimelerin başını ve sonunu korur.",listen:"BAŞKA KAYDI DİNLE",camera:"kamera sesini kullan",analyzing:"ANALİZ EDİLİYOR…",detect:"SESSİZLİKLERİ BUL",redetect:"YENİDEN ALGILA",fine:"İnce ayar için Shift tuşunu basılı tut",details:"DİĞER AYARLAR",pause:"EN KISA DURAKLAMA",before:"ÖNCE",after:"SONRA",padHint:"Konuşmanın önüne ve arkasına ayrı pay bırakılır",export:"DIŞA AKTAR",kept:"korundu",removed:"çıkarıldı",format:"BİÇİM",quality:"KALİTE",resolution:"ÇÖZÜNÜRLÜK",high:"Yüksek",medium:"Orta",small:"Küçük",source:"Kaynak",linked:"EK KAYITLAR",add:"+ EKLE",exporting:"AKTARILIYOR",cancelExport:"AKTARMAYI İPTAL ET",showOutput:"ÇIKTIYI GÖSTER",timeline:"ZAMAN ÇİZELGESİ",waveform:"ses dalgası hazırlanıyor…",skipping:"kesilen bölümler atlanıyor",playingAll:"video baştan sona oynatılıyor",cuts:"KESİMLER",editable:"korunan bölümleri düzenle",regions:"bölge",output:"çıktı",keep:"KORU",off:"KAPALI",empty:"Kesimleri görmek için sessizlikleri algıla.",noise:"gürültü",voice:"konuşma"},
+    en:{detection:"DETECTION",silenceParams:"automatic silence detection",threshold:"THRESHOLD",minSilence:"MIN SILENCE",minSpeech:"MIN SPEECH",padding:"PAD",help:"Threshold is the confidence Silero needs to count a segment as speech. Raising it cuts more. Padding protects word beginnings and endings.",listen:"LISTEN TO ANOTHER TRACK",camera:"use camera audio",analyzing:"ANALYZING…",detect:"DETECT SILENCES",redetect:"RE-DETECT",fine:"Hold Shift for fine adjustment",details:"OTHER SETTINGS",pause:"MINIMUM PAUSE",before:"BEFORE",after:"AFTER",padHint:"Separate padding before and after speech is preserved",export:"EXPORT",kept:"kept",removed:"removed",format:"FORMAT",quality:"QUALITY",resolution:"RESOLUTION",high:"High",medium:"Medium",small:"Small",source:"Source",linked:"LINKED TRACKS",add:"+ ADD",exporting:"EXPORTING",cancelExport:"CANCEL EXPORT",showOutput:"SHOW OUTPUT",timeline:"TIMELINE",waveform:"building waveform…",skipping:"skipping cuts",playingAll:"playing all",cuts:"CUTS",editable:"editable keep regions",regions:"regions",output:"output",keep:"KEEP",off:"OFF",empty:"Run detection to build a cut list.",noise:"noise",voice:"voice"}
   };
   const t=(key:string)=>words[language][key]??key;
   let video:HTMLVideoElement|null = $state(null);
   let stage:HTMLElement|null = $state(null);
   let panelWorkspace:HTMLElement|null = $state(null);
   let panelWorkspaceWidth=$state(0);
+  let panelWorkspaceHeight=$state(0);
   let leftPanelWidth=$state<number|null>(null);
   let rightPanelWidth=$state<number|null>(null);
+  let timelineHeight=$state<number|null>(null);
   let threshold = $state(0.50);
   let minSilence = $state(0.10);
   let minSpeech = $state(0.15);
@@ -36,7 +38,6 @@
   let keepBeforeSpeech = $state(0.10);
   let keepAfterSpeech = $state(0.18);
   let preset = $state("balanced");
-  let presets:Preset[] = $state([]);
   let cuts:Cut[] = $state([]);
   let waveform:number[] = $state([]);
   let waveformLoading = $state(true);
@@ -71,19 +72,28 @@
     const compact=panelWorkspaceWidth<=950,padding=compact?7:10;
     const available=Math.max(0,panelWorkspaceWidth-padding*2-16);
     const minLeft=compact?185:220,minRight=compact?225:285,minCenter=compact?315:420;
-    const defaultLeft=panelWorkspaceWidth<=1150?220:250,defaultRight=panelWorkspaceWidth<=1150?285:330;
+    const defaultLeft=panelWorkspaceWidth<=1150?285:350,defaultRight=panelWorkspaceWidth<=1150?285:330;
     const left=Math.max(minLeft,Math.min(560,available-minRight-minCenter,leftPanelWidth??defaultLeft));
     const right=Math.max(minRight,Math.min(620,available-left-minCenter,rightPanelWidth??defaultRight));
     return {left,right,available,minLeft,minRight,minCenter};
   }
   const sizes=$derived(panelSizes());
+  function timelineBounds(){
+    const compact=panelWorkspaceHeight<=700,min=compact?150:180,minTop=compact?180:220;
+    const padding=panelWorkspaceWidth<=950?14:20;
+    return {min,max:Math.max(min,panelWorkspaceHeight-padding-8-minTop)};
+  }
+  const timelineSize=$derived.by(()=>{
+    const bounds=timelineBounds(),fallback=panelWorkspaceHeight<=700?183:225;
+    return Math.round(Math.max(bounds.min,Math.min(bounds.max,timelineHeight??fallback)));
+  });
   $effect(()=>{
     const element=panelWorkspace;if(!element)return;
-    const update=()=>panelWorkspaceWidth=element.clientWidth;
+    const update=()=>{panelWorkspaceWidth=element.clientWidth;panelWorkspaceHeight=element.clientHeight};
     update();const observer=new ResizeObserver(update);observer.observe(element);
     return()=>observer.disconnect();
   });
-  function savePanelWidths(){try{localStorage.setItem(panelStorageKey,JSON.stringify({left:leftPanelWidth,right:rightPanelWidth}))}catch{}}
+  function savePanelWidths(){try{localStorage.setItem(panelStorageKey,JSON.stringify({left:leftPanelWidth,right:rightPanelWidth,timeline:timelineHeight}))}catch{}}
   function setPanelWidth(side:"left"|"right",value:number){
     const sizes=panelSizes();
     if(side==="left")leftPanelWidth=Math.round(Math.max(sizes.minLeft,Math.min(560,sizes.available-sizes.right-sizes.minCenter,value)));
@@ -115,7 +125,32 @@
     else return;
     event.preventDefault();event.stopPropagation();setPanelWidth(side,value);savePanelWidths();
   }
-  export function resetPanelWidths(){leftPanelWidth=null;rightPanelWidth=null;savePanelWidths()}
+  function setTimelineHeight(value:number){const bounds=timelineBounds();timelineHeight=Math.round(Math.max(bounds.min,Math.min(bounds.max,value)))}
+  function startTimelineResize(event:PointerEvent){
+    if(event.button!==0)return;
+    event.preventDefault();const target=event.currentTarget as HTMLElement,pointerId=event.pointerId,startY=event.clientY,initial=timelineSize;
+    target.setPointerCapture?.(pointerId);
+    const oldCursor=document.body.style.cursor,oldSelection=document.body.style.userSelect;
+    document.body.style.cursor="row-resize";document.body.style.userSelect="none";
+    const move=(next:PointerEvent)=>{if(next.pointerId===pointerId)setTimelineHeight(initial+startY-next.clientY)};
+    const stop=(next?:PointerEvent)=>{
+      if(next&&next.pointerId!==pointerId)return;
+      window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);window.removeEventListener("pointercancel",stop);window.removeEventListener("blur",onBlur);
+      if(target.hasPointerCapture?.(pointerId))target.releasePointerCapture(pointerId);
+      document.body.style.cursor=oldCursor;document.body.style.userSelect=oldSelection;savePanelWidths();
+    };
+    const onBlur=()=>stop();
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop);window.addEventListener("pointercancel",stop);window.addEventListener("blur",onBlur);
+  }
+  function timelineKey(event:KeyboardEvent){
+    const bounds=timelineBounds();let value=timelineSize;
+    if(event.key==="Home")value=bounds.min;
+    else if(event.key==="End")value=bounds.max;
+    else if(event.key==="ArrowUp"||event.key==="ArrowDown")value+=(event.key==="ArrowUp"?1:-1)*(event.shiftKey?50:20);
+    else return;
+    event.preventDefault();event.stopPropagation();setTimelineHeight(value);savePanelWidths();
+  }
+  export function resetPanelWidths(){leftPanelWidth=null;rightPanelWidth=null;timelineHeight=null;savePanelWidths()}
 
   $effect(()=>onbusychange(analyzing||autoTuning||exporting));
 
@@ -124,6 +159,7 @@
   const removed = $derived(Math.max(0,duration-kept));
   const settingsKey = $derived(`${threshold}|${minSilence}|${minSpeech}|${minimumPause}|${keepBeforeSpeech}|${keepAfterSpeech}|${analysisInput}`);
   const analysisStale = $derived(hasAnalyzed&&settingsKey!==lastAnalyzedKey);
+  const totalPadding = $derived(keepBeforeSpeech+keepAfterSpeech);
   const viewSpan = $derived(Math.max(.001,viewEnd-viewStart));
   const zoomLevel = $derived(duration&&viewSpan ? duration/viewSpan : 1);
   const segments = $derived.by(()=>{
@@ -134,6 +170,35 @@
   });
   const pct = (value:number) => duration ? `${Math.max(0,Math.min(100,value/duration*100))}%` : "0%";
   const rangePct = (value:number,min:number,max:number) => `${Math.max(0,Math.min(100,(value-min)/(max-min)*100))}%`;
+  function setPadding(value:number){
+    const total=Math.max(0,Math.min(1.1,value));
+    const beforeShare=totalPadding>0?keepBeforeSpeech/totalPadding:.5;
+    const before=Math.max(0,Math.min(.5,Math.max(total-.6,total*beforeShare)));
+    keepBeforeSpeech=Number(before.toFixed(3));
+    keepAfterSpeech=Number(Math.max(0,Math.min(.6,total-keepBeforeSpeech)).toFixed(3));
+    preset="custom";
+  }
+  function fineSliderKey(event:KeyboardEvent,value:number,min:number,max:number,fineStep:number,update:(next:number)=>void){
+    if(!event.shiftKey||!["ArrowLeft","ArrowRight"].includes(event.key))return;
+    event.preventDefault();event.stopPropagation();
+    update(Number(Math.max(min,Math.min(max,value+(event.key==="ArrowRight"?fineStep:-fineStep))).toFixed(3)));
+  }
+  function fineSliderDrag(event:PointerEvent,value:number,min:number,max:number,update:(next:number)=>void){
+    if(!event.shiftKey||event.button!==0)return;
+    event.preventDefault();event.stopPropagation();
+    const target=event.currentTarget as HTMLInputElement,startX=event.clientX,width=Math.max(1,target.clientWidth);
+    target.setPointerCapture(event.pointerId);
+    const move=(next:PointerEvent)=>{
+      if(next.pointerId!==event.pointerId)return;
+      update(Number(Math.max(min,Math.min(max,value+(next.clientX-startX)/width*(max-min)*.1)).toFixed(3)));
+    };
+    const stop=(next:PointerEvent)=>{
+      if(next.pointerId!==event.pointerId)return;
+      target.removeEventListener("pointermove",move);target.removeEventListener("pointerup",stop);target.removeEventListener("pointercancel",stop);
+      if(target.hasPointerCapture(event.pointerId))target.releasePointerCapture(event.pointerId);
+    };
+    target.addEventListener("pointermove",move);target.addEventListener("pointerup",stop);target.addEventListener("pointercancel",stop);
+  }
   const time = (value:number) => {
     const safe=Math.max(0,Number(value)||0), h=Math.floor(safe/3600), m=Math.floor(safe%3600/60), s=Math.floor(safe%60), ms=Math.floor((safe%1)*1000);
     return `${h?String(h).padStart(2,"0")+":" : ""}${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}.${String(ms).padStart(3,"0")}`;
@@ -216,10 +281,6 @@
       await tick(); await analyze(true);
     }catch(reason){error=String(reason);reportProblem(reason)}finally{autoTuning=false}
   }
-  function applyPreset(id:"natural"|"balanced"|"tight"){
-    const value=presets.find(item=>item.id===id);if(!value)return;
-    preset=id;minimumPause=value.minimum_pause;keepBeforeSpeech=value.keep_before_speech;keepAfterSpeech=value.keep_after_speech;autoSummary="";
-  }
   async function exportCuts(){
     if(exporting||analyzing||autoTuning||analysisStale||!cuts.length)return;
     armCompletionSound();
@@ -275,6 +336,7 @@
       if(saved&&typeof saved==="object"){
         if(Number.isFinite(saved.left)&&saved.left>=185&&saved.left<=560)leftPanelWidth=saved.left;
         if(Number.isFinite(saved.right)&&saved.right>=225&&saved.right<=620)rightPanelWidth=saved.right;
+        if(Number.isFinite(saved.timeline)&&saved.timeline>=150&&saved.timeline<=1000)timelineHeight=saved.timeline;
       }
     }catch{}
     let disposed=false;
@@ -283,29 +345,31 @@
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
     resetHistory();
-    invoke<Preset[]>("autocut_presets").then(result=>{presets=result;const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed&&!sessionRestored){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
+    invoke<Preset[]>("autocut_presets").then(result=>{const balanced=result.find(item=>item.id==="balanced");if(balanced&&!hasAnalyzed&&!sessionRestored){minimumPause=balanced.minimum_pause;keepBeforeSpeech=balanced.keep_before_speech;keepAfterSpeech=balanced.keep_after_speech}}).catch(()=>{});
     invoke<number[]>("compute_autocut_waveform",{path:media.path}).then(result=>waveform=result).catch(reason=>{error=String(reason);reportProblem(reason)}).finally(()=>waveformLoading=false);
     return()=>{disposed=true;unlisten?.();window.removeEventListener("keydown",key)};
   });
 </script>
 
-<section class="ac-layout resizable" bind:this={panelWorkspace} style={`--ac-left:${sizes.left}px;--ac-right:${sizes.right}px`}>
+<section class="ac-layout resizable" bind:this={panelWorkspace} style={`--ac-left:${sizes.left}px;--ac-right:${sizes.right}px;--ac-timeline:${timelineSize}px`}>
   <aside class="ac-side ac-left">
-    <div class="ac-card">
-        <header><div><h3>{t("detection")}</h3><p class:auto-result={!!autoSummary} title={autoSummary?`AUTO · ${autoSummary}`:t("silenceParams")}>{autoSummary?`AUTO · ${autoSummary}`:t("silenceParams")}</p></div><div class="detect-actions"><button onclick={autoTune} disabled={autoTuning||analyzing||exporting}>{autoTuning?"…":"AUTO"}</button><span class="ac-dot red"></span></div></header>
-      <div class="ac-fields">
-        <div class="ac-presets"><button class:active={preset==="natural"} onclick={()=>applyPreset("natural")}>{language==="tr"?"DOĞAL":"NATURAL"}</button><button class:active={preset==="balanced"} onclick={()=>applyPreset("balanced")}>{language==="tr"?"DENGELİ":"BALANCED"}</button><button class:active={preset==="tight"} onclick={()=>applyPreset("tight")}>{language==="tr"?"SIKI":"TIGHT"}</button><button class:active={preset==="auto"} onclick={autoTune} disabled={autoTuning||analyzing||exporting}>AUTO</button></div>
-        <label><span>{language==="tr"?"EN AZ DURAKLAMA":"MINIMUM PAUSE"} <b>{Math.round(minimumPause*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minimumPause,.15,1.5)}`} min="0.15" max="1.5" step="0.025" bind:value={minimumPause} oninput={()=>preset="custom"}></label>
-        <label><span>{language==="tr"?"KONUŞMADAN ÖNCE KORU":"KEEP BEFORE SPEECH"} <b>{Math.round(keepBeforeSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepBeforeSpeech,0,.5)}`} min="0" max="0.5" step="0.01" bind:value={keepBeforeSpeech} oninput={()=>preset="custom"}></label>
-        <label><span>{language==="tr"?"KONUŞMADAN SONRA KORU":"KEEP AFTER SPEECH"} <b>{Math.round(keepAfterSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(keepAfterSpeech,0,.6)}`} min="0" max="0.6" step="0.01" bind:value={keepAfterSpeech} oninput={()=>preset="custom"}></label>
-        <details class="ac-advanced"><summary>{language==="tr"?"GELİŞMİŞ ALGILAMA":"ADVANCED DETECTION"}</summary><div>
-          <label><span>{t("threshold")} <b>{threshold.toFixed(2)}</b></span><input type="range" style={`--range-pct:${rangePct(threshold,.05,.95)}`} min="0.05" max="0.95" step="0.01" bind:value={threshold} oninput={()=>preset="custom"}></label>
-          <label><span>{t("minSilence")} <b>{Math.round(minSilence*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minSilence,.05,.5)}`} min="0.05" max="0.5" step="0.01" bind:value={minSilence} oninput={()=>preset="custom"}></label>
-          <label><span>{t("minSpeech")} <b>{Math.round(minSpeech*1000)}ms</b></span><input type="range" style={`--range-pct:${rangePct(minSpeech,.05,.5)}`} min="0.05" max="0.5" step="0.01" bind:value={minSpeech} oninput={()=>preset="custom"}></label>
+    <div class="ac-card ac-detect-panel">
+      <header><div><h3>{t("detection")}</h3><p>{language==="tr"?"Konuşma aralarını bul":"silence parameters"}</p></div></header>
+      <div class="ac-fields ac-detect-fields">
+        <button class="ac-primary ac-detect-trigger" title={autoSummary} onclick={autoTune} disabled={analyzing||autoTuning||exporting}>{analyzing||autoTuning?t("analyzing"):(hasAnalyzed?t("redetect"):t("detect"))}</button>
+        <label class="ac-parameter"><span>{t("threshold")} <b>{threshold.toFixed(2)}</b></span><input aria-label={t("threshold")} type="range" style={`--range-pct:${rangePct(threshold,.05,.95)}`} min="0.05" max="0.95" step="any" bind:value={threshold} oninput={()=>preset="custom"} onpointerdown={(event)=>fineSliderDrag(event,threshold,.05,.95,value=>{threshold=value;preset="custom"})} onkeydown={(event)=>fineSliderKey(event,threshold,.05,.95,.001,value=>{threshold=value;preset="custom"})}></label>
+        <label class="ac-parameter"><span>{t("padding")} <b>{totalPadding.toFixed(2)}s</b></span><input aria-label={t("padding")} title={`${t("before")}: ${Math.round(keepBeforeSpeech*1000)}ms · ${t("after")}: ${Math.round(keepAfterSpeech*1000)}ms`} type="range" style={`--range-pct:${rangePct(totalPadding,0,1.1)}`} min="0" max="1.1" step="any" value={totalPadding} oninput={(event)=>setPadding(Number(event.currentTarget.value))} onpointerdown={(event)=>fineSliderDrag(event,totalPadding,0,1.1,setPadding)} onkeydown={(event)=>fineSliderKey(event,totalPadding,0,1.1,.001,setPadding)}></label>
+        <label class="ac-parameter"><span>{t("minSilence")} <b>{Math.round(minSilence*1000)}ms</b></span><input aria-label={t("minSilence")} type="range" style={`--range-pct:${rangePct(minSilence,.05,.5)}`} min="0.05" max="0.5" step="any" bind:value={minSilence} oninput={()=>preset="custom"} onpointerdown={(event)=>fineSliderDrag(event,minSilence,.05,.5,value=>{minSilence=value;preset="custom"})} onkeydown={(event)=>fineSliderKey(event,minSilence,.05,.5,.001,value=>{minSilence=value;preset="custom"})}></label>
+        <label class="ac-parameter"><span>{t("minSpeech")} <b>{Math.round(minSpeech*1000)}ms</b></span><input aria-label={t("minSpeech")} type="range" style={`--range-pct:${rangePct(minSpeech,.05,.5)}`} min="0.05" max="0.5" step="any" bind:value={minSpeech} oninput={()=>preset="custom"} onpointerdown={(event)=>fineSliderDrag(event,minSpeech,.05,.5,value=>{minSpeech=value;preset="custom"})} onkeydown={(event)=>fineSliderKey(event,minSpeech,.05,.5,.001,value=>{minSpeech=value;preset="custom"})}></label>
+        <p class="ac-fine-hint">{language==="tr"?"İnce ayar için":"hold"} <kbd>shift</kbd> {language==="tr"?"tuşunu basılı tut":"for fine adjustment"}</p>
+        <details class="ac-advanced ac-detect-details"><summary>{t("details")}</summary><div>
+          <label><span>{t("before")} <b>{Math.round(keepBeforeSpeech*1000)}ms</b></span><input aria-label={t("before")} type="range" style={`--range-pct:${rangePct(keepBeforeSpeech,0,.5)}`} min="0" max="0.5" step="any" bind:value={keepBeforeSpeech} oninput={()=>preset="custom"}></label>
+          <label><span>{t("after")} <b>{Math.round(keepAfterSpeech*1000)}ms</b></span><input aria-label={t("after")} type="range" style={`--range-pct:${rangePct(keepAfterSpeech,0,.6)}`} min="0" max="0.6" step="any" bind:value={keepAfterSpeech} oninput={()=>preset="custom"}></label>
+          <label><span>{t("pause")} <b>{Math.round(minimumPause*1000)}ms</b></span><input aria-label={t("pause")} type="range" style={`--range-pct:${rangePct(minimumPause,.15,1.5)}`} min="0.15" max="1.5" step="any" bind:value={minimumPause} oninput={()=>preset="custom"}></label>
+          <p class="ac-help">{t("padHint")}</p>
+          <button class="ac-secondary listen" onclick={chooseAnalysis}>{analysisInput?`${t("listen")}: ${base(analysisInput)}`:t("listen")}</button>
+          {#if analysisInput}<button class="clear-source" onclick={()=>analysisInput=""}>{t("camera")}</button>{/if}
         </div></details>
-        <button class="ac-secondary listen" onclick={chooseAnalysis}>{analysisInput?`${t("listen")}: ${base(analysisInput)}`:t("listen")}</button>
-        {#if analysisInput}<button class="clear-source" onclick={()=>analysisInput=""}>{t("camera")}</button>{/if}
-        <button class="ac-primary" onclick={()=>analyze()} disabled={analyzing||autoTuning||exporting}>{analyzing?t("analyzing"):t("detect")}</button>
       </div>
     </div>
     <div class="ac-card ac-export">
@@ -330,7 +394,7 @@
     </div>
   </aside>
 
-  <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sol panel genişliği":"SmartCut left panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(560,sizes.available-sizes.right-sizes.minCenter)} aria-valuenow={Math.round(sizes.left)} onpointerdown={(event)=>startPanelResize(event,"left")} onkeydown={(event)=>panelKey(event,"left")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
+  <div class="workspace-resizer ac-left-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sol panel genişliği":"SmartCut left panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(560,sizes.available-sizes.right-sizes.minCenter)} aria-valuenow={Math.round(sizes.left)} onpointerdown={(event)=>startPanelResize(event,"left")} onkeydown={(event)=>panelKey(event,"left")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
 
   <div class="ac-main">
     <div class="ac-player ac-card" bind:this={stage}>
@@ -375,7 +439,7 @@
     {#if error}<div class="ac-error">{error}</div>{/if}
   </div>
 
-  <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sağ panel genişliği":"SmartCut right panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minRight} aria-valuemax={Math.min(620,sizes.available-sizes.left-sizes.minCenter)} aria-valuenow={Math.round(sizes.right)} onpointerdown={(event)=>startPanelResize(event,"right")} onkeydown={(event)=>panelKey(event,"right")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
+  <div class="workspace-resizer ac-right-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sağ panel genişliği":"SmartCut right panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minRight} aria-valuemax={Math.min(620,sizes.available-sizes.left-sizes.minCenter)} aria-valuenow={Math.round(sizes.right)} onpointerdown={(event)=>startPanelResize(event,"right")} onkeydown={(event)=>panelKey(event,"right")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
 
   <aside class="ac-side ac-right ac-card">
     <header><div><h3>{t("cuts")}</h3><p>{t("editable")}</p></div><button class="ac-mini" onclick={addCut}>{t("add")}</button></header>
@@ -393,4 +457,5 @@
       {/each}
     </div>
   </aside>
+  <div class="ac-timeline-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut zaman çizelgesi yüksekliği":"SmartCut timeline height"} aria-orientation="vertical" aria-valuemin={timelineBounds().min} aria-valuemax={timelineBounds().max} aria-valuenow={timelineSize} onpointerdown={startTimelineResize} onkeydown={timelineKey} ondblclick={()=>{timelineHeight=null;savePanelWidths()}} title={language==="tr"?"Yukarı sürükle: zaman çizelgesini büyüt · çift tık: sıfırla":"Drag up to enlarge timeline · double-click to reset"}></div>
 </section>

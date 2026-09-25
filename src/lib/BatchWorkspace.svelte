@@ -74,6 +74,7 @@
   export function resetPanelWidths(){controlPanelWidth=null;savePanelWidth()}
   $effect(()=>onbusychange(running));
   const name=(path:string)=>path.split(/[\\/]/).pop()??path;
+  const statusLabel=(status:string)=>language==="tr"?({waiting:"Bekliyor",running:"İşleniyor",complete:"Tamamlandı",cancelled:"İptal edildi",failed:"Başarısız"}[status]??status):status;
   const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
   const snapshot=():HistorySnapshot=>clone({selected,items,recursive});
   const signature=(value:HistorySnapshot)=>JSON.stringify(value);
@@ -116,20 +117,20 @@
 
 <section class="batch-workspace resizable" bind:this={panelWorkspace} style={`--batch-left:${sizes.left}px`}>
   <aside class="batch-control panel">
-    <div class="pane-head"><div><h3>{language==="tr"?"TOPLU İŞLEM":"BATCH QUEUE"}</h3><p>{language==="tr"?"tek seferde bir iş · güvenli varsayılan":"one job at a time · safe default"}</p></div>{@render historyControl?.()}</div>
+    <div class="pane-head"><div><h3>{language==="tr"?"TOPLU İŞLEM":"BATCH QUEUE"}</h3><p>{language==="tr"?"Dosyaların sırayla, güvenle işlenir":"one job at a time · safe default"}</p></div>{@render historyControl?.()}</div>
     <label class="field"><span>{language==="tr"?"İŞLEM":"OPERATION"}</span><select value={selected.id} onchange={chooseTool} disabled={running}>{#each batchTools() as tool}<option value={tool.id}>{tool.title}</option>{/each}</select></label>
     {#each selected.fields as field}
       {#if visible(field)}<label class="field"><span>{field.label}</span>{#if field.type==="select"}<select bind:value={field.value} disabled={running}>{#each field.options??[] as option}<option value={option.value}>{option.label}</option>{/each}</select>{:else}<input type={field.type==="text"?"text":"number"} bind:value={field.value} min={field.min} max={field.max} step={field.step} disabled={running}>{/if}</label>{/if}
     {/each}
     <div class="batch-add"><button class="ghost" onclick={addFiles} disabled={running}>+ {language==="tr"?"DOSYA":"FILES"}</button><button class="ghost" onclick={addFolder} disabled={running}>+ {language==="tr"?"KLASÖR":"FOLDER"}</button></div>
     <label class="batch-check"><input type="checkbox" bind:checked={recursive} disabled={running}> {language==="tr"?"alt klasörleri de tara":"include subfolders"}</label>
-    <small>{language==="tr"?"Alt klasör taraması yalnızca açıkça işaretlendiğinde çalışır. Hata alan dosya kuyruğu durdurmaz.":"Subfolders are scanned only when explicitly enabled. A failed file does not stop the queue."}</small>
+    <small>{language==="tr"?"Alt klasörleri istersen dahil et. Bir dosyada hata olursa diğerleri işlenmeye devam eder.":"Subfolders are scanned only when explicitly enabled. A failed file does not stop the queue."}</small>
     {#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={start} disabled={!items.length}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{/if}
   </aside>
   <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Batch kontrol paneli genişliği":"Batch controls panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(600,sizes.available-sizes.minRight)} aria-valuenow={Math.round(sizes.left)} onpointerdown={startPanelResize} onkeydown={panelKey} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
   <section class="batch-list panel">
     <div class="pane-head"><div><h3>{language==="tr"?"KUYRUK":"QUEUE"}</h3><p>{items.length} {language==="tr"?"dosya":"files"}</p></div><b>{aggregate.toFixed(0)}%</b></div>
     <div class="batch-total"><i style={`width:${aggregate}%`}></i></div>
-    <div class="batch-items">{#each items as item,index}<article><span class="batch-index">{String(index+1).padStart(2,"0")}</span><div><b>{name(item.path)}</b><small>{item.error??item.output??item.status}</small><i><em style={`width:${item.progress}%`}></em></i></div><strong class:failed={item.status==="failed"}>{item.status}</strong><div class="batch-row-actions">{#if item.status==="complete" && item.output && oncontinue}<button disabled={running} title={language==="tr"?"çıktıyı düzenle":"continue editing"} aria-label={language==="tr"?"çıktıyı düzenle":"continue editing"} onclick={()=>oncontinue?.(item.output!)}>↗</button>{/if}<button onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} aria-label={language==="tr"?"Kuyruktan kaldır":"Remove from queue"}>×</button></div></article>{/each}</div>
+    <div class="batch-items">{#each items as item,index}<article><span class="batch-index">{String(index+1).padStart(2,"0")}</span><div><b>{name(item.path)}</b><small>{item.error??item.output??statusLabel(item.status)}</small><i><em style={`width:${item.progress}%`}></em></i></div><strong class:failed={item.status==="failed"}>{statusLabel(item.status)}</strong><div class="batch-row-actions">{#if item.status==="complete" && item.output && oncontinue}<button disabled={running} title={language==="tr"?"çıktıyı düzenle":"continue editing"} aria-label={language==="tr"?"çıktıyı düzenle":"continue editing"} onclick={()=>oncontinue?.(item.output!)}>↗</button>{/if}<button onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} aria-label={language==="tr"?"Kuyruktan kaldır":"Remove from queue"}>×</button></div></article>{/each}</div>
   </section>
 </section>

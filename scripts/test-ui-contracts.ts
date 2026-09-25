@@ -10,6 +10,16 @@ const tools = readFileSync(new URL("../src/lib/tools.ts", import.meta.url), "utf
 const socialGeometry = readFileSync(new URL("../src/lib/socialTagGeometry.ts", import.meta.url), "utf8");
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const downloader = readFileSync(new URL("../src/lib/DownloaderWorkspace.svelte", import.meta.url), "utf8");
+const buildScript = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
+const darkBrandSource = readFileSync(new URL("../src-tauri/icons/container.svg", import.meta.url), "utf8");
+const lightBrandSource = readFileSync(new URL("../src-tauri/icons/container-light.svg", import.meta.url), "utf8");
+const darkMark = readFileSync(new URL("../public/mark-dark.svg", import.meta.url), "utf8");
+const lightMark = readFileSync(new URL("../public/mark-light.svg", import.meta.url), "utf8");
+const appIcon = readFileSync(new URL("../src-tauri/icons/icon.ico", import.meta.url));
+const projectIcon = readFileSync(new URL("../src-tauri/icons/project.ico", import.meta.url));
+const installerIcon = readFileSync(new URL("../src-tauri/windows/setup-dark.ico", import.meta.url));
+const withoutBackground = (svg: string) => svg.replace(/^  <rect width="1254" height="1254" fill="#[0-9A-Fa-f]{6}"\/>\r?\n/m, "");
 const stableConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 const devConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.dev.conf.json", import.meta.url), "utf8"));
 const desktopPermissions = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions;
@@ -26,11 +36,19 @@ const marksMatchSources = ["kick-plain", "kick-boxed", "twitch"].every(name => {
 });
 
 const contracts: Array<[string, boolean]> = [
+  ["all UI workspaces use the new theme-aware brand mark", app.includes('src="/mark-dark.svg"') && app.includes('src="/mark-light.svg"') && downloader.includes('src="/mark-dark.svg"') && downloader.includes('src="/mark-light.svg"')],
+  ["UI marks keep the exact source artwork without a boxed background", withoutBackground(darkBrandSource) === darkMark && withoutBackground(lightBrandSource) === lightMark],
+  ["application, project and installer ICOs are identical", appIcon.equals(projectIcon) && appIcon.equals(installerIcon)],
+  ["Windows icon changes retrigger resource compilation", buildScript.includes('cargo:rerun-if-changed=icons/icon.ico')],
+  ["closing hides the editor in the tray and Exit really terminates", backend.includes('api.prevent_close()') && backend.includes('window.hide()') && backend.includes('"tray-exit" => app.exit(0)')],
+  ["tray update action uses the existing updater UI and DEV keeps it hidden", backend.includes('"tray-updates"') && backend.includes('app.emit("tray-check-updates", ())') && backend.includes('if is_development_build()') && app.includes('listen("tray-check-updates",()=>{void checkForUpdates(true)})')],
+  ["tray menu follows the selected TR/EN language", app.includes('invoke("set_tray_language",{language:next})') && backend.includes('fn set_tray_language(language: &str')],
+  ["release packaging chooses the exact current executable and installer", releaseWorkflow.includes("Get-Item -LiteralPath 'src-tauri/target/release/container-studio.exe'") && releaseWorkflow.includes('Filter "CONTAINER_${version}_x64-setup.exe"')],
   ["native confirmation dialogs have their required IPC permission", desktopPermissions.includes("dialog:allow-message")],
   ["export logo assets match the preview SVGs (regenerate with scripts/generate-social-tag-marks.mjs)", marksMatchSources],
   ["Windows installer publisher is dewn", stableConfig.bundle.publisher === "dewn"],
   ["DEV uses an isolated application identifier", devConfig.identifier === "dev.dean.container.dev"],
-  ["camera detection ships visibly with an experimental label", !app.includes("{#if experimentalFeatures}") && app.includes("AUTO-DETECT CAMERA") && app.includes(">EXPERIMENTAL</em>")],
+  ["camera detection ships visibly with a localized experimental label", !app.includes("{#if experimentalFeatures}") && app.includes("AUTO-DETECT CAMERA") && app.includes('"DENEYSEL":"EXPERIMENTAL"')],
   ["DEV builds never query or offer the production updater", app.includes("updatesAllowedForVersion(appVersion)") && app.includes("{#if updaterEnabled}")],
   ["recovery uses a freshly authorized media URL", app.includes("recoveredMediaUrl(preparedMediaUrl)")],
   ["compact SmartCut layout has a 900px breakpoint", css.includes("@media(max-height:900px)")],
