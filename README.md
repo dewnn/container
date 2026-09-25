@@ -4,6 +4,13 @@ A Windows app for editing, converting and exporting video, audio and images. It 
 
 [Download the latest release](https://github.com/dewnn/container/releases/latest) · [Build status](https://github.com/dewnn/container/actions/workflows/ci.yml)
 
+## In action
+
+<p align="center">
+  <img src="docs/container-product-tour.gif" width="960" alt="CONTAINER tour through Toolbox, Clipper, SmartCut and Batch" />
+</p>
+<p align="center"><sub>Toolbox · Clipper · SmartCut · Batch</sub></p>
+
 ## Features
 
 - Video, audio and image tools for conversion, resizing, cropping, speed, color, subtitles, overlays and export
