@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n- Refreshed CONTAINER branding and logo across the editor, app icon, installer and project files.\n- Simplified SmartCut around automatic silence detection, with re-detect and fine-tuning controls.\n- Expanded the SmartCut timeline and improved resizable panel behavior.\n- Refined typography, light-theme accents and Turkish interface text across Toolbox, SmartCut and Batch.\n- Added a Windows notification-area menu: closing the window preserves the session and active jobs, while Exit fully quits.\n",
-  "pub_date": "2026-09-25T14:01:27.4454833Z",
+  "notes": "# Changes\n\n\n- Refresh Windows desktop and Start menu icons during installation and updates, avoiding the cached old logo.\n",
+  "version": "0.18.1",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/dewnn/container/releases/download/v0.18.0/CONTAINER-Setup-0.18.0-x64.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRyT21lNWMxL0hYdHh3UlFyUzN6RzJ2dzhoWHRxcDRNUUJWdnl4dDhOVEdXUng4TmZvcGdwZ2JTb1V3aE82ZEQ4Tmp1WTYvU2lCZHhTbDdaTm9FdUFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzQ0ODcyCWZpbGU6Q09OVEFJTkVSXzAuMTguMF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC4wCmlYb3UzYzlWZStUUG13cjVDWXdVSDNYS1lxcEhHcENrSlMrTU9YV0NROGl0VTN0L0FBN3JBWWxGSDZ2TjJFMVpDalhFTjU5bnFENngrNmVyT0ZuckR3PT0K"
+      "url": "https://github.com/dewnn/container/releases/download/v0.18.1/CONTAINER-Setup-0.18.1-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWFKdmtkc25jRW5kNmtzbS9xRURzNGduczFXdHlJUUJmSHhqNmUxVGxlRXJWd1pvK21OWVBxUEs3OEZoL1M4OG9meDQxT2dNckp3MlB1RG1MVjhQOWdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzQ5MDYyCWZpbGU6Q09OVEFJTkVSXzAuMTguMV94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC4xCjcwYjFCYnZLWVdRUnhTSXQzdG5QcWlGYmpHemFvZVFPZjdFdEJmVjNjdWhJckhqVGc3WHh5UUVWM2NTK1cwOFVkd3pNMms2aXNqZ0dBWk9POFoxa0R3PT0K"
     }
   },
-  "version": "0.18.0"
+  "pub_date": "2026-09-25T15:11:20.4986576Z"
 }
