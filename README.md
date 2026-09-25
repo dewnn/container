@@ -1,15 +1,25 @@
-# CONTAINER
+<h1 align="center">CONTAINER</h1>
 
-A Windows app for editing, converting and exporting video, audio and images. It combines an FFmpeg toolbox, SmartCut, Clipper and batch processing.
+<p align="center">
+  A Windows app for editing, converting and exporting video, audio and images.<br>
+  It combines an FFmpeg toolbox, SmartCut, Clipper and batch processing.
+</p>
 
-[Download the latest release](https://github.com/dewnn/container/releases/latest) · [Build status](https://github.com/dewnn/container/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/dewnn/container/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/dewnn/container?label=release&color=blue"></a>
+  <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="Build" src="https://github.com/dewnn/container/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/dewnn/container/releases/latest"><img alt="Windows" src="https://img.shields.io/badge/Windows-shipping-0078D4?logo=windows11&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/dewnn/container/releases/latest">Download the latest release</a> · <a href="https://github.com/dewnn/container/actions/workflows/ci.yml">Build status</a>
+</p>
 
 ## In action
 
 <p align="center">
   <img src="docs/container-product-tour.gif" width="960" alt="CONTAINER tour through Toolbox, Clipper, SmartCut and Batch" />
 </p>
-<p align="center"><sub>Toolbox · Clipper · SmartCut · Batch</sub></p>
 
 ## Features
 
