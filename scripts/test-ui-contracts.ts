@@ -12,6 +12,7 @@ const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.me
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 const downloader = readFileSync(new URL("../src/lib/DownloaderWorkspace.svelte", import.meta.url), "utf8");
 const buildScript = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
+const installerHooks = readFileSync(new URL("../src-tauri/windows/hooks.nsh", import.meta.url), "utf8");
 const darkBrandSource = readFileSync(new URL("../src-tauri/icons/container.svg", import.meta.url), "utf8");
 const lightBrandSource = readFileSync(new URL("../src-tauri/icons/container-light.svg", import.meta.url), "utf8");
 const darkMark = readFileSync(new URL("../public/mark-dark.svg", import.meta.url), "utf8");
@@ -40,6 +41,7 @@ const contracts: Array<[string, boolean]> = [
   ["UI marks keep the exact source artwork without a boxed background", withoutBackground(darkBrandSource) === darkMark && withoutBackground(lightBrandSource) === lightMark],
   ["application, project and installer ICOs are identical", appIcon.equals(projectIcon) && appIcon.equals(installerIcon)],
   ["Windows icon changes retrigger resource compilation", buildScript.includes('cargo:rerun-if-changed=icons/icon.ico')],
+  ["Windows upgrades refresh the cached desktop and Start menu icon", installerHooks.includes('container-brand-${VERSION}.ico') && installerHooks.includes('CreateShortCut "$DESKTOP\\${PRODUCTNAME}.lnk"') && installerHooks.includes('CreateShortCut "$SMPROGRAMS\\${PRODUCTNAME}.lnk"') && installerHooks.includes('SHChangeNotify(i 0x08000000')],
   ["closing hides the editor in the tray and Exit really terminates", backend.includes('api.prevent_close()') && backend.includes('window.hide()') && backend.includes('"tray-exit" => app.exit(0)')],
   ["tray update action uses the existing updater UI and DEV keeps it hidden", backend.includes('"tray-updates"') && backend.includes('app.emit("tray-check-updates", ())') && backend.includes('if is_development_build()') && app.includes('listen("tray-check-updates",()=>{void checkForUpdates(true)})')],
   ["tray menu follows the selected TR/EN language", app.includes('invoke("set_tray_language",{language:next})') && backend.includes('fn set_tray_language(language: &str')],

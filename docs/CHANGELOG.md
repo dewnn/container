@@ -6,6 +6,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-09-25
+
+- Refresh Windows desktop and Start menu icons during installation and updates, avoiding the cached old logo.
+
 ## [0.18.0] - 2026-09-25
 
 - Refreshed CONTAINER branding and logo across the editor, app icon, installer and project files.

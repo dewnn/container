@@ -1,94 +1,35 @@
-<h1 align="center">CONTAINER</h1>
+# CONTAINER
 
-<p align="center">
-  A local-first FFmpeg media toolbox for Windows.<br>
-  Convert, edit, compress and smart-cut video, audio and images without uploading your files.
-</p>
+A Windows app for editing, converting and exporting video, audio and images. It combines an FFmpeg toolbox, SmartCut, Clipper and batch processing.
 
-<p align="center">
-  <a href="https://github.com/dewnn/container/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/dewnn/container?label=release&color=blue"></a>
-  <a href="https://github.com/dewnn/container/actions/workflows/ci.yml"><img alt="Build" src="https://github.com/dewnn/container/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://github.com/dewnn/container/releases/latest"><img alt="Windows" src="https://img.shields.io/badge/Windows-shipping-0078D4?logo=windows11&logoColor=white"></a>
-</p>
-
-<p align="center">
-  <a href="#download">Download</a> ·
-  <a href="#features">Features</a>
-</p>
-
-## What is CONTAINER?
-
-CONTAINER brings practical FFmpeg workflows into one desktop app. The source file is never overwritten: every operation creates a new result under `Downloads/CONTAINER Output/<category>`.
-
-Processing happens locally. CONTAINER does not upload your video, audio or images to a server.
-
-On Windows, closing the window with **X** keeps CONTAINER in the notification area so an active export or download can continue. Preview playback pauses while hidden. Left-click the tray icon to reopen; right-click for **Open CONTAINER**, **Check for Updates** (release builds), and **Exit**. Choose **Exit** to stop background work and fully quit.
+[Download the latest release](https://github.com/dewnn/container/releases/latest) · [Build status](https://github.com/dewnn/container/actions/workflows/ci.yml)
 
 ## Features
 
-### Toolbox
+- Video, audio and image tools for conversion, resizing, cropping, speed, color, subtitles, overlays and export
+- SmartCut silence detection with editable keep regions, timeline preview, MP4 and FCPXML export
+- Clipper layouts, social tags and experimental automatic camera-region detection
+- Batch processing, session recovery and hardware encoding with CPU fallback
+- DWLNDR for supported downloads via bundled yt-dlp
 
-- Video, audio and image tools with favorites and batch processing
-- Crop, resize, speed, quality and color controls
-- Cut, screenshot, GIF, subtitle and overlay tools
-- Clipper layouts with optional Kick/Twitch Social Tags
-- Image editing and social-media crops
-- Hardware encoding with a safe CPU fallback
-- Work recovery and Output cleanup
-- Built-in DWLNDR with bundled yt-dlp
+Automatic camera-region detection is experimental. Review its selection before exporting.
 
-### First-run encoder tuning
+## Install
 
-On first launch, CONTAINER quietly tests available CPU and GPU encoders and chooses the fastest option that meets its quality threshold. The result is reused until the hardware, driver or bundled FFmpeg changes. Test media stays local and is deleted afterward.
+Download `CONTAINER-Setup-<version>-x64.exe` from [Releases](https://github.com/dewnn/container/releases/latest). A portable ZIP is also available; extract it fully and keep its files together. Both packages include FFmpeg and FFprobe. The installer adds **Send to → CONTAINER** to Windows Explorer.
 
-### Experimental camera-region detection
+The app is not yet Authenticode-signed, so Windows SmartScreen may display an “Unknown publisher” warning.
 
-Clipper's Auto Camera is still experimental and can choose the wrong region, especially when the camera moves or multiple faces appear. Check its selection before exporting; manual placement remains available. Detection runs locally.
+## Behavior and privacy
 
-### SmartCut
+Processing runs locally. CONTAINER does not upload media or collect analytics. Outputs are saved separately under `Downloads/CONTAINER Output`; source files are not overwritten.
 
-- Local speech detection with editable keep regions
-- Timeline preview and external audio analysis
-- MP4 and FCPXML export, including linked camera/audio tracks
+Closing the window leaves CONTAINER in the notification area, allowing active jobs to continue. Use **Exit** from the tray menu to quit. Installed builds support signed updates; portable builds are updated manually.
 
-## Download
+See the [security notes](docs/SECURITY_AUDIT.md) for technical details.
 
-Windows builds are published on the repository's **Releases** page:
+## License and credits
 
-- `CONTAINER-Setup-<version>-x64.exe` — recommended installer
-- `CONTAINER-Portable-<version>-x64.zip` — portable folder (extract before running)
+CONTAINER is [MIT-licensed](LICENSE). FFmpeg and other bundled components retain their own licenses; see the [third-party notices](docs/THIRD_PARTY_NOTICES.md). SmartCut’s interface and Silero-based detection workflow were inspired by [cobanov/autocut](https://github.com/cobanov/autocut).
 
-Setup adds **Send to → CONTAINER** in Windows Explorer; Portable does not change this menu.
-
-## FFmpeg included
-
-Windows packages include FFmpeg and FFprobe; no separate installation or `PATH` setup is needed. Keep all Portable ZIP files together after extraction.
-
-The app is currently not Authenticode-signed. Windows SmartScreen may therefore show an “Unknown publisher” warning until Windows code signing is added.
-
-## yt-dlp included
-
-Windows packages include yt-dlp for DWLNDR. If a website changes, yt-dlp can be updated from the DWLNDR screen.
-
-## Updates
-
-Installed builds check for verified updates without uploading media or analytics. Portable builds must be replaced manually.
-
-## Privacy and safety
-
-- Media stays on your computer.
-- Outputs are written to a new folder; the source is not modified.
-- Hardware acceleration is used only when supported and falls back to CPU encoding.
-- FFmpeg command failures are returned to the interface instead of silently replacing files.
-
-Security design and verification notes are documented in [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
-
-## License and attribution
-
-CONTAINER is released under the [MIT License](LICENSE).
-
-SmartCut's interface and Silero-based voice-detection workflow were inspired by [cobanov/autocut](https://github.com/cobanov/autocut). Bundled FFmpeg remains licensed separately under GPLv3. See [third-party notices](docs/THIRD_PARTY_NOTICES.md) for dependency licenses and source links.
-
-## Author
-
-Built by **dewn** — vibe-coded with Codex.
+Built by **dewn**.
