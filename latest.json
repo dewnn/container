@@ -1,11 +1,11 @@
 {
-  "notes": "# Changes\n\n\n- Added resizable panels with remembered widths in Toolbox, SmartCut and Batch, plus a theme-matched reset confirmation.\n- Improved text and image overlay resizing, preserved text wrapping when scaling, and added multiline text editing with compact layer removal.\n- Added emoji text export for video and images.\n- Improved Social Tag alignment and camera-relative previews for plain and boxed styles.\n- Fixed media-specific favorite counts and spacing in image crop controls.\n- Simplified the editor header and prevented panel controls and confirmation dialogs from activating player shortcuts.\n",
-  "pub_date": "2026-09-24T20:56:24.6857698Z",
+  "notes": "# Changes\n\n\n- Refreshed CONTAINER branding and logo across the editor, app icon, installer and project files.\n- Simplified SmartCut around automatic silence detection, with re-detect and fine-tuning controls.\n- Expanded the SmartCut timeline and improved resizable panel behavior.\n- Refined typography, light-theme accents and Turkish interface text across Toolbox, SmartCut and Batch.\n- Added a Windows notification-area menu: closing the window preserves the session and active jobs, while Exit fully quits.\n",
+  "pub_date": "2026-09-25T14:01:27.4454833Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRvZHk3OU9HTTJyaGNXcVVNaUU4SlZRZm05QjlqWHZYYjhFNEo1OHJ6SW5kZnhqUExEZmZOMmx6M1JzcWMyWFVqMmFsZzZCUEdZT0d3dGJxd2J6Umc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMjgzMzY3CWZpbGU6Q09OVEFJTkVSXzAuMTcuMF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xNy4wCmdvdmZyTGp4WkQ0cHFPNGFkeXBSMFVPVm00Nm82OFlsUFVkM015RUtaeGw1NFRzSjV1dW00ZHlmcWt6MVRQaURzaHowTEZteHQ1bnIvYWtON21oZkJBPT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.17.0/CONTAINER-Setup-0.17.0-x64.exe"
+      "url": "https://github.com/dewnn/container/releases/download/v0.18.0/CONTAINER-Setup-0.18.0-x64.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVRyT21lNWMxL0hYdHh3UlFyUzN6RzJ2dzhoWHRxcDRNUUJWdnl4dDhOVEdXUng4TmZvcGdwZ2JTb1V3aE82ZEQ4Tmp1WTYvU2lCZHhTbDdaTm9FdUFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzQ0ODcyCWZpbGU6Q09OVEFJTkVSXzAuMTguMF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC4wCmlYb3UzYzlWZStUUG13cjVDWXdVSDNYS1lxcEhHcENrSlMrTU9YV0NROGl0VTN0L0FBN3JBWWxGSDZ2TjJFMVpDalhFTjU5bnFENngrNmVyT0ZuckR3PT0K"
     }
   },
-  "version": "0.17.0"
+  "version": "0.18.0"
 }
