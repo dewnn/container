@@ -32,8 +32,11 @@ export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometr
     cameraBottom=cameraTop+cameraHeight;seam=cameraBottom;
   }
   const cameraRight=cameraLeft+cameraWidth;
-  const targetX=position==="left"?cameraLeft:position==="center"?cameraLeft+cameraWidth/2:cameraRight;
-  const available=style==="boxed"?Math.max(width-cameraLeft,24):width*.84;
+  // Tall phone screens can crop a 9:16 upload horizontally. Keep the whole
+  // badge inside the central 80%, even when it is anchored to a camera edge.
+  const safeLeft=width*.1,safeRight=width*.9;
+  const targetX=position==="left"?Math.max(cameraLeft,safeLeft):position==="center"?cameraLeft+cameraWidth/2:Math.min(cameraRight,safeRight);
+  const available=Math.max(24,position==="left"?safeRight-targetX:position==="right"?targetX-safeLeft:2*Math.min(targetX-safeLeft,safeRight-targetX));
   const fontSize=Math.min(input.size,available/(units*unitScale+2.4));
   const side=Math.max(8,Math.round(fontSize*1.5));
   const gap=style==="plain"?fontSize*.22:0;
@@ -41,7 +44,7 @@ export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometr
   const textWidth=units*fontSize*unitScale;
   const totalWidth=side+gap+textWidth+(style==="boxed"?padding*2:0);
   const rawX=position==="left"?targetX:position==="center"?targetX-totalWidth/2:targetX-totalWidth;
-  const x=Math.round(Math.max(0,Math.min(rawX,Math.max(0,width-totalWidth))));
+  const x=Math.round(Math.max(safeLeft,Math.min(rawX,Math.max(safeLeft,safeRight-totalWidth))));
   const anchorX=x+(position==="left"?0:position==="center"?totalWidth/2:totalWidth);
   const centerY=style==="boxed"?Math.max(cameraBottom-side/2,cameraTop+side/2):seam;
   const y=Math.round(centerY-side/2);

@@ -1382,7 +1382,7 @@ test("Social Tag positions move across the camera and retain per-style choices",
   const boxedBounds = await tag.boundingBox();
   expect(camera).not.toBeNull();
   expect(boxedBounds).not.toBeNull();
-  expect(Math.abs(boxedBounds!.x - camera!.x)).toBeLessThan(3);
+  expect(Math.abs(boxedBounds!.x - (camera!.x + camera!.width * .1))).toBeLessThan(3);
   expect(Math.abs(boxedBounds!.y + boxedBounds!.height - camera!.y - camera!.height)).toBeLessThan(3);
   await position.selectOption("center");
   const boxedCenter = await x();
@@ -1391,7 +1391,7 @@ test("Social Tag positions move across the camera and retain per-style choices",
   await position.selectOption("right");
   const boxedRight = await x();
   const rightBounds = await tag.boundingBox();
-  expect(Math.abs(rightBounds!.x + rightBounds!.width - camera!.x - camera!.width)).toBeLessThan(3);
+  expect(Math.abs(rightBounds!.x + rightBounds!.width - camera!.x - camera!.width * .9)).toBeLessThan(3);
   expect(boxedLeft).toBeLessThan(boxedCenter);
   expect(boxedCenter).toBeLessThan(boxedRight);
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-boxed-right.png" });

@@ -12,7 +12,7 @@ for(const fixture of fixtures){
 for(const style of ["boxed","plain"] as const){
   for(const position of ["left","center","right"] as const){
     const result=socialTagGeometry({width:360,height:640,sourceWidth:1920,sourceHeight:1080,layout:"split",style,position,username:"a_very_long_kick_username_12345",size:36,regionAHeight:30,regionOrder:"a_first",regionAWidth:50,regionARegionHeight:50,freecamSize:50,freecamX:50,freecamY:2});
-    if(result.x<0||result.x+result.totalWidth>361)throw new Error(`${style}/${position} long Social Tag escapes the output`);
+    if(result.x<35||result.x+result.totalWidth>325)throw new Error(`${style}/${position} long Social Tag escapes the phone-safe area`);
   }
 }
 const measured=socialTagGeometry({width:360,height:640,sourceWidth:1920,sourceHeight:1080,layout:"split",style:"plain",position:"center",username:"Example",size:36,textUnits:4.72314,regionAHeight:30,regionOrder:"a_first",regionAWidth:50,regionARegionHeight:50,freecamSize:50,freecamX:50,freecamY:2});
