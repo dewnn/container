@@ -119,7 +119,9 @@ fn app_storage_namespace() -> &'static str {
     }
 }
 
-fn app_cache_name() -> &'static str {
+// Old releases used the product name, which collides with the NSIS install
+// folder on Windows. Only use this name when reading/migrating legacy data.
+fn legacy_storage_name() -> &'static str {
     if is_development_build() {
         "CONTAINER DEV"
     } else {
@@ -127,13 +129,24 @@ fn app_cache_name() -> &'static str {
     }
 }
 
+fn app_data_directory() -> Result<PathBuf, String> {
+    Ok(dirs::data_local_dir()
+        .ok_or("Application data folder is unavailable.")?
+        .join(app_storage_namespace())
+        .join("data"))
+}
+
+fn app_cache_directory() -> Result<PathBuf, String> {
+    Ok(dirs::cache_dir()
+        .ok_or("User cache directory unavailable")?
+        .join(app_storage_namespace())
+        .join("cache"))
+}
+
 // Embed the exact model used by the dependency, so released builds never
 // depend on the build machine's Cargo registry directory.
 fn load_silero_vad() -> Result<OnnxModel, String> {
-    let directory = dirs::cache_dir()
-        .ok_or("User cache directory unavailable")?
-        .join("CONTAINER")
-        .join("models");
+    let directory = app_cache_directory()?.join("models");
     load_embedded_vad(&directory)
 }
 
@@ -558,9 +571,38 @@ fn downloader_output_dir() -> Result<PathBuf, String> {
 
 fn download_history_path() -> Result<PathBuf, String> {
     let base = dirs::data_local_dir().ok_or("Application data folder is unavailable.")?;
-    let folder = base.join(app_cache_name());
-    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    Ok(folder.join("download-history.json"))
+    migrate_download_history(
+        &base
+            .join(legacy_storage_name())
+            .join("download-history.json"),
+        &app_data_directory()?.join("download-history.json"),
+    )
+}
+
+fn migrate_download_history(legacy: &Path, destination: &Path) -> Result<PathBuf, String> {
+    // All callers hold DownloadHistoryState's lock; the single-instance plugin
+    // serializes application processes. Never replace an existing new history.
+    std::fs::create_dir_all(destination.parent().ok_or("Invalid history path")?)
+        .map_err(|error| error.to_string())?;
+    if !destination
+        .try_exists()
+        .map_err(|error| error.to_string())?
+        && legacy.try_exists().map_err(|error| error.to_string())?
+    {
+        // Validate first. Rename keeps the original bytes, ordering and names;
+        // a failed migration leaves the old history intact for a later retry.
+        let metadata = std::fs::symlink_metadata(legacy).map_err(|error| error.to_string())?;
+        let regular = metadata.is_file() && !metadata.file_type().is_symlink();
+        #[cfg(target_os = "windows")]
+        let regular = regular && metadata.file_attributes() & 0x400 == 0;
+        if !regular {
+            return Err("Legacy download history is not a regular file.".into());
+        }
+        read_download_history(legacy)?;
+        std::fs::rename(legacy, destination)
+            .map_err(|error| format!("Download history could not be moved: {error}"))?;
+    }
+    Ok(destination.to_path_buf())
 }
 
 fn valid_download_history_file(root: &Path, path: &Path) -> bool {
@@ -1058,7 +1100,7 @@ fn remove_image_preview(path: String) -> Result<bool, String> {
 
 fn cleanup_legacy_download_thumbnail_cache() {
     let Some(directory) =
-        dirs::cache_dir().map(|path| path.join("CONTAINER").join("download-thumbnails"))
+        dirs::cache_dir().map(|path| path.join(legacy_storage_name()).join("download-thumbnails"))
     else {
         return;
     };
@@ -4170,6 +4212,14 @@ fn clipper_watermark_filter(
 // Keep the originals inside the executable: export must not depend on files on
 // the developer's Desktop or on an SVG decoder in the user's FFmpeg build.
 fn social_tag_mark_path(platform: &str, style: &str) -> Result<PathBuf, String> {
+    social_tag_mark_path_in(&app_cache_directory()?.join("social-tags"), platform, style)
+}
+
+fn social_tag_mark_path_in(
+    directory: &Path,
+    platform: &str,
+    style: &str,
+) -> Result<PathBuf, String> {
     static CACHE_LOCK: Mutex<()> = Mutex::new(());
     let _guard = CACHE_LOCK.lock().map_err(|e| e.to_string())?;
     let bytes: &[u8] = match (platform, style) {
@@ -4177,11 +4227,7 @@ fn social_tag_mark_path(platform: &str, style: &str) -> Result<PathBuf, String> 
         (_, "boxed") => include_bytes!("../resources/social-tags/kick-boxed.png"),
         _ => include_bytes!("../resources/social-tags/kick-plain.png"),
     };
-    let directory = dirs::cache_dir()
-        .ok_or("User cache directory unavailable")?
-        .join(app_cache_name())
-        .join("social-tags");
-    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
     let path = directory.join(format!("{:x}.png", Sha256::digest(bytes)));
     if std::fs::read(&path).ok().as_deref() != Some(bytes) {
         // Publish a complete file, including when DEV and stable export together.
@@ -7784,16 +7830,82 @@ fn startup_media_path() -> Option<String> {
 }
 
 fn prepare_session_lifecycle() -> SessionLifecycle {
-    let directory = dirs::cache_dir()
+    let directory = app_data_directory().unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join(app_storage_namespace())
+            .join("data")
+    });
+    let legacy = dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(app_cache_name());
-    let _ = std::fs::create_dir_all(&directory);
+        .join(legacy_storage_name());
+    retire_legacy_embedded_caches(&legacy, !is_development_build());
+    prepare_session_lifecycle_at(&directory, &legacy)
+}
+
+fn prepare_session_lifecycle_at(directory: &Path, legacy: &Path) -> SessionLifecycle {
+    let _ = std::fs::create_dir_all(directory);
     let marker_path = directory.join("running.lock");
-    let previous_interrupted = marker_path.is_file();
-    let _ = std::fs::write(&marker_path, std::process::id().to_string());
+    let legacy_marker = legacy.join("running.lock");
+    let previous_interrupted = marker_path.is_file() || legacy_marker.is_file();
+    if std::fs::write(&marker_path, std::process::id().to_string()).is_ok() {
+        let _ = std::fs::remove_file(legacy_marker);
+    }
     SessionLifecycle {
         previous_interrupted,
         marker_path,
+    }
+}
+
+// These are disposable copies of bytes still embedded in the EXE, not user
+// projects. Keep unknown/modified files and never recursively remove folders.
+fn retire_legacy_embedded_caches(legacy: &Path, include_models: bool) {
+    fn plain_path(path: &Path, directory: bool) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            let regular = if directory {
+                metadata.is_dir()
+            } else {
+                metadata.is_file()
+            };
+            #[cfg(target_os = "windows")]
+            let regular = regular && metadata.file_attributes() & 0x400 == 0;
+            regular && !metadata.file_type().is_symlink()
+        })
+    }
+    if !plain_path(legacy, true) {
+        return;
+    }
+    let mut assets: Vec<(&str, String, &[u8])> = [
+        include_bytes!("../resources/social-tags/twitch.png").as_slice(),
+        include_bytes!("../resources/social-tags/kick-boxed.png").as_slice(),
+        include_bytes!("../resources/social-tags/kick-plain.png").as_slice(),
+    ]
+    .into_iter()
+    .map(|bytes| {
+        (
+            "social-tags",
+            format!("{:x}.png", Sha256::digest(bytes)),
+            bytes,
+        )
+    })
+    .collect();
+    if include_models {
+        let bytes = include_bytes!("../resources/silero_vad.onnx").as_slice();
+        assets.push((
+            "models",
+            format!("silero-{:x}.onnx", Sha256::digest(bytes)),
+            bytes,
+        ));
+    }
+    for (folder, name, bytes) in assets {
+        let directory = legacy.join(folder);
+        let path = directory.join(name);
+        if plain_path(&directory, true)
+            && plain_path(&path, false)
+            && std::fs::read(&path).ok().as_deref() == Some(bytes)
+        {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_dir(directory);
+        }
     }
 }
 
@@ -7986,6 +8098,11 @@ pub fn run() {
             set_tray_language
         ])
         .setup(|app| {
+            // Migration failures keep the legacy file; DWLNDR reports them on
+            // access rather than making an otherwise usable editor fail startup.
+            if let Ok(_guard) = app.state::<DownloadHistoryState>().0.lock() {
+                let _ = download_history_path();
+            }
             let open = MenuItem::with_id(app, "tray-open", "Open CONTAINER", true, None::<&str>)?;
             let exit = MenuItem::with_id(app, "tray-exit", "Exit", true, None::<&str>)?;
             let updates = if is_development_build() {
@@ -8099,6 +8216,131 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn storage_test_root(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "container-storage-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn runtime_storage_does_not_overlap_the_installer_directory() {
+        let data = app_data_directory().unwrap();
+        let cache = app_cache_directory().unwrap();
+        assert!(data.ends_with(Path::new(app_storage_namespace()).join("data")));
+        assert!(cache.ends_with(Path::new(app_storage_namespace()).join("cache")));
+        assert!(!data.starts_with(dirs::data_local_dir().unwrap().join("CONTAINER")));
+        assert!(!cache.starts_with(dirs::cache_dir().unwrap().join("CONTAINER")));
+    }
+
+    #[test]
+    fn history_relocation_preserves_bytes_and_never_overwrites_existing_history() {
+        let root = storage_test_root("history");
+        let old = root.join("old.json");
+        let new = root.join("dev.dean.container/data/download-history.json");
+        let bytes = br#"[ { "path": "C:/Downloads/example.mp4", "name": "example.mp4" } ]"#;
+        std::fs::write(&old, bytes).unwrap();
+        assert_eq!(migrate_download_history(&old, &new).unwrap(), new);
+        assert_eq!(std::fs::read(&new).unwrap(), bytes);
+        assert!(!old.exists());
+        assert_eq!(read_download_history(&new).unwrap().len(), 1);
+        migrate_download_history(&old, &new).unwrap();
+        // Downgrading/reinstalling an older release may recreate its history.
+        // Keep that file, but do not replace the current history with stale data.
+        std::fs::write(&old, b"[]").unwrap();
+        migrate_download_history(&old, &new).unwrap();
+        assert_eq!(std::fs::read(&new).unwrap(), bytes);
+        assert!(old.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_or_invalid_history_relocation_keeps_the_original() {
+        let root = storage_test_root("invalid");
+        let old = root.join("old.json");
+        let new = root.join("new/history.json");
+        std::fs::write(&old, b"broken json").unwrap();
+        assert!(migrate_download_history(&old, &new).is_err());
+        assert!(!new.exists());
+        assert_eq!(std::fs::read(&old).unwrap(), b"broken json");
+        std::fs::write(&old, b"[]").unwrap();
+        let blocked = root.join("file-not-directory");
+        std::fs::write(&blocked, b"keep").unwrap();
+        assert!(migrate_download_history(&old, &blocked.join("history.json")).is_err());
+        assert_eq!(std::fs::read(&old).unwrap(), b"[]");
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_relocation_preserves_crash_detection_and_clean_exit() {
+        let root = storage_test_root("session");
+        let old = root.join("CONTAINER");
+        let new = root.join("dev.dean.container/data");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("running.lock"), b"123").unwrap();
+        let session = prepare_session_lifecycle_at(&new, &old);
+        assert!(session.previous_interrupted);
+        assert!(session.marker_path.is_file());
+        assert!(!old.join("running.lock").exists());
+        assert!(prepare_session_lifecycle_at(&new, &old).previous_interrupted);
+        std::fs::remove_file(&session.marker_path).unwrap();
+        assert!(!prepare_session_lifecycle_at(&new, &old).previous_interrupted);
+        std::fs::write(old.join("running.lock"), b"keep").unwrap();
+        let blocked = root.join("blocked");
+        std::fs::write(&blocked, b"keep").unwrap();
+        assert!(prepare_session_lifecycle_at(&blocked, &old).previous_interrupted);
+        assert!(old.join("running.lock").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn embedded_cache_cleanup_keeps_unknown_files_and_assets_regenerate_elsewhere() {
+        let root = storage_test_root("assets");
+        let old = root.join("CONTAINER");
+        let cache = root.join("dev.dean.container/cache/social-tags");
+        for (platform, style) in [("kick", "plain"), ("kick", "boxed"), ("twitch", "plain")] {
+            social_tag_mark_path_in(&old.join("social-tags"), platform, style).unwrap();
+        }
+        let model = include_bytes!("../resources/silero_vad.onnx");
+        std::fs::create_dir_all(old.join("models")).unwrap();
+        let model_path = old
+            .join("models")
+            .join(format!("silero-{:x}.onnx", Sha256::digest(model)));
+        std::fs::write(&model_path, model).unwrap();
+        let keep = old.join("social-tags/user-keep.png");
+        std::fs::write(&keep, b"user image").unwrap();
+        retire_legacy_embedded_caches(&old, false);
+        assert_eq!(
+            std::fs::read_dir(old.join("social-tags")).unwrap().count(),
+            1
+        );
+        assert!(model_path.exists());
+        retire_legacy_embedded_caches(&old, true);
+        assert!(!model_path.exists());
+        assert!(!old.join("models").exists());
+        assert_eq!(std::fs::read(&keep).unwrap(), b"user image");
+        for (platform, style) in [("kick", "plain"), ("kick", "boxed"), ("twitch", "plain")] {
+            let path = social_tag_mark_path_in(&cache, platform, style).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(bytes.starts_with(b"\x89PNG"));
+            std::fs::write(&path, b"corrupt cache").unwrap();
+            social_tag_mark_path_in(&cache, platform, style).unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        assert_eq!(
+            std::fs::read_dir(old.join("social-tags")).unwrap().count(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cut_end_accepts_only_the_display_rounding_gap() {
@@ -9035,7 +9277,7 @@ mod tests {
     #[test]
     fn social_tag_export_geometry_matches_preview_fixtures() {
         let fixtures: Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/social-tag-geometry.json"
+            "../../tooling/tests/fixtures/social-tag-geometry.json"
         ))
         .unwrap();
         let info = MediaInfo {

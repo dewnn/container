@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { startStages, checkpointStage, continueStage, validStages } from "../src/lib/stageHistory.ts";
-import { projectResources, replaceProjectResource } from "../src/lib/projectResources.ts";
+import { startStages, checkpointStage, continueStage, validStages } from "../../src/lib/stageHistory.ts";
+import { projectResources, replaceProjectResource } from "../../src/lib/projectResources.ts";
 const a={mediaPath:"a.mp4",savedAt:1,toolbox:{output:"b.mp4",mediaUrl:"old",text:"hello"}};
 const b={mediaPath:"b.mp4",savedAt:2,toolbox:{output:"c.mp4",mediaUrl:"new",text:"world"}};
 let h=continueStage(startStages(a,"Text"),b,"SmartCut");

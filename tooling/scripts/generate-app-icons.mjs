@@ -3,7 +3,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 
-const root = new URL("../", import.meta.url);
+const root = new URL("../../", import.meta.url);
 const check = process.argv.includes("--check");
 const browser = await chromium.launch();
 const sizes = [16, 24, 32, 48, 64, 128, 256];
@@ -71,7 +71,7 @@ try {
         return { size, rgba, png: canvas.toDataURL("image/png").split(",")[1] };
       });
     }, { svg, sizes });
-    await output(`public/logo-${theme}.png`, Buffer.from(frames.at(-1).png, "base64"));
+    await output(`src/public/logo-${theme}.png`, Buffer.from(frames.at(-1).png, "base64"));
     if (theme === "dark") {
       for (const [size, name] of [[32, "32x32"], [128, "128x128"], [256, "128x128@2x"]]) {
         await output(`src-tauri/icons/${name}.png`, Buffer.from(frames.find(frame => frame.size === size).png, "base64"));

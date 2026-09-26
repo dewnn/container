@@ -1,4 +1,4 @@
-import { moveTimelineBoundary, type TimelineBoundary, type TimelineRange } from "../src/lib/timelineRange.ts";
+import { moveTimelineBoundary, type TimelineBoundary, type TimelineRange } from "../../src/lib/timelineRange.ts";
 
 interface Scenario {
   name: string;

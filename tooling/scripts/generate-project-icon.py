@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src-tauri" / "icons" / "project-source.png"
 TARGET = ROOT / "src-tauri" / "icons" / "project.ico"
 SIZES = [(size, size) for size in (16, 24, 32, 48, 64, 128, 256)]

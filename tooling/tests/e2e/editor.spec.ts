@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
-const dialogMessagesAllowed = JSON.parse(readFileSync(new URL("../../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions.includes("dialog:allow-message");
+const dialogMessagesAllowed = JSON.parse(readFileSync(new URL("../../../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions.includes("dialog:allow-message");
 
 const sample = {
   path: "C:\\fixtures\\sample.mp4", name: "sample.mp4", kind: "video", duration: 60,
@@ -1209,7 +1209,7 @@ test("color output does not silently replace the source before Continue editing"
 
 test("text layers remain editable when returning from a continued output",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  const font=readFileSync(new URL("../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
+  const font=readFileSync(new URL("../../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
   await page.evaluate(font=>{
     const previous=(window as any).__TEST_HANDLER__;
     (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
@@ -1231,7 +1231,7 @@ test("text layers remain editable when returning from a continued output",async(
 
 test("Text handles resize smoothly and pasted emoji reaches the export raster",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  const font=readFileSync(new URL("../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
+  const font=readFileSync(new URL("../../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
   await page.evaluate(font=>{
     const previous=(window as any).__TEST_HANDLER__;
     (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
@@ -1277,7 +1277,7 @@ for(const kind of ["video","image"] as const){
   test(`Text corner resize keeps line breaks, Enter adds a line and canvas X removes it in ${kind}`,async({page})=>{
     const fixture=kind==="image"?{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:.04,width:640,height:360,fps:25,codec:"mjpeg"}:sample;
     await mockDesktop(page,{fixture});await openFixture(page);await stageMocks(page);
-    const font=readFileSync(new URL("../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
+    const font=readFileSync(new URL("../../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",import.meta.url)).toString("base64");
     await page.evaluate(font=>{
       const previous=(window as any).__TEST_HANDLER__;
       (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
@@ -1315,7 +1315,7 @@ for(const kind of ["video","image"] as const){
   test(`Image overlay handle keeps its opposite edge fixed in ${kind}`,async({page})=>{
     const fixture=kind==="image"?{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:.04,width:640,height:360,fps:25,codec:"mjpeg"}:sample;
     await mockDesktop(page,{fixture});await openFixture(page);
-    const logo=readFileSync(new URL("../../public/logo-dark.png",import.meta.url));
+    const logo=readFileSync(new URL("../../../src/public/logo-dark.png",import.meta.url));
     await page.route("http://asset.localhost/**",route=>decodeURIComponent(route.request().url()).endsWith("overlay.png")?route.fulfill({contentType:"image/png",body:logo}):route.continue());
     await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="plugin:dialog|open"?"C:\\fixtures\\overlay.png":undefined});
     await page.getByPlaceholder("search tools...").fill("Image / Logo Overlay");

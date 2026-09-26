@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { updatesAllowedForVersion } from "../src/lib/releaseChannel.ts";
+import { updatesAllowedForVersion } from "../../src/lib/releaseChannel.ts";
 
 assert.equal(updatesAllowedForVersion("0.16.0"), true, "stable builds use the production updater");
 assert.equal(updatesAllowedForVersion("0.16.0-dev.1"), false, "DEV builds stay off the production updater");

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { socialTagGeometry } from "../src/lib/socialTagGeometry.ts";
+import { socialTagGeometry } from "../../src/lib/socialTagGeometry.ts";
 
 interface Fixture { layout:string;style:"boxed"|"plain";position:"left"|"center"|"right";username:string;x:number;y:number;side:number;fontSize:number }
 const fixtures=JSON.parse(readFileSync(new URL("../tests/fixtures/social-tag-geometry.json",import.meta.url),"utf8")) as Fixture[];

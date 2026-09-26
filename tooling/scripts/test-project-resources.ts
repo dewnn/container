@@ -1,4 +1,4 @@
-import { projectResources, replaceProjectResource } from "../src/lib/projectResources.ts";
+import { projectResources, replaceProjectResource } from "../../src/lib/projectResources.ts";
 
 function assert(condition:boolean,message:string){if(!condition)throw new Error(message)}
 

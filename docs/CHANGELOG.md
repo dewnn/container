@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-09-27
+
+- Separated runtime caches and user data from the Windows installation folder. Existing download history and interrupted-session detection migrate without losing records; embedded Social Tag/model copies are regenerated in the dedicated cache.
+- Embedded the Windows application and CPROJ document icons in the executable, removing loose ICO files from new installations and migrating existing shortcuts on upgrades.
+- Consolidated bundled notices into one `licenses` folder and development tools/tests under `tooling`, without removing regression coverage.
+
 ## [0.18.5] - 2026-09-26
 
 - Added a DWLNDR history that lists files still on disk and moves a selected download to the Recycle Bin after an in-app confirmation.

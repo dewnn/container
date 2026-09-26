@@ -57,32 +57,20 @@ function Ensure-RegistryKey([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force | Out-Null }
 }
 
-$repository = Split-Path -Parent $PSScriptRoot
+$repository = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $executable = Join-Path $repository 'src-tauri\target\release\container-studio-dev.exe'
-$iconSource = Join-Path $repository 'src-tauri\icons\project.ico'
-$iconFolder = Join-Path $env:LOCALAPPDATA 'CONTAINER DEV'
 
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
   throw "Build CONTAINER DEV before registering it: $executable"
 }
-if (-not (Test-Path -LiteralPath $iconSource -PathType Leaf)) {
-  throw "Project icon is missing: $iconSource"
-}
-$hasher = [System.Security.Cryptography.SHA256]::Create()
-try {
-  $iconHash = ([System.BitConverter]::ToString($hasher.ComputeHash([System.IO.File]::ReadAllBytes($iconSource)))).Replace('-', '').Substring(0, 12).ToLowerInvariant()
-} finally {
-  $hasher.Dispose()
-}
-$icon = Join-Path $iconFolder "container-cproj-v2-$iconHash.ico"
-New-Item -ItemType Directory -Path $iconFolder -Force | Out-Null
-Copy-Item -LiteralPath $iconSource -Destination $icon -Force
+& (Join-Path $PSScriptRoot 'test-windows-icons.ps1') -Executable $executable
+$icon = '"{0}",-32513' -f $executable
 
 $application = 'HKCU:\Software\Classes\Applications\container-studio-dev.exe'
 Ensure-RegistryKey $application
 New-ItemProperty -Path $application -Name 'FriendlyAppName' -Value 'CONTAINER DEV' -PropertyType String -Force | Out-Null
 Ensure-RegistryKey "$application\DefaultIcon"
-Set-Item -Path "$application\DefaultIcon" -Value ('"{0}",0' -f $icon)
+Set-Item -Path "$application\DefaultIcon" -Value $icon
 Ensure-RegistryKey "$application\shell\open\command"
 Set-Item -Path "$application\shell\open\command" -Value ('"{0}" "%1"' -f $executable)
 Ensure-RegistryKey "$application\SupportedTypes"
@@ -93,7 +81,7 @@ $progId = 'HKCU:\Software\Classes\CONTAINER.CPROJ.Dev'
 Ensure-RegistryKey $progId
 Set-Item -Path $progId -Value 'CONTAINER DEV'
 Ensure-RegistryKey "$progId\DefaultIcon"
-Set-Item -Path "$progId\DefaultIcon" -Value ('"{0}",0' -f $icon)
+Set-Item -Path "$progId\DefaultIcon" -Value $icon
 Ensure-RegistryKey "$progId\shell\open\command"
 Set-Item -Path "$progId\shell\open\command" -Value ('"{0}" "%1"' -f $executable)
 
@@ -115,16 +103,13 @@ public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr 
 '@
 [Native.ShellAssociation]::SHChangeNotify(0x08000000, 0x1000, [IntPtr]::Zero, [IntPtr]::Zero)
 
-$expectedIcon = '"{0}",0' -f $icon
+$expectedIcon = $icon
 $expectedCommand = '"{0}" "%1"' -f $executable
 foreach ($key in @($application, $progId)) {
   if ((Get-Item -LiteralPath "$key\DefaultIcon").GetValue('') -ne $expectedIcon -or
       (Get-Item -LiteralPath "$key\shell\open\command").GetValue('') -ne $expectedCommand) {
     throw "Windows association verification failed: $key"
   }
-}
-if ((Get-FileHash -LiteralPath $icon).Hash -ne (Get-FileHash -LiteralPath $iconSource).Hash) {
-  throw 'Registered project icon differs from the build asset.'
 }
 if ($ResultPath) {
   [pscustomobject]@{ Success = $true; IconPath = $icon } | Export-Clixml -LiteralPath $ResultPath

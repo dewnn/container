@@ -59,7 +59,7 @@ jobs:
           rust=false
           while IFS= read -r -d '' path; do
             case "$path" in
-              src/*|public/*|docs/*|README*|LICENSE*|index.html|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|svelte.config.*|vite.config.*|tsconfig*.json)
+              src/*|docs/*|README*|LICENSE*|index.html|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|svelte.config.*|vite.config.*|tsconfig*.json)
                 ;;
               *) rust=true ;;
             esac
@@ -96,7 +96,7 @@ jobs:
         shell: pwsh
         run: |
           $config = @{}
-          Get-Content config/bundled-tools.env | ForEach-Object {
+          Get-Content tooling/config/bundled-tools.env | ForEach-Object {
             $key, $value = $_ -split '=', 2
             $config[$key] = $value
           }
@@ -116,7 +116,7 @@ jobs:
         shell: pwsh
         run: |
           $config = @{}
-          Get-Content config/bundled-tools.env | ForEach-Object {
+          Get-Content tooling/config/bundled-tools.env | ForEach-Object {
             $key, $value = $_ -split '=', 2
             $config[$key] = $value
           }
@@ -131,7 +131,7 @@ jobs:
         shell: pwsh
         run: |
           $config = @{}
-          Get-Content config/bundled-tools.env | ForEach-Object {
+          Get-Content tooling/config/bundled-tools.env | ForEach-Object {
             $key, $value = $_ -split '=', 2
             $config[$key] = $value
           }

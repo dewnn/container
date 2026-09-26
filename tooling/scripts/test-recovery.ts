@@ -1,4 +1,4 @@
-import { recoveredMediaUrl } from "../src/lib/recovery.ts";
+import { recoveredMediaUrl } from "../../src/lib/recovery.ts";
 
 const fresh = "http://asset.localhost/C%3A/video.mp4";
 const restored = recoveredMediaUrl(fresh, 1234);

@@ -1,25 +1,25 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
-const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
-const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-const backend = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
-const kickLogo = readFileSync(new URL("../src/assets/kick-mark.svg", import.meta.url), "utf8");
-const twitchLogo = readFileSync(new URL("../src/assets/twitch-mark.svg", import.meta.url), "utf8");
-const tools = readFileSync(new URL("../src/lib/tools.ts", import.meta.url), "utf8");
-const socialGeometry = readFileSync(new URL("../src/lib/socialTagGeometry.ts", import.meta.url), "utf8");
-const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-const downloader = readFileSync(new URL("../src/lib/DownloaderWorkspace.svelte", import.meta.url), "utf8");
-const buildScript = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
-const installerHooks = readFileSync(new URL("../src-tauri/windows/hooks.nsh", import.meta.url), "utf8");
-const darkBrandSource = readFileSync(new URL("../src-tauri/icons/container.svg", import.meta.url), "utf8");
-const lightBrandSource = readFileSync(new URL("../src-tauri/icons/container-light.svg", import.meta.url), "utf8");
-const darkMark = readFileSync(new URL("../public/mark-dark.svg", import.meta.url), "utf8");
-const lightMark = readFileSync(new URL("../public/mark-light.svg", import.meta.url), "utf8");
-const appIcon = readFileSync(new URL("../src-tauri/icons/icon.ico", import.meta.url));
-const projectIcon = readFileSync(new URL("../src-tauri/icons/project.ico", import.meta.url));
-const installerIcon = readFileSync(new URL("../src-tauri/windows/setup-dark.ico", import.meta.url));
+const app = readFileSync(new URL("../../src/App.svelte", import.meta.url), "utf8");
+const css = readFileSync(new URL("../../src/styles.css", import.meta.url), "utf8");
+const backend = readFileSync(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
+const kickLogo = readFileSync(new URL("../../src/assets/kick-mark.svg", import.meta.url), "utf8");
+const twitchLogo = readFileSync(new URL("../../src/assets/twitch-mark.svg", import.meta.url), "utf8");
+const tools = readFileSync(new URL("../../src/lib/tools.ts", import.meta.url), "utf8");
+const socialGeometry = readFileSync(new URL("../../src/lib/socialTagGeometry.ts", import.meta.url), "utf8");
+const ciWorkflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+const releaseWorkflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+const downloader = readFileSync(new URL("../../src/lib/DownloaderWorkspace.svelte", import.meta.url), "utf8");
+const buildScript = readFileSync(new URL("../../src-tauri/build.rs", import.meta.url), "utf8");
+const installerHooks = readFileSync(new URL("../../src-tauri/windows/hooks.nsh", import.meta.url), "utf8");
+const darkBrandSource = readFileSync(new URL("../../src-tauri/icons/container.svg", import.meta.url), "utf8");
+const lightBrandSource = readFileSync(new URL("../../src-tauri/icons/container-light.svg", import.meta.url), "utf8");
+const darkMark = readFileSync(new URL("../../src/public/mark-dark.svg", import.meta.url), "utf8");
+const lightMark = readFileSync(new URL("../../src/public/mark-light.svg", import.meta.url), "utf8");
+const appIcon = readFileSync(new URL("../../src-tauri/icons/icon.ico", import.meta.url));
+const projectIcon = readFileSync(new URL("../../src-tauri/icons/project.ico", import.meta.url));
+const installerIcon = readFileSync(new URL("../../src-tauri/windows/setup-dark.ico", import.meta.url));
 function hasRoundedWindowsFrames(icon: Buffer): boolean {
   const sizes = [16, 24, 32, 48, 64, 128, 256];
   if (icon.readUInt16LE(2) !== 1 || icon.readUInt16LE(4) !== sizes.length) return false;
@@ -33,16 +33,16 @@ function hasRoundedWindowsFrames(icon: Buffer): boolean {
   });
 }
 const withoutBackground = (svg: string) => svg.replace(/^  <rect x="140" y="140" width="974" height="974" rx="224" fill="#[0-9A-Fa-f]{6}"\/>\r?\n/m, "");
-const stableConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
-const devConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.dev.conf.json", import.meta.url), "utf8"));
-const desktopPermissions = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions;
+const stableConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+const devConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.dev.conf.json", import.meta.url), "utf8"));
+const desktopPermissions = JSON.parse(readFileSync(new URL("../../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions;
 const mediaLoad = app.slice(app.indexOf("async function loadMedia("), app.indexOf("function closeMedia()"));
-const markRoot = new URL("../src-tauri/resources/social-tags/", import.meta.url);
+const markRoot = new URL("../../src-tauri/resources/social-tags/", import.meta.url);
 const markManifest = JSON.parse(readFileSync(new URL("manifest.json", markRoot), "utf8")) as Record<string, {source: string; sourceSha256: string; pngSha256: string}>;
 const marksMatchSources = ["kick-plain", "kick-boxed", "twitch"].every(name => {
   const entry = markManifest[name];
   if (!entry) return false;
-  const source = readFileSync(new URL(`../src/assets/${entry.source}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const source = readFileSync(new URL(`../../src/assets/${entry.source}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const png = readFileSync(new URL(`${name}.png`, markRoot));
   return createHash("sha256").update(source).digest("hex") === entry.sourceSha256
     && createHash("sha256").update(png).digest("hex") === entry.pngSha256;
@@ -53,19 +53,21 @@ const contracts: Array<[string, boolean]> = [
   ["UI marks keep the exact source artwork without a boxed background", withoutBackground(darkBrandSource) === darkMark && withoutBackground(lightBrandSource) === lightMark],
   ["application and installer ICOs match while project icon is distinct", appIcon.equals(installerIcon) && !appIcon.equals(projectIcon)],
   ["every Windows app icon size keeps rounded transparent corners", hasRoundedWindowsFrames(appIcon)],
-  ["only .cproj has a fresh file class and versioned project icon", stableConfig.bundle.fileAssociations.length===1 && stableConfig.bundle.fileAssociations[0].ext.join(",")==="cproj" && stableConfig.bundle.fileAssociations[0].name==="CONTAINER CPROJ" && installerHooks.includes('container-cproj-v2-${VERSION}.ico') && installerHooks.includes('CONTAINER CPROJ\\DefaultIcon')],
+  ["only .cproj has a fresh file class and embedded project icon", stableConfig.bundle.fileAssociations.length===1 && stableConfig.bundle.fileAssociations[0].ext.join(",")==="cproj" && stableConfig.bundle.fileAssociations[0].name==="CONTAINER CPROJ" && installerHooks.includes(',-32513') && installerHooks.includes('CONTAINER CPROJ\\DefaultIcon')],
   ["only .cproj projects can be saved and opened", app.includes('||"project"}.cproj') && app.includes('extensions:["cproj"]') && app.includes('old project format is no longer supported') && backend.includes('value.eq_ignore_ascii_case("cproj")')],
   ["upgrades retire the old project association and icon files", installerHooks.includes('DeleteRegValue SHELL_CONTEXT "Software\\Classes\\.containerproject"') && installerHooks.includes('Delete "$INSTDIR\\container-project-v2.ico"')],
   ["Windows is told to flush stale document icons after registration", installerHooks.includes('SHChangeNotify(i 0x08000000, i 0x1000') && readFileSync(new URL("register-dev-association.ps1", import.meta.url),"utf8").includes('SHChangeNotify(0x08000000, 0x1000')],
   ["download history is persistent, file-backed and recyclable", downloader.includes('list_download_history') && downloader.includes('delete_download_history_entry') && backend.includes('fn existing_download_history(') && backend.includes('trash::delete(file)')],
-  ["Windows icon changes retrigger resource compilation", buildScript.includes('cargo:rerun-if-changed=icons/icon.ico')],
-  ["Windows upgrades refresh the cached desktop and Start menu icon", installerHooks.includes('container-brand-rounded-${VERSION}.ico') && installerHooks.includes('CreateShortCut "$DESKTOP\\${PRODUCTNAME}.lnk"') && installerHooks.includes('CreateShortCut "$SMPROGRAMS\\${PRODUCTNAME}.lnk"') && installerHooks.includes('SHChangeNotify(i 0x08000000')],
+  ["both Windows icon changes retrigger resource compilation", buildScript.includes('cargo:rerun-if-changed=icons/icon.ico') && buildScript.includes('cargo:rerun-if-changed=icons/project.ico')],
+  ["Windows upgrades refresh desktop and Start menu links with the embedded app icon", installerHooks.includes('"" "$INSTDIR\\container-studio.exe" 0') && installerHooks.includes('CreateShortCut "$DESKTOP\\${PRODUCTNAME}.lnk"') && installerHooks.includes('CreateShortCut "$SMPROGRAMS\\${PRODUCTNAME}.lnk"') && installerHooks.includes('SHChangeNotify(i 0x08000000')],
+  ["installer no longer copies loose icons", !/^\s*File\s.*\.ico/m.test(installerHooks) && installerHooks.includes('Delete "$INSTDIR\\container-brand-rounded-*.ico"') && installerHooks.includes('Delete "$INSTDIR\\container-cproj-v2-*.ico"')],
+  ["release verifies actual embedded resources before publishing", releaseWorkflow.includes('test-windows-icons.ps1 -Executable src-tauri/target/release/container-studio.exe')],
   ["closing hides the editor in the tray and Exit really terminates", backend.includes('api.prevent_close()') && backend.includes('window.hide()') && backend.includes('"tray-exit" => app.exit(0)')],
   ["tray update action uses the existing updater UI and DEV keeps it hidden", backend.includes('"tray-updates"') && backend.includes('app.emit("tray-check-updates", ())') && backend.includes('if is_development_build()') && app.includes('listen("tray-check-updates",()=>{void checkForUpdates(true)})')],
   ["tray menu follows the selected TR/EN language", app.includes('invoke("set_tray_language",{language:next})') && backend.includes('fn set_tray_language(language: &str')],
   ["release packaging chooses the exact current executable and installer", releaseWorkflow.includes("Get-Item -LiteralPath 'src-tauri/target/release/container-studio.exe'") && releaseWorkflow.includes('Filter "CONTAINER_${version}_x64-setup.exe"')],
   ["native confirmation dialogs have their required IPC permission", desktopPermissions.includes("dialog:allow-message")],
-  ["export logo assets match the preview SVGs (regenerate with scripts/generate-social-tag-marks.mjs)", marksMatchSources],
+  ["export logo assets match the preview SVGs (regenerate with tooling/scripts/generate-social-tag-marks.mjs)", marksMatchSources],
   ["Windows installer publisher is dewn", stableConfig.bundle.publisher === "dewn"],
   ["DEV uses an isolated application identifier", devConfig.identifier === "dev.dean.container.dev"],
   ["camera detection ships visibly with a localized experimental label", !app.includes("{#if experimentalFeatures}") && app.includes("AUTO-DETECT CAMERA") && app.includes('"DENEYSEL":"EXPERIMENTAL"')],
@@ -87,8 +89,8 @@ const contracts: Array<[string, boolean]> = [
   ["plain Social Tag remains legible over white video", css.includes('-webkit-text-stroke:.055em #050505') && backend.includes('borderw=3:bordercolor=black@0.95')],
   ["CI runs UI regression contracts", ciWorkflow.includes("pnpm test:ui")],
   ["release runs UI regression contracts", releaseWorkflow.includes("pnpm test:ui")],
-  ["portable package includes FFmpeg license", releaseWorkflow.includes("FFmpeg-GPLv3.txt")],
-  ["portable package includes face model license", releaseWorkflow.includes("face_detection_yunet-LICENSE.txt")],
+  ["portable and installer share all six license resources", Object.keys(stableConfig.bundle.resources).length === 6 && Object.values(stableConfig.bundle.resources).every(path => typeof path === "string" && /^licenses\/[^/]+$/.test(path)) && releaseWorkflow.includes('$resources.PSObject.Properties')],
+  ["packages include FFmpeg and face model licenses", stableConfig.bundle.resources['resources/FFmpeg-GPLv3.txt'] === 'licenses/FFmpeg-GPLv3.txt' && stableConfig.bundle.resources['resources/face_detection_yunet-LICENSE.txt'] === 'licenses/face_detection_yunet-LICENSE.txt'],
 ];
 
 for (const [name, passed] of contracts) {

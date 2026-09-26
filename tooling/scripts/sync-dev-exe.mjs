@@ -2,7 +2,7 @@ import { copyFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const release = path.join(root, "src-tauri", "target", "release");
 const source = path.join(release, "container-studio.exe");
 const destination = path.join(release, "container-studio-dev.exe");

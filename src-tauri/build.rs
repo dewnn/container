@@ -7,7 +7,7 @@ use std::{
 
 fn configured_tool_version(key: &str) -> String {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let path = manifest.join("..").join("config").join("bundled-tools.env");
+    let path = manifest.join("../tooling/config/bundled-tools.env");
     let contents = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("Could not read {}: {error}", path.display()));
     let prefix = format!("{key}=");
@@ -148,6 +148,7 @@ fn prepare_windows_sidecars() {
 fn main() {
     let versions = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
         .join("..")
+        .join("tooling")
         .join("config")
         .join("bundled-tools.env");
     println!("cargo:rerun-if-changed={}", versions.display());
@@ -157,6 +158,12 @@ fn main() {
     );
     println!("cargo:rerun-if-changed=tauri.conf.json");
     println!("cargo:rerun-if-changed=icons/icon.ico");
+    println!("cargo:rerun-if-changed=icons/project.ico");
     prepare_windows_sidecars();
-    tauri_build::build()
+    // Tauri's application icon is group 32512. Keep it first/default and give
+    // project documents their own stable resource ID (shell location: -32513).
+    let windows =
+        tauri_build::WindowsAttributes::new().append_rc_content("32513 ICON \"icons/project.ico\"");
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("build application resources");
 }

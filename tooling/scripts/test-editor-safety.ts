@@ -1,6 +1,6 @@
-import { isTextEditingTarget } from "../src/lib/editorInput.ts";
-import { startupAction } from "../src/lib/startupRecovery.ts";
-import { localizedTool, preserveToolValues, tools } from "../src/lib/tools.ts";
+import { isTextEditingTarget } from "../../src/lib/editorInput.ts";
+import { startupAction } from "../../src/lib/startupRecovery.ts";
+import { localizedTool, preserveToolValues, tools } from "../../src/lib/tools.ts";
 
 function assert(condition: boolean, message: string) {
   if (!condition) throw new Error(message);
