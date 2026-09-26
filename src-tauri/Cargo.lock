@@ -564,10 +564,11 @@ dependencies = [
 
 [[package]]
 name = "container-studio"
-version = "0.18.2"
+version = "0.18.3"
 dependencies = [
  "base64 0.22.1",
  "dirs",
+ "dunce",
  "ndarray",
  "ort",
  "reqwest",

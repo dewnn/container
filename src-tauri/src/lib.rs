@@ -2150,8 +2150,14 @@ fn resolve_project_resources(project: &Path, value: &mut Value) {
             continue;
         }
         let candidate = parent.join(relative);
-        if candidate.is_file() {
-            replace_project_path(value, &original, &candidate.to_string_lossy());
+        // A project may live beside its media rather than inside the same
+        // directory. Joining a saved ../ path works for ffprobe, but the
+        // asset protocol deliberately rejects traversal in preview URLs.
+        // Canonicalize before passing the path to the frontend or asset scope.
+        if let Ok(resolved) = dunce::canonicalize(&candidate) {
+            if resolved.is_file() {
+                replace_project_path(value, &original, &resolved.to_string_lossy());
+            }
         }
     }
 }
@@ -8026,6 +8032,73 @@ mod tests {
                 .to_string_lossy()
                 .as_ref()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_outside_media_folder_restores_preview_safe_paths_for_every_stage() {
+        let root = std::env::temp_dir().join(format!(
+            "container-project-sibling-media-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let desktop = root.join("Desktop");
+        let downloads = root.join("Downloads");
+        std::fs::create_dir_all(&desktop).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+        let source = downloads.join("kaynak çığ #1.mp4");
+        let output = downloads.join("clipper.mp4");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&output, b"output").unwrap();
+        let project = desktop.join("edit.containerproject");
+        let source_relative = PathBuf::from("..")
+            .join("Downloads")
+            .join("kaynak çığ #1.mp4");
+        let output_relative = PathBuf::from("..").join("Downloads").join("clipper.mp4");
+        let mut saved = serde_json::json!({
+            "mediaPath": output.to_string_lossy(),
+            "stageHistory": {"entries": [
+                {"session": {"mediaPath": source.to_string_lossy()}},
+                {"session": {"mediaPath": output.to_string_lossy()}}
+            ]},
+            "resources": [
+                {"path": source.to_string_lossy(), "relativePath": source_relative.to_string_lossy()},
+                {"path": output.to_string_lossy(), "relativePath": output_relative.to_string_lossy()}
+            ]
+        });
+        resolve_project_resources(&project, &mut saved);
+        for (path, expected) in [
+            (
+                &saved["stageHistory"]["entries"][0]["session"]["mediaPath"],
+                &source,
+            ),
+            (&saved["mediaPath"], &output),
+            (
+                &saved["stageHistory"]["entries"][1]["session"]["mediaPath"],
+                &output,
+            ),
+        ] {
+            let restored = PathBuf::from(path.as_str().unwrap());
+            assert_eq!(restored, dunce::canonicalize(expected).unwrap());
+            assert!(!restored
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir)));
+        }
+        // Exercise the real serializer too: repeatedly saving and reopening
+        // must not reintroduce traversal into any historical media path.
+        let expected = saved.clone();
+        for _ in 0..25 {
+            write_project(project.to_string_lossy().into_owned(), saved.to_string()).unwrap();
+            saved = serde_json::from_str(
+                &read_project_contents(project.to_string_lossy().into_owned()).unwrap(),
+            )
+            .unwrap();
+            resolve_project_resources(&project, &mut saved);
+            assert_eq!(saved, expected);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

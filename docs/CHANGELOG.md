@@ -6,6 +6,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-09-26
+
+- Fixed black, unplayable previews when reopening projects saved outside their media folder, including earlier Go Back stages.
+
 ## [0.18.2] - 2026-09-26
 
 - Fixed full-length Cut Video exports when the displayed end time rounds past the source duration.
