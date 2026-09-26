@@ -1,11 +1,11 @@
 {
-  "pub_date": "2026-09-26T10:28:23.6419794Z",
-  "version": "0.18.2",
-  "notes": "# Changes\n\n\n- Fixed full-length Cut Video exports when the displayed end time rounds past the source duration.\n- Added a direct path from completed downloads to the video timeline and a way back to the current editor.\n- Improved Windows output recycling when a file is locked and brought an existing window forward on a second launch.\n",
+  "version": "0.18.4",
+  "pub_date": "2026-09-26T14:34:49.4555204Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVljcUZvY3p2TXpLMG5sM1JrcWd2Y0J1YUJZbmg2RUx1OGZEV3lxSzhTek1tRFF5NkVLbFJ0UHp0THZkbWt2bzg4LzBwMDNhRStEYWdnRGpxZVBZUUFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDE4NDg4CWZpbGU6Q09OVEFJTkVSXzAuMTguMl94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC4yCkdFcHJUZVJRaU9nR1JlM1RpRWtWOENram9id3BSbzlKV2pzME5CMy9VUVRNZGtjb3VFQXk5UmpRbzFvNk5ITHB6SzhWNWlaL2lTZ0V6ZUJiR3lCR0RnPT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.18.2/CONTAINER-Setup-0.18.2-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWVJYzlBc1JaaVZuS1NuaXFmcG5tVzJUWGlVMzR5cWdTenhodVZWN3NWRnRUTjg1emhhbUJMRFZkaHdiYTZVTkl5WlpNbXhZdzVmbHJwQU95N0FFSXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDMzMjcwCWZpbGU6Q09OVEFJTkVSXzAuMTguNF94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC40CllLUU9OSm1NMStWRnlWOEJnRjlUY25NMk51K3pTWTBwRSt1bVBxdkNZUmg0ZFNFZ2VYekVVVFB3S2RGSGNoV0VlREU2ZTBLY3U3SkYzbzE5S0JBVEF3PT0K",
+      "url": "https://github.com/dewnn/container/releases/download/v0.18.4/CONTAINER-Setup-0.18.4-x64.exe"
     }
-  }
+  },
+  "notes": "# Changes\n\n\n- Fixed black, unplayable previews when reopening projects saved outside their media folder, including earlier Go Back stages.\n"
 }
