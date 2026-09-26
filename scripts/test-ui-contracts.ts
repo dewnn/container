@@ -20,7 +20,19 @@ const lightMark = readFileSync(new URL("../public/mark-light.svg", import.meta.u
 const appIcon = readFileSync(new URL("../src-tauri/icons/icon.ico", import.meta.url));
 const projectIcon = readFileSync(new URL("../src-tauri/icons/project.ico", import.meta.url));
 const installerIcon = readFileSync(new URL("../src-tauri/windows/setup-dark.ico", import.meta.url));
-const withoutBackground = (svg: string) => svg.replace(/^  <rect width="1254" height="1254" fill="#[0-9A-Fa-f]{6}"\/>\r?\n/m, "");
+function hasRoundedWindowsFrames(icon: Buffer): boolean {
+  const sizes = [16, 24, 32, 48, 64, 128, 256];
+  if (icon.readUInt16LE(2) !== 1 || icon.readUInt16LE(4) !== sizes.length) return false;
+  return sizes.every((size, index) => {
+    const entry = 6 + index * 16;
+    const offset = icon.readUInt32LE(entry + 12);
+    if ((icon[entry] || 256) !== size || icon.readUInt32LE(offset) !== 40 || icon.readUInt16LE(offset + 14) !== 32) return false;
+    const alpha = (x: number, y: number) => icon[offset + 40 + ((size - 1 - y) * size + x) * 4 + 3];
+    return alpha(0, 0) === 0 && alpha(size - 1, 0) === 0 && alpha(0, size - 1) === 0 && alpha(size - 1, size - 1) === 0
+      && alpha(size / 2, size / 2) === 255;
+  });
+}
+const withoutBackground = (svg: string) => svg.replace(/^  <rect x="140" y="140" width="974" height="974" rx="224" fill="#[0-9A-Fa-f]{6}"\/>\r?\n/m, "");
 const stableConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 const devConfig = JSON.parse(readFileSync(new URL("../src-tauri/tauri.dev.conf.json", import.meta.url), "utf8"));
 const desktopPermissions = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions;
@@ -39,9 +51,15 @@ const marksMatchSources = ["kick-plain", "kick-boxed", "twitch"].every(name => {
 const contracts: Array<[string, boolean]> = [
   ["all UI workspaces use the new theme-aware brand mark", app.includes('src="/mark-dark.svg"') && app.includes('src="/mark-light.svg"') && downloader.includes('src="/mark-dark.svg"') && downloader.includes('src="/mark-light.svg"')],
   ["UI marks keep the exact source artwork without a boxed background", withoutBackground(darkBrandSource) === darkMark && withoutBackground(lightBrandSource) === lightMark],
-  ["application, project and installer ICOs are identical", appIcon.equals(projectIcon) && appIcon.equals(installerIcon)],
+  ["application and installer ICOs match while project icon is distinct", appIcon.equals(installerIcon) && !appIcon.equals(projectIcon)],
+  ["every Windows app icon size keeps rounded transparent corners", hasRoundedWindowsFrames(appIcon)],
+  ["only .cproj has a fresh file class and versioned project icon", stableConfig.bundle.fileAssociations.length===1 && stableConfig.bundle.fileAssociations[0].ext.join(",")==="cproj" && stableConfig.bundle.fileAssociations[0].name==="CONTAINER CPROJ" && installerHooks.includes('container-cproj-v2-${VERSION}.ico') && installerHooks.includes('CONTAINER CPROJ\\DefaultIcon')],
+  ["only .cproj projects can be saved and opened", app.includes('||"project"}.cproj') && app.includes('extensions:["cproj"]') && app.includes('old project format is no longer supported') && backend.includes('value.eq_ignore_ascii_case("cproj")')],
+  ["upgrades retire the old project association and icon files", installerHooks.includes('DeleteRegValue SHELL_CONTEXT "Software\\Classes\\.containerproject"') && installerHooks.includes('Delete "$INSTDIR\\container-project-v2.ico"')],
+  ["Windows is told to flush stale document icons after registration", installerHooks.includes('SHChangeNotify(i 0x08000000, i 0x1000') && readFileSync(new URL("register-dev-association.ps1", import.meta.url),"utf8").includes('SHChangeNotify(0x08000000, 0x1000')],
+  ["download history is persistent, file-backed and recyclable", downloader.includes('list_download_history') && downloader.includes('delete_download_history_entry') && backend.includes('fn existing_download_history(') && backend.includes('trash::delete(file)')],
   ["Windows icon changes retrigger resource compilation", buildScript.includes('cargo:rerun-if-changed=icons/icon.ico')],
-  ["Windows upgrades refresh the cached desktop and Start menu icon", installerHooks.includes('container-brand-${VERSION}.ico') && installerHooks.includes('CreateShortCut "$DESKTOP\\${PRODUCTNAME}.lnk"') && installerHooks.includes('CreateShortCut "$SMPROGRAMS\\${PRODUCTNAME}.lnk"') && installerHooks.includes('SHChangeNotify(i 0x08000000')],
+  ["Windows upgrades refresh the cached desktop and Start menu icon", installerHooks.includes('container-brand-rounded-${VERSION}.ico') && installerHooks.includes('CreateShortCut "$DESKTOP\\${PRODUCTNAME}.lnk"') && installerHooks.includes('CreateShortCut "$SMPROGRAMS\\${PRODUCTNAME}.lnk"') && installerHooks.includes('SHChangeNotify(i 0x08000000')],
   ["closing hides the editor in the tray and Exit really terminates", backend.includes('api.prevent_close()') && backend.includes('window.hide()') && backend.includes('"tray-exit" => app.exit(0)')],
   ["tray update action uses the existing updater UI and DEV keeps it hidden", backend.includes('"tray-updates"') && backend.includes('app.emit("tray-check-updates", ())') && backend.includes('if is_development_build()') && app.includes('listen("tray-check-updates",()=>{void checkForUpdates(true)})')],
   ["tray menu follows the selected TR/EN language", app.includes('invoke("set_tray_language",{language:next})') && backend.includes('fn set_tray_language(language: &str')],

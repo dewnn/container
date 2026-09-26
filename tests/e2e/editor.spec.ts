@@ -35,7 +35,7 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
           if (args.options?.multiple) return ["C:\\fixtures\\second.mp4"];
           return invalidSecond && fileOpens > 1 ? "C:\\fixtures\\broken.mp4" : media.path;
         }
-        if (cmd === "plugin:dialog|save") return "C:\\fixtures\\sample.containerproject";
+        if (cmd === "plugin:dialog|save") return "C:\\fixtures\\sample.cproj";
         if (cmd === "plugin:dialog|message") return "Cancel";
         if (cmd === "write_project") return null;
         if (cmd === "plugin:app|version") return version ?? "0.16.0-dev.1";
@@ -44,6 +44,7 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
         if (cmd === "ffmpeg_status") return { ready: true, ffmpeg_version: "9.0.1", ffprobe_version: "9.0.1" };
         if (cmd === "ffmpeg_capabilities") return { vidstab: true, subtitles: true, overlay: true, blur: true, concat: true };
         if (cmd === "downloader_status") return { ready: true, version: "test" };
+        if (cmd === "list_download_history") return [];
         if (cmd === "ffmpeg_runtime_error") return null;
         if (cmd === "auto_encoder_configured") return true;
         if (cmd === "available_encoders") return ["libx264"];
@@ -105,7 +106,11 @@ test("downloaded media opens in the timeline and failed opening keeps the downlo
   await mockDesktop(page);
   await page.evaluate((fixture)=>{(window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
     if(cmd==="analyze_download_url")return {title:"Example",uploader:"Creator",duration:12,thumbnail_path:null,formats:[{id:"best",label:"Best",detail:"",kind:"video",codec:"h264",rank:1,height:1080}]};
-    if(cmd==="download_media")return {output_dir:"C:\\fixtures",output_file:"C:\\fixtures\\downloaded.mp4",details:""};
+    if(cmd==="download_media"){
+      (window as any).__DOWNLOADED__=true;
+      return {output_dir:"C:\\fixtures",output_file:"C:\\fixtures\\downloaded.mp4",details:""};
+    }
+    if(cmd==="list_download_history")return (window as any).__DOWNLOADED__?[{path:"C:\\fixtures\\downloaded.mp4",name:"downloaded.mp4"}]:[];
     if(cmd==="probe_media"&&args.path==="C:\\fixtures\\downloaded.mp4"){
       if((window as any).__FAIL_DOWNLOADED__)throw new Error("Unable to open download");
       return {...fixture,path:args.path,name:"downloaded.mp4"};
@@ -128,6 +133,106 @@ test("downloaded media opens in the timeline and failed opening keeps the downlo
   await expect(page.locator(".tool-timeline")).toBeVisible();
   await expect(page.getByRole("button",{name:/render cut video/i})).toBeVisible();
   expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="probe_media").at(-1).args.path)).toBe("C:\\fixtures\\downloaded.mp4");
+});
+
+test("DWNLDR lists existing downloads, prunes missing files and confirms before recycling",async({page})=>{
+  await mockDesktop(page);
+  await page.evaluate(()=>{
+    (window as any).__DOWNLOAD_FILES__=[
+      {path:"C:\\fixtures\\first.mp4",name:"first.mp4"},
+      {path:"C:\\fixtures\\second.m4a",name:"second.m4a"},
+    ];
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+      if(cmd==="list_download_history")return (window as any).__DOWNLOAD_FILES__;
+      if(cmd==="delete_download_history_entry"){
+        (window as any).__DOWNLOAD_FILES__=(window as any).__DOWNLOAD_FILES__.filter((entry:any)=>entry.path!==args.path);
+        return null;
+      }
+      return undefined;
+    };
+  });
+  await page.locator(".downloader-quick-trigger").click();
+  await expect(page.locator(".download-history li")).toHaveCount(2);
+  await page.evaluate(()=>(window as any).__DOWNLOAD_FILES__=[{path:"C:\\fixtures\\first.mp4",name:"first.mp4"}]);
+  await page.getByRole("button",{name:"Refresh downloads"}).click();
+  await expect(page.locator(".download-history li")).toHaveCount(1);
+  await page.getByRole("button",{name:"Delete first.mp4"}).click();
+  const dialog=page.getByRole("dialog",{name:"Delete download"});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button",{name:"CANCEL"})).toBeFocused();
+  await expect(dialog).toContainText("first.mp4");
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/download-delete-dialog.png"});
+  await dialog.getByRole("button",{name:"CANCEL"}).click();
+  await expect(page.locator(".download-history li")).toHaveCount(1);
+  await page.getByRole("button",{name:"Delete first.mp4"}).click();
+  await dialog.getByRole("button",{name:"DELETE"}).click();
+  await expect(page.locator(".download-history li")).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="delete_download_history_entry"&&call.args.path==="C:\\fixtures\\first.mp4"))).toBe(true);
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="plugin:dialog|message"))).toBe(false);
+});
+
+test("a late history response cannot hide a newly completed download",async({page})=>{
+  await mockDesktop(page);
+  await page.evaluate(()=>{
+    let historyReads=0;
+    (window as any).__TEST_HANDLER__=(cmd:string)=>{
+      if(cmd==="list_download_history"){
+        if(++historyReads===1)return new Promise(resolve=>(window as any).__RESOLVE_OLD_HISTORY__=resolve);
+        return [{path:"C:\\fixtures\\downloaded.mp4",name:"downloaded.mp4"}];
+      }
+      if(cmd==="analyze_download_url")return {title:"Example",uploader:null,duration:12,thumbnail_path:null,formats:[]};
+      if(cmd==="download_media")return {output_dir:"C:\\fixtures",output_file:"C:\\fixtures\\downloaded.mp4",details:""};
+      return undefined;
+    };
+  });
+  await page.locator(".downloader-quick-trigger").click();
+  await page.getByPlaceholder("https://…").fill("https://example.com/video");
+  await page.getByRole("button",{name:"ANALYZE LINK",exact:true}).click();
+  await page.getByRole("button",{name:/^↓ DOWNLOAD$/}).click();
+  await expect(page.getByText("Download finished.",{exact:true})).toBeVisible();
+  await page.evaluate(()=>(window as any).__RESOLVE_OLD_HISTORY__([]));
+  await expect(page.getByRole("button",{name:"OPEN IN TIMELINE →"})).toBeVisible();
+  await expect(page.locator(".download-history li")).toHaveCount(1);
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="list_download_history").length)).toBeGreaterThanOrEqual(2);
+});
+
+for(const language of ["en","tr"] as const)for(const theme of ["light","dark"] as const){
+  test(`download deletion respects ${language}/${theme}, Escape and failed recycling`,async({page})=>{
+    await page.addInitScript(({language,theme})=>{localStorage.setItem("container-language",language);localStorage.setItem("container-theme",theme)},{language,theme});
+    await mockDesktop(page);
+    await page.setViewportSize({width:880,height:700});
+    const name="örnek-"+"long-name-".repeat(24)+".mp4";
+    await page.evaluate((name)=>{
+      (window as any).__TEST_HANDLER__=(cmd:string)=>{
+        if(cmd==="list_download_history")return [{path:"C:\\fixtures\\"+name,name}];
+        if(cmd==="delete_download_history_entry")throw new Error("File is in use");
+        return undefined;
+      };
+    },name);
+    await page.locator(".downloader-quick-trigger").click();
+    await page.locator(".history-delete").click();
+    const dialog=page.getByRole("dialog",{name:language==="tr"?"İndirmeyi sil":"Delete download"});
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button",{name:language==="tr"?"İPTAL":"CANCEL",exact:true})).toBeFocused();
+    expect(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
+    await expect(page.locator("html")).toHaveAttribute("data-theme",theme);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="delete_download_history_entry"))).toBe(false);
+    await page.locator(".history-delete").click();
+    await dialog.getByRole("button",{name:language==="tr"?"SİL":"DELETE",exact:true}).click();
+    await expect(page.locator(".app-toast")).toContainText("File is in use");
+    await expect(page.locator(".download-history li")).toHaveCount(1);
+    await expect(page.locator(".history-delete")).toBeEnabled();
+    expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="plugin:dialog|message"))).toBe(false);
+  });
+}
+
+test("old project extension reports unsupported format without probing it as media",async({page})=>{
+  await mockDesktop(page);
+  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\legacy.containerproject"));
+  await expect(page.locator(".app-toast")).toContainText("old project format is no longer supported");
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="probe_media"||call.cmd==="read_project"))).toBe(false);
 });
 
 test("downloader back returns to an existing media workspace without losing it",async({page})=>{
@@ -787,7 +892,7 @@ async function historyFixture(page:Page,count=3){
       return {id:index+1,parent:index===0?null:index,label:index%2?"SmartCut":"Transform",session};
     });
     (window as any).__SAVED_PROJECT__=JSON.stringify({...entries.at(-1)!.session,stageHistory:{entries,current:count,next:count+1,trimmed:false}});
-    (window as any).__TEST_DROP__("C:\\fixtures\\history.containerproject");
+    (window as any).__TEST_DROP__("C:\\fixtures\\history.cproj");
   },count);
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage",String(count));
 }
@@ -861,7 +966,7 @@ test("latest draft and original branch survive saving, reopening and recovery",a
   await selectStageNumber(page,1);await page.getByRole("button",{name:"180°",exact:true}).click();
   await page.getByRole("button",{name:"SAVE PROJECT",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>JSON.parse((window as any).__SAVED_PROJECT__).toolbox.selected.fields.find((f:any)=>f.key==="rotate").value)).toBe("180");
-  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\history.containerproject"));
+  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\history.cproj"));
   await expect(rotation).toHaveText("180°");
   await selectStageNumber(page,2);
   await page.locator(".stage-trigger").click();
@@ -924,7 +1029,7 @@ test("invalid historical graphs fall back safely to the current project",async({
     const saved=JSON.parse((window as any).__SAVED_PROJECT__);
     saved.stageHistory.entries[0].parent=999;
     (window as any).__SAVED_PROJECT__=JSON.stringify(saved);
-    (window as any).__TEST_DROP__("C:\\fixtures\\invalid-history.containerproject");
+    (window as any).__TEST_DROP__("C:\\fixtures\\invalid-history.cproj");
   });
   await expect(page.locator(".stage-trigger")).toHaveCount(0);
   await expect(page.locator(".settings")).toBeVisible();
@@ -941,7 +1046,7 @@ test("changed render settings require rerender before continuation, including re
   await expect(proceed).toHaveAttribute("title",/render again/);
   await page.getByRole("button",{name:"SAVE PROJECT",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>(window as any).__SAVED_PROJECT__)).toBeTruthy();
-  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\saved.containerproject"));
+  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\saved.cproj"));
   await expect(proceed).toBeDisabled();
   await page.getByRole("button",{name:"0°",exact:true}).click();
   await expect(proceed).toBeEnabled();
@@ -1013,7 +1118,7 @@ test("Continue editing alone creates stages; earlier settings and forward output
   const saved=await page.evaluate(()=>JSON.parse((window as any).__SAVED_PROJECT__));
   expect(saved.stageHistory.entries).toHaveLength(3);
   // Open the saved project via the project-aware drop route.
-  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\sample.containerproject"));
+  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\sample.cproj"));
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","2");
   await selectStageNumber(page,1);
   await expect(page.getByRole("button",{name:"continue editing",exact:true})).toBeVisible();

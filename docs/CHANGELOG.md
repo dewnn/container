@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-09-26
+
+- Added a DWLNDR history that lists files still on disk and moves a selected download to the Recycle Bin after an in-app confirmation.
+- Replaced `.containerproject` with `.cproj` and its new Windows document icon. The old project format now shows a clear unsupported-format message.
+- Rounded the Windows app icon and refreshed the desktop, Start menu and installer icons. Replaced the output cleanup symbol with a trash icon.
+- Fixed a delayed history refresh hiding the action to open a completed download in the timeline, and made history writes safer.
+
 ## [0.18.4] - 2026-09-26
 
 - Fixed black, unplayable previews when reopening projects saved outside their media folder, including earlier Go Back stages.

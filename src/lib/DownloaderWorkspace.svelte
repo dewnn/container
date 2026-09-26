@@ -5,6 +5,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
+  import { untrack } from "svelte";
 
   let { language, onbusychange, onopenmedia }: { language: "tr" | "en"; onbusychange?: (value:boolean)=>void; onopenmedia: (path:string)=>Promise<void> } = $props();
   interface DownloaderStatus { ready:boolean; version:string|null }
@@ -12,6 +13,7 @@
   interface DownloadFormat { id:string; label:string; detail:string; kind:string; codec:string; rank:number; height:number|null }
   interface DownloadAnalysis { title:string; uploader:string|null; duration:number|null; thumbnail_path:string|null; formats:DownloadFormat[] }
   interface DownloadProgress { percent:number; downloaded:string; speed:string }
+  interface DownloadHistoryEntry { path:string; name:string }
   let status:DownloaderStatus|null=$state(null);
   let url=$state("");
   let format=$state("best");
@@ -20,6 +22,11 @@
   let busy=$state(false);
   let message=$state("");
   let outputFile=$state("");
+  let history=$state<DownloadHistoryEntry[]>([]);
+  let historyBusy=$state(false);
+  let historyRequest=0;
+  let deletingPath=$state("");
+  let pendingDelete=$state<DownloadHistoryEntry|null>(null);
   let downloadProgress:DownloadProgress|null=$state(null);
   let formatKind=$state<"video"|"audio">("video");
   let preferredCodec=$state("auto");
@@ -27,7 +34,7 @@
   let unlisten:UnlistenFn|undefined;
   let temporaryThumbnail:string|null=null;
 
-  $effect(()=>onbusychange?.(busy||analyzing));
+  $effect(()=>onbusychange?.(busy||analyzing||!!deletingPath));
 
   function releaseThumbnail(path:string|null|undefined){
     if(!path||path!==temporaryThumbnail)return;
@@ -36,6 +43,32 @@
   }
 
   async function refresh(){status=await invoke<DownloaderStatus>("downloader_status").catch(()=>({ready:false,version:null}))}
+  async function refreshHistory(){
+    const request=++historyRequest;
+    historyBusy=true;
+    try{
+      const entries=await invoke<DownloadHistoryEntry[]>("list_download_history");
+      if(request!==historyRequest)return;
+      history=entries;
+      if(outputFile&&!history.some(entry=>entry.path===outputFile))outputFile="";
+    }catch(error){if(request===historyRequest)reportProblem(error)}finally{if(request===historyRequest)historyBusy=false}
+  }
+  function mountDeleteDialog(node:HTMLDialogElement){
+    node.showModal();
+    node.querySelector<HTMLButtonElement>(".panel-reset-cancel")?.focus();
+    return {destroy(){if(node.open)node.close()}};
+  }
+  async function deleteHistoryEntry(){
+    const entry=pendingDelete;
+    if(!entry||busy||analyzing||deletingPath)return;
+    pendingDelete=null;
+    deletingPath=entry.path;
+    try{
+      await invoke("delete_download_history_entry",{path:entry.path});
+      if(outputFile===entry.path)outputFile="";
+      await refreshHistory();
+    }catch(error){reportProblem(error)}finally{deletingPath=""}
+  }
   async function chooseBinary(){
     const path=await open({multiple:false,directory:false,filters:[{name:"yt-dlp",extensions:["exe"]}]});
     if(typeof path!=="string")return;
@@ -44,7 +77,7 @@
   }
   async function download(){
     if(busy)return;armCompletionSound();busy=true;message="";outputFile="";downloadProgress={percent:0,downloaded:language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…",speed:""};
-    try{const result=await invoke<DownloaderResult>("download_media",{url,format});outputFile=result.output_file??"";message=language==="tr"?"İndirme tamamlandı.":"Download finished.";await playCompletionSound()}catch(error){message="";reportProblem(error)}finally{busy=false;downloadProgress=null}
+    try{const result=await invoke<DownloaderResult>("download_media",{url,format});outputFile=result.output_file??"";message=language==="tr"?"İndirme tamamlandı.":"Download finished.";await refreshHistory();await playCompletionSound()}catch(error){message="";reportProblem(error)}finally{busy=false;downloadProgress=null}
   }
   async function cancelDownload(){if(!busy)return;await invoke("cancel_job").catch(()=>{});message=language==="tr"?"İndirme iptal ediliyor…":"Cancelling download…"}
   async function analyze(){
@@ -64,7 +97,7 @@
   function videoHeights(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="video"&&item.height).map((item:DownloadFormat)=>item.height as number))].sort((a,b)=>b-a).slice(0,6):[]}
   function videoCodecs(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="video").map((item:DownloadFormat)=>codecName(item.codec)))].slice(0,4):[]}
   function chooseVideo(){const data=analysis as DownloadAnalysis|null;if(!data)return;if(!videoHeights().length){format="best";return}const matches=data.formats.filter((item:DownloadFormat)=>item.kind==="video"&&(!preferredHeight||item.height===preferredHeight)&&(preferredCodec==="auto"||codecName(item.codec)===preferredCodec));const fallback=data.formats.find((item:DownloadFormat)=>item.kind==="video");format=(matches[0]??fallback)?.id??"best"}
-  $effect(()=>{let disposed=false;refresh();listen<DownloadProgress>("downloader-progress",event=>downloadProgress=event.payload).then(value=>{if(disposed)value();else unlisten=value});return()=>{disposed=true;unlisten?.();releaseThumbnail(temporaryThumbnail)}});
+  $effect(()=>{let disposed=false;untrack(()=>{void refresh();void refreshHistory()});const onFocus=()=>{if(!disposed)void refreshHistory()};window.addEventListener("focus",onFocus);listen<DownloadProgress>("downloader-progress",event=>downloadProgress=event.payload).then(value=>{if(disposed)value();else unlisten=value});return()=>{disposed=true;historyRequest++;window.removeEventListener("focus",onFocus);unlisten?.();releaseThumbnail(temporaryThumbnail)}});
 </script>
 
 <section class="downloader-workspace compact-downloader">
@@ -96,9 +129,23 @@
     {#if busy}<div class="downloader-live" class:pending={!downloadProgress||downloadProgress.percent===0}><i style:width={`${downloadProgress?.percent??0}%`}></i><span>{`${(downloadProgress?.percent??0).toFixed(1)}%`}</span><small class="download-transfer"><em>{downloadProgress?.downloaded??(language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…")}</em>{#if downloadProgress?.speed}<b>·</b><strong>{downloadProgress.speed}</strong>{/if}</small><button onclick={cancelDownload}>{language==="tr"?"İPTAL":"CANCEL"}</button></div>{/if}
     {#if message}<div class:failure={message.toLowerCase().includes("failed")||message.toLowerCase().includes("valid")||message.toLowerCase().includes("gerekli")} class="downloader-message">{message}</div>{/if}
     {#if outputFile}<div class="download-complete-actions"><button class="download-open-editor" onclick={()=>onopenmedia(outputFile)}>{formatKind==="video"?(language==="tr"?"ZAMAN ÇİZELGESİNDE AÇ →":"OPEN IN TIMELINE →"):(language==="tr"?"DÜZENLEMEK İÇİN AÇ →":"OPEN IN EDITOR →")}</button><button class="downloader-output" onclick={()=>revealItemInDir(outputFile).catch(reportProblem)}>{language==="tr"?"DOSYAYI GÖSTER":"SHOW FILE"}</button></div>{/if}
+    <section class="download-history" aria-label={language==="tr"?"İndirilenler":"Downloads"}>
+      <header><h3>{language==="tr"?"İNDİRİLENLER":"DOWNLOADS"}</h3><button onclick={refreshHistory} disabled={historyBusy||busy} aria-label={language==="tr"?"İndirilenleri yenile":"Refresh downloads"}>↻</button></header>
+      {#if history.length}
+        <ul>{#each history as entry (entry.path)}<li><span title={entry.path}>{entry.name}</span><button class="history-show" onclick={()=>revealItemInDir(entry.path).catch(reportProblem)} disabled={!!deletingPath}>{language==="tr"?"GÖSTER":"SHOW"}</button><button class="history-delete" onclick={()=>pendingDelete=entry} disabled={busy||analyzing||!!deletingPath} aria-label={language==="tr"?`${entry.name} dosyasını sil`:`Delete ${entry.name}`} title={language==="tr"?"Geri Dönüşüm Kutusu’na taşı":"Move to Recycle Bin"}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v6m4-6v6"/></svg></button></li>{/each}</ul>
+      {:else}<p>{language==="tr"?"Henüz indirilen dosya yok.":"No downloads yet."}</p>{/if}
+    </section>
   </main>
   <footer class="download-note">{language==="tr"?"Doğrudan cihazına kaydedilir · Hesap ve tarayıcı çerezi kullanılmaz":"Saved to your device · No account or browser cookies"}</footer>
 </section>
+
+{#if pendingDelete}
+  <dialog class="panel-reset-dialog download-delete-dialog" use:mountDeleteDialog oncancel={()=>pendingDelete=null} aria-labelledby="download-delete-title" aria-describedby="download-delete-description">
+    <header><span class="panel-reset-dialog-icon download-delete-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v6m4-6v6"/></svg></span><h2 id="download-delete-title">{language==="tr"?"İndirmeyi sil":"Delete download"}</h2></header>
+    <p id="download-delete-description"><strong>{pendingDelete.name}</strong><br>{language==="tr"?"Bu dosya Geri Dönüşüm Kutusu’na taşınacak.":"This file will be moved to the Recycle Bin."}</p>
+    <footer><button class="panel-reset-cancel" onclick={()=>pendingDelete=null}>{language==="tr"?"İPTAL":"CANCEL"}</button><button class="panel-reset-confirm download-delete-confirm" onclick={deleteHistoryEntry}>{language==="tr"?"SİL":"DELETE"}</button></footer>
+  </dialog>
+{/if}
 
 <style>
   .compact-downloader{height:auto;min-height:calc(100dvh - 64px);display:flex;flex-direction:column;align-items:center;gap:0;padding:24px 24px 20px;overflow:auto}
@@ -132,5 +179,24 @@
   .download-open-editor:hover{filter:brightness(.88)}
   .compact-downloader .downloader-output{margin:0;align-self:center;padding:8px}
   .download-note{flex:none;text-align:center;color:var(--muted-2);font:10px var(--mono);line-height:1.7;padding-top:16px}
+  .download-history{margin:28px 0 0;border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow:hidden}
+  .download-history header{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border)}
+  .download-history h3{margin:0;color:var(--text);font:700 10px var(--mono);letter-spacing:.08em}
+  .download-history header button{border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
+  .download-history ul{list-style:none;margin:0;padding:0;max-height:210px;overflow:auto}
+  .download-history li{display:flex;align-items:center;gap:8px;min-width:0;padding:9px 12px;border-bottom:1px solid var(--border)}
+  .download-history li:last-child{border-bottom:0}
+  .download-history li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font:11px var(--sans)}
+  .download-history li button{flex:none;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--muted);cursor:pointer}
+  .download-history li button:hover:not(:disabled){color:var(--text);border-color:var(--muted)}
+  .download-history li .history-show{padding:6px 8px;font:9px var(--mono)}
+  .download-history li .history-delete{display:grid;place-items:center;width:28px;height:28px;padding:4px}
+  .download-history li .history-delete:hover:not(:disabled){color:var(--red);border-color:var(--red)}
+  .download-history li svg{width:16px;height:16px}
+  .download-history>p{padding:13px 14px;color:var(--muted);font:11px var(--sans)}
+  .download-delete-dialog p strong{display:inline-block;max-width:100%;color:var(--text);overflow-wrap:anywhere}
+  .download-delete-dialog .download-delete-icon{color:var(--red)}
+  .download-delete-dialog .download-delete-icon svg{width:17px;height:17px}
+  .download-delete-dialog footer .download-delete-confirm{border-color:var(--red);background:var(--red);color:#190607}
   @media(max-width:600px){.compact-downloader{padding:16px}.compact-downloader .downloader-url{flex-direction:column}.compact-downloader .downloader-url button{padding:12px}}
 </style>

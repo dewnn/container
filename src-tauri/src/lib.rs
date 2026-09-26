@@ -362,6 +362,15 @@ struct DownloaderResult {
     details: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DownloadHistoryEntry {
+    path: String,
+    name: String,
+}
+
+#[derive(Default)]
+struct DownloadHistoryState(Mutex<()>);
+
 #[derive(Debug, Serialize)]
 struct DownloadAnalysis {
     title: String,
@@ -545,6 +554,192 @@ fn downloader_output_dir() -> Result<PathBuf, String> {
     let folder = root.join("CONTAINER Downloads");
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     Ok(folder)
+}
+
+fn download_history_path() -> Result<PathBuf, String> {
+    let base = dirs::data_local_dir().ok_or("Application data folder is unavailable.")?;
+    let folder = base.join(app_cache_name());
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    Ok(folder.join("download-history.json"))
+}
+
+fn valid_download_history_file(root: &Path, path: &Path) -> bool {
+    if path.parent() != Some(root)
+        || path.file_name().is_none()
+        || is_downloader_temporary_file(path)
+    {
+        return false;
+    }
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    if metadata.file_attributes() & 0x400 != 0 {
+        return false;
+    }
+    true
+}
+
+fn read_download_history(path: &Path) -> Result<Vec<DownloadHistoryEntry>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > 16 * 1024 * 1024 {
+        return Err("Download history is invalid or too large.".into());
+    }
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Download history could not be read: {error}"))
+}
+
+fn write_download_history(path: &Path, entries: &[DownloadHistoryEntry]) -> Result<(), String> {
+    let bytes = serde_json::to_vec(entries).map_err(|error| error.to_string())?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("Download history is too large.".into());
+    }
+    let pending = path.with_extension(format!("{}.tmp", std::process::id()));
+    let result = std::fs::write(&pending, bytes).and_then(|()| std::fs::rename(&pending, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&pending);
+    }
+    result.map_err(|error| format!("Download history could not be saved: {error}"))
+}
+
+fn existing_download_history(
+    root: &Path,
+    entries: Vec<DownloadHistoryEntry>,
+) -> Vec<DownloadHistoryEntry> {
+    let mut seen = HashSet::new();
+    entries
+        .into_iter()
+        .filter(|entry| {
+            let path = Path::new(&entry.path);
+            valid_download_history_file(root, path) && seen.insert(entry.path.clone())
+        })
+        .collect()
+}
+
+fn initial_download_history(root: &Path) -> Result<Vec<DownloadHistoryEntry>, String> {
+    let mut files = std::fs::read_dir(root)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| valid_download_history_file(root, path))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|path| {
+        std::cmp::Reverse(
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        )
+    });
+    Ok(files
+        .into_iter()
+        .map(|path| DownloadHistoryEntry {
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            path: path.to_string_lossy().into_owned(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn list_download_history(
+    history: State<'_, DownloadHistoryState>,
+) -> Result<Vec<DownloadHistoryEntry>, String> {
+    let _guard = history
+        .0
+        .lock()
+        .map_err(|_| "Download history lock failed")?;
+    let root = downloader_output_dir()?;
+    let path = download_history_path()?;
+    if !path.exists() {
+        let initial = initial_download_history(&root)?;
+        write_download_history(&path, &initial)?;
+        return Ok(initial);
+    }
+    let entries = read_download_history(&path)?;
+    let existing = existing_download_history(&root, entries.clone());
+    if existing.len() != entries.len() {
+        write_download_history(&path, &existing)?
+    }
+    Ok(existing)
+}
+
+fn remember_download(path: &Path, history: &DownloadHistoryState) -> Result<(), String> {
+    let _guard = history
+        .0
+        .lock()
+        .map_err(|_| "Download history lock failed")?;
+    let root = downloader_output_dir()?;
+    if !valid_download_history_file(&root, path) {
+        return Err("Downloaded file could not be verified.".into());
+    }
+    let history_path = download_history_path()?;
+    let entries = existing_download_history(&root, read_download_history(&history_path)?);
+    let mut updated = vec![DownloadHistoryEntry {
+        path: path.to_string_lossy().into_owned(),
+        name: path.file_name().unwrap().to_string_lossy().into_owned(),
+    }];
+    updated.extend(
+        entries
+            .into_iter()
+            .filter(|entry| Path::new(&entry.path) != path),
+    );
+    write_download_history(&history_path, &updated)
+}
+
+#[tauri::command]
+fn delete_download_history_entry(
+    path: String,
+    history: State<'_, DownloadHistoryState>,
+    state: State<'_, JobState>,
+) -> Result<(), String> {
+    if state
+        .pid
+        .lock()
+        .map_err(|_| "Job state is unavailable")?
+        .is_some()
+    {
+        return Err("Wait for the current job to finish before removing a download.".into());
+    }
+    let _guard = history
+        .0
+        .lock()
+        .map_err(|_| "Download history lock failed")?;
+    let root = downloader_output_dir()?;
+    let file = PathBuf::from(&path);
+    let history_path = download_history_path()?;
+    delete_download_history_file(&root, &history_path, &file)
+}
+
+fn delete_download_history_file(
+    root: &Path,
+    history_path: &Path,
+    file: &Path,
+) -> Result<(), String> {
+    let path = file.to_string_lossy();
+    let entries = read_download_history(history_path)?;
+    if !entries.iter().any(|entry| entry.path == path) {
+        return Err("This file is not in download history.".into());
+    }
+    if valid_download_history_file(root, file) {
+        trash::delete(file)
+            .map_err(|error| format!("File could not be moved to the Recycle Bin: {error}"))?;
+    } else if file.exists() {
+        return Err("Download path is not a regular file in the download folder.".into());
+    }
+    let remaining = existing_download_history(
+        root,
+        entries
+            .into_iter()
+            .filter(|entry| entry.path != path)
+            .collect(),
+    );
+    write_download_history(history_path, &remaining)
 }
 
 async fn downloader_version_at(binary: &Path) -> Option<String> {
@@ -1097,6 +1292,7 @@ async fn analyze_download_url(
 async fn download_media(
     app: AppHandle,
     state: State<'_, JobState>,
+    history: State<'_, DownloadHistoryState>,
     url: String,
     format: String,
 ) -> Result<DownloaderResult, String> {
@@ -1262,16 +1458,22 @@ async fn download_media(
         .map(String::as_str)
         .unwrap_or("Download finished.")
         .to_string();
+    let output_file = output_lines
+        .iter()
+        .rev()
+        .find(|line| {
+            let path = Path::new(line.as_str());
+            path.parent() == Some(output_dir.as_path()) && path.is_file()
+        })
+        .cloned();
+    if let Some(path) = &output_file {
+        if let Err(error) = remember_download(Path::new(path), &history) {
+            eprintln!("Download finished but history could not be updated: {error}");
+        }
+    }
     Ok(DownloaderResult {
         output_dir: output_dir.to_string_lossy().to_string(),
-        output_file: output_lines
-            .iter()
-            .rev()
-            .find(|line| {
-                let path = Path::new(line.as_str());
-                path.parent() == Some(output_dir.as_path()) && path.is_file()
-            })
-            .cloned(),
+        output_file,
         details,
     })
 }
@@ -2078,9 +2280,9 @@ fn read_project_contents(path: String) -> Result<String, String> {
     if !path
         .extension()
         .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("containerproject"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("cproj"))
     {
-        return Err("Choose a .containerproject file.".into());
+        return Err("Choose a .cproj file.".into());
     }
     let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
     if !metadata.is_file() || metadata.len() > 5 * 1024 * 1024 {
@@ -2194,9 +2396,9 @@ fn write_project(path: String, contents: String) -> Result<(), String> {
     if !path
         .extension()
         .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("containerproject"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("cproj"))
     {
-        path.set_extension("containerproject");
+        path.set_extension("cproj");
     }
     if let Some(resources) = value.get_mut("resources").and_then(Value::as_array_mut) {
         for resource in resources {
@@ -7736,6 +7938,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(JobState::default())
+        .manage(DownloadHistoryState::default())
         .manage(RuntimeMigrationState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -7755,6 +7958,8 @@ pub fn run() {
             analyze_download_url,
             remove_download_thumbnail,
             download_media,
+            list_download_history,
+            delete_download_history_entry,
             prepare_image_preview,
             remove_image_preview,
             list_system_fonts,
@@ -7928,13 +8133,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let project = root.join("örnek.containerproject");
+        let project = root.join("örnek.cproj");
         std::fs::write(&project, b"{}").unwrap();
         assert_eq!(
-            launch_file_path(
-                ["CONTAINER.exe", "missing.mp4", "örnek.containerproject"],
-                &root
-            ),
+            launch_file_path(["CONTAINER.exe", "missing.mp4", "örnek.cproj"], &root),
             Some(project.clone())
         );
         assert_eq!(launch_file_path(["CONTAINER.exe"], &root), None);
@@ -7960,7 +8162,7 @@ mod tests {
             contents.to_string(),
         )
         .unwrap();
-        let saved = requested.with_extension("containerproject");
+        let saved = requested.with_extension("cproj");
         let read = read_project_contents(saved.to_string_lossy().into_owned()).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&read).unwrap(),
@@ -7974,7 +8176,133 @@ mod tests {
         assert!(
             read_project_contents(root.join("wrong.json").to_string_lossy().into_owned()).is_err()
         );
+        let legacy = root.join("older.containerproject");
+        std::fs::write(&legacy, contents).unwrap();
+        assert!(read_project_contents(legacy.to_string_lossy().into_owned()).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn download_history_writes_replace_safely_and_clean_failed_pending_files() {
+        let root = std::env::temp_dir().join(format!(
+            "container-history-write-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("history.json");
+        let entry = |name: &str| DownloadHistoryEntry {
+            path: root.join(name).to_string_lossy().into_owned(),
+            name: name.into(),
+        };
+        write_download_history(&path, &[entry("first.mp4")]).unwrap();
+        write_download_history(&path, &[entry("second.mp4")]).unwrap();
+        assert_eq!(read_download_history(&path).unwrap()[0].name, "second.mp4");
+        let saved = std::fs::read(&path).unwrap();
+        let oversized = DownloadHistoryEntry {
+            path: "example.mp4".into(),
+            name: "x".repeat(16 * 1024 * 1024),
+        };
+        assert!(write_download_history(&path, &[oversized]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+
+        let blocked = root.join("blocked.json");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_download_history(&blocked, &[entry("third.mp4")]).is_err());
+        assert!(blocked.is_dir());
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_none_or(|ext| ext != "tmp")
+        }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn download_history_keeps_only_existing_regular_files_in_its_folder() {
+        let base =
+            std::env::temp_dir().join(format!("container-download-history-{}", std::process::id()));
+        let root = base.join("CONTAINER Downloads");
+        std::fs::create_dir_all(&root).unwrap();
+        let present = root.join("present.mp4");
+        let outside = base.join("outside.mp4");
+        std::fs::write(&present, b"video").unwrap();
+        std::fs::write(&outside, b"other").unwrap();
+        let make = |path: &Path| DownloadHistoryEntry {
+            path: path.to_string_lossy().into_owned(),
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+        };
+        let results = existing_download_history(
+            &root,
+            vec![
+                make(&present),
+                make(&root.join("deleted.mp4")),
+                make(&outside),
+                make(&present),
+            ],
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, present.to_string_lossy());
+        let discovered = initial_download_history(&root).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "present.mp4");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn download_history_delete_recycles_only_a_recorded_file() {
+        let base = std::env::temp_dir().join(format!(
+            "container-download-delete-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("CONTAINER Downloads");
+        std::fs::create_dir_all(&root).unwrap();
+        let recorded = root.join("recorded.mp4");
+        let unrecorded = root.join("unrecorded.mp4");
+        std::fs::write(&recorded, b"video").unwrap();
+        std::fs::write(&unrecorded, b"keep").unwrap();
+        let history_path = base.join("download-history.json");
+        write_download_history(
+            &history_path,
+            &[DownloadHistoryEntry {
+                path: recorded.to_string_lossy().into_owned(),
+                name: "recorded.mp4".into(),
+            }],
+        )
+        .unwrap();
+        assert!(delete_download_history_file(&root, &history_path, &unrecorded).is_err());
+        assert!(unrecorded.exists());
+        delete_download_history_file(&root, &history_path, &recorded).unwrap();
+        assert!(!recorded.exists());
+        assert!(read_download_history(&history_path).unwrap().is_empty());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn download_history_does_not_drop_older_files_after_many_downloads() {
+        let base =
+            std::env::temp_dir().join(format!("container-download-many-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let mut entries = Vec::new();
+        for index in 0..550 {
+            let path = base.join(format!("download-{index:03}.mp4"));
+            std::fs::write(&path, b"test").unwrap();
+            entries.push(DownloadHistoryEntry {
+                path: path.to_string_lossy().into_owned(),
+                name: format!("download-{index:03}.mp4"),
+            });
+        }
+        assert_eq!(existing_download_history(&base, entries).len(), 550);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -7994,7 +8322,7 @@ mod tests {
         let overlay = original.join("media").join("logo.png");
         std::fs::write(&source, b"source").unwrap();
         std::fs::write(&overlay, b"logo").unwrap();
-        let project = original.join("edit.containerproject");
+        let project = original.join("edit.cproj");
         let contents = serde_json::json!({
             "version":1,"mediaPath":source.to_string_lossy(),
             "toolbox":{"selected":{"fields":[{"key":"image_path","value":overlay.to_string_lossy()}]}},
@@ -8010,7 +8338,7 @@ mod tests {
         .unwrap();
         assert_eq!(stored["resources"][0]["relativePath"], "media\\clip.mp4");
         std::fs::rename(&original, &moved).unwrap();
-        let moved_project = moved.join("edit.containerproject");
+        let moved_project = moved.join("edit.cproj");
         let mut restored: Value = serde_json::from_str(
             &read_project_contents(moved_project.to_string_lossy().into_owned()).unwrap(),
         )
@@ -8051,7 +8379,7 @@ mod tests {
         let output = downloads.join("clipper.mp4");
         std::fs::write(&source, b"source").unwrap();
         std::fs::write(&output, b"output").unwrap();
-        let project = desktop.join("edit.containerproject");
+        let project = desktop.join("edit.cproj");
         let source_relative = PathBuf::from("..")
             .join("Downloads")
             .join("kaynak çığ #1.mp4");

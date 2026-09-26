@@ -270,7 +270,7 @@
   async function saveProject(){
     const session=currentSession();if(!session||operationBusy)return;
     session.resources=projectResources(session,true);
-    const path=await save({defaultPath:`${media?.name.replace(/\.[^.]+$/,"")||"project"}.containerproject`,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});
+    const path=await save({defaultPath:`${media?.name.replace(/\.[^.]+$/,"")||"project"}.cproj`,filters:[{name:"CONTAINER Project",extensions:["cproj"]}]});
     if(!path)return;
     try{
       const checks=await inspectProjectFiles(session);
@@ -294,7 +294,8 @@
   async function openIncomingPath(path:string){
     if(operationBusy)return;
     try{
-      if(path.toLowerCase().endsWith(".containerproject"))await loadProjectPath(path);
+      if(path.toLowerCase().endsWith(".cproj"))await loadProjectPath(path);
+      else if(path.toLowerCase().endsWith(".containerproject"))throw new Error(language==="tr"?"Bu eski proje biçimi artık desteklenmiyor. Yalnızca .cproj dosyaları açılabilir.":"This old project format is no longer supported. Only .cproj files can be opened.");
       else await loadMedia(path);
     }catch(reason){reportProblem(reason)}
   }
@@ -309,7 +310,7 @@
   }
   async function openProject(){
     if(operationBusy)return;
-    const path=await open({multiple:false,filters:[{name:"CONTAINER Project",extensions:["containerproject"]}]});if(typeof path!=="string")return;
+    const path=await open({multiple:false,filters:[{name:"CONTAINER Project",extensions:["cproj"]}]});if(typeof path!=="string")return;
     await openIncomingPath(path);
   }
   function discardRecovery(){localStorage.removeItem(recoveryKey);recoveryCandidate=null}
@@ -2293,7 +2294,7 @@
     <div class="update-layer output-clean-layer">
       <button class="update-backdrop" aria-label={language==="tr"?"Çıktı temizleme penceresini kapat":"Close output cleanup dialog"} onclick={()=>{if(!outputCleaning)outputCleanupOpen=false}}></button>
       <dialog class="update-dialog output-clean-dialog panel" open aria-labelledby="output-clean-title">
-        <header><div><span class="output-clean-dialog-icon">⌫</span><h2 id="output-clean-title">{language==="tr"?"CONTAINER OUTPUT TEMİZLE":"CLEAN CONTAINER OUTPUT"}</h2></div><button onclick={()=>outputCleanupOpen=false} disabled={outputCleaning} aria-label={language==="tr"?"Kapat":"Close"}>×</button></header>
+        <header><div><span class="output-clean-dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v6m4-6v6"/></svg></span><h2 id="output-clean-title">{language==="tr"?"CONTAINER OUTPUT TEMİZLE":"CLEAN CONTAINER OUTPUT"}</h2></div><button onclick={()=>outputCleanupOpen=false} disabled={outputCleaning} aria-label={language==="tr"?"Kapat":"Close"}>×</button></header>
         <p>{language==="tr"?"Downloads/CONTAINER Output içindeki tüm çıktılar Geri Dönüşüm Kutusu’na taşınacak; klasör yerinde kalacak.":"Everything inside Downloads/CONTAINER Output will be moved to the Recycle Bin; the folder itself will remain."}</p>
         {#if outputCleanupMessage}<small class="output-clean-error">{outputCleanupMessage}</small>{/if}
         <footer><button class="ghost" onclick={()=>outputCleanupOpen=false} disabled={outputCleaning}>{language==="tr"?"İPTAL":"CANCEL"}</button><button class="clean-confirm" onclick={cleanOutputFolder} disabled={outputCleaning}>{outputCleaning?"…":(language==="tr"?"ÇIKTILARI TEMİZLE":"CLEAN OUTPUT")}</button></footer>
