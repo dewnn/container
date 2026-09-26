@@ -80,6 +80,24 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+fn launch_file_path<I, S>(args: I, cwd: &Path) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    args.into_iter()
+        .skip(1)
+        .map(|argument| {
+            let path = PathBuf::from(argument.as_ref());
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            }
+        })
+        .find(|path| path.is_file())
+}
+
 const FFMPEG_RUNTIME_VERSION: &str = env!("CONTAINER_FFMPEG_RUNTIME_VERSION");
 
 fn is_development_executable(path: &Path) -> bool {
@@ -1807,6 +1825,15 @@ fn check_range(value: f64, min: f64, max: f64, name: &str) -> Result<f64, String
     } else {
         Err(format!("{name} must be between {min} and {max}."))
     }
+}
+
+fn check_cut_end(value: f64, duration: f64) -> Result<f64, String> {
+    // The timeline displays milliseconds, while ffprobe may report a finer
+    // duration (for example 100.05988 s). Accept only that rounding gap.
+    if value.is_finite() && value > duration && value - duration <= 0.001 {
+        return Ok(duration);
+    }
+    check_range(value, 0.0, duration, "End")
 }
 
 fn quality_sample_positions(duration: f64, sample_duration: f64) -> Vec<f64> {
@@ -5572,12 +5599,7 @@ async fn build_command(
                 info.duration.unwrap_or(86400.0),
                 "Start",
             )?;
-            let end = check_range(
-                parse_number(p, "end")?,
-                0.0,
-                info.duration.unwrap_or(86400.0),
-                "End",
-            )?;
+            let end = check_cut_end(parse_number(p, "end")?, info.duration.unwrap_or(86400.0))?;
             if end <= start {
                 return Err("End must be greater than start.".into());
             }
@@ -7549,11 +7571,8 @@ async fn detect_camera_region(
 
 #[tauri::command]
 fn startup_media_path() -> Option<String> {
-    std::env::args_os()
-        .skip(1)
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-        .map(|path| path.to_string_lossy().to_string())
+    let cwd = std::env::current_dir().ok()?;
+    launch_file_path(std::env::args_os(), &cwd).map(|path| path.to_string_lossy().to_string())
 }
 
 fn prepare_session_lifecycle() -> SessionLifecycle {
@@ -7573,6 +7592,76 @@ fn prepare_session_lifecycle() -> SessionLifecycle {
 #[tauri::command]
 fn previous_session_interrupted(lifecycle: State<'_, SessionLifecycle>) -> bool {
     lifecycle.previous_interrupted
+}
+
+// Shell recycling of a whole directory can abort if one child is in use. Keep
+// the blocked child in place, but still recycle everything else for a retry.
+fn recycle_output_entry(path: &Path, blocked: &mut Vec<PathBuf>) {
+    let _ = trash::delete(path);
+    let metadata = match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            blocked.push(path.to_path_buf());
+            return;
+        }
+        Ok(metadata) => metadata,
+    };
+    let is_regular_dir = metadata.is_dir() && !metadata.file_type().is_symlink();
+    #[cfg(target_os = "windows")]
+    let is_regular_dir = is_regular_dir && metadata.file_attributes() & 0x400 == 0;
+    if !is_regular_dir {
+        blocked.push(path.to_path_buf());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        blocked.push(path.to_path_buf());
+        return;
+    };
+    let mut children = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => children.push(entry.path()),
+            Err(_) => {
+                blocked.push(path.to_path_buf());
+                return;
+            }
+        }
+    }
+    let failures_before = blocked.len();
+    for child in children {
+        recycle_output_entry(&child, blocked);
+    }
+    if blocked.len() == failures_before {
+        let _ = trash::delete(path);
+        if std::fs::symlink_metadata(path).is_ok() {
+            blocked.push(path.to_path_buf());
+        }
+    }
+}
+
+fn recycle_output_entries(root: &Path, entries: &[PathBuf]) -> Result<(), String> {
+    let mut blocked = Vec::new();
+    for entry in entries {
+        recycle_output_entry(entry, &mut blocked);
+    }
+    if blocked.is_empty() {
+        return Ok(());
+    }
+    let names = blocked
+        .iter()
+        .take(5)
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "{} output item(s) could not be moved to the Recycle Bin, possibly because they are open in another app. Close apps using them and retry. Remaining: {names}",
+        blocked.len()
+    ))
 }
 
 #[tauri::command]
@@ -7622,15 +7711,9 @@ async fn clean_output_folder(state: State<'_, JobState>) -> Result<OutputCleanup
         });
     }
 
-    tokio::task::spawn_blocking(move || {
-        for entry in entries {
-            trash::delete(entry)?;
-        }
-        Ok::<(), trash::Error>(())
-    })
-    .await
-    .map_err(|error| format!("Output cleanup task failed: {error}"))?
-    .map_err(|error| format!("Output contents could not be moved to the Recycle Bin: {error}"))?;
+    tokio::task::spawn_blocking(move || recycle_output_entries(&root, &entries))
+        .await
+        .map_err(|error| format!("Output cleanup task failed: {error}"))??;
     Ok(OutputCleanupResult {
         cleaned: true,
         path: display,
@@ -7639,6 +7722,12 @@ async fn clean_output_folder(state: State<'_, JobState>) -> Result<OutputCleanup
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            show_main_window(app);
+            if let Some(path) = launch_file_path(args, Path::new(&cwd)) {
+                let _ = app.emit("container-open-path", path.to_string_lossy().to_string());
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(JobState::default())
         .manage(RuntimeMigrationState::default())
@@ -7746,11 +7835,7 @@ pub fn run() {
             let migration = app.state::<RuntimeMigrationState>();
             let _ = record_runtime_migration(&migration);
             app.manage(prepare_session_lifecycle());
-            if let Some(path) = std::env::args_os()
-                .skip(1)
-                .map(PathBuf::from)
-                .find(|path| path.is_file())
-            {
+            if let Some(path) = startup_media_path().map(PathBuf::from) {
                 app.asset_protocol_scope().allow_file(path)?;
             }
             if let Some(window) = app.get_webview_window("main") {
@@ -7805,6 +7890,15 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn cut_end_accepts_only_the_display_rounding_gap() {
+        let duration = 100.05988;
+        assert_eq!(check_cut_end(100.060, duration).unwrap(), duration);
+        assert_eq!(check_cut_end(duration, duration).unwrap(), duration);
+        assert!(check_cut_end(100.061, duration).is_err());
+        assert!(check_cut_end(-0.001, duration).is_err());
+    }
+
+    #[test]
     fn development_executable_isolated_from_the_release_identity() {
         assert!(is_development_executable(Path::new(
             r"C:\build\container-studio-dev.exe"
@@ -7815,6 +7909,31 @@ mod tests {
         assert!(!is_development_executable(Path::new(
             r"C:\Users\User\AppData\Local\CONTAINER\container-studio.exe"
         )));
+    }
+
+    #[test]
+    fn second_launch_file_path_resolves_relative_and_ignores_nonfiles() {
+        let root = std::env::temp_dir().join(format!(
+            "container-second-launch-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let project = root.join("örnek.containerproject");
+        std::fs::write(&project, b"{}").unwrap();
+        assert_eq!(
+            launch_file_path(
+                ["CONTAINER.exe", "missing.mp4", "örnek.containerproject"],
+                &root
+            ),
+            Some(project.clone())
+        );
+        assert_eq!(launch_file_path(["CONTAINER.exe"], &root), None);
+        std::fs::remove_file(project).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
@@ -8834,6 +8953,101 @@ mod tests {
         assert!(!materialize_bundled_downloader(&bundled, &managed).unwrap());
         assert_eq!(std::fs::read(&managed).unwrap(), b"user replacement");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_recycle_bin_accepts_a_nested_output_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "container_recycle_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let folder = root.join("smartcut");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("example_smartcut.mp4"), b"test fixture").unwrap();
+        let entries = vec![folder];
+        let root_for_worker = root.clone();
+        let result = std::thread::spawn(move || recycle_output_entries(&root_for_worker, &entries))
+            .join()
+            .unwrap();
+        assert!(
+            result.is_ok(),
+            "nested output folder was not recycled: {result:?}"
+        );
+        assert!(!root.join("smartcut").exists());
+        assert!(
+            trash::os_limited::list()
+                .unwrap()
+                .iter()
+                .any(|item| item.original_path() == root.join("smartcut")),
+            "recycled folder was not found in the Windows Recycle Bin"
+        );
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_recycle_bin_recovers_after_a_locked_output_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "container_recycle_locked_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let folder = root.join("smartcut");
+        std::fs::create_dir_all(&folder).unwrap();
+        let locked = folder.join("open.mp4");
+        let free = folder.join("ready.mp4");
+        std::fs::write(&locked, b"in use").unwrap();
+        std::fs::write(&free, b"ready").unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)
+            .unwrap();
+
+        let entries = vec![folder.clone()];
+        let root_for_worker = root.clone();
+        let first = std::thread::spawn(move || recycle_output_entries(&root_for_worker, &entries))
+            .join()
+            .unwrap();
+        assert!(first.unwrap_err().contains("open.mp4"));
+        assert!(
+            locked.exists(),
+            "locked output must not be deleted permanently"
+        );
+        assert!(
+            !free.exists(),
+            "unlocked output should still reach the Recycle Bin"
+        );
+        assert!(
+            trash::os_limited::list()
+                .unwrap()
+                .iter()
+                .any(|item| item.original_path() == free),
+            "unlocked output was not found in the Windows Recycle Bin"
+        );
+
+        drop(handle);
+        let entries = vec![folder];
+        let root_for_worker = root.clone();
+        let retry = std::thread::spawn(move || recycle_output_entries(&root_for_worker, &entries))
+            .join()
+            .unwrap();
+        assert!(
+            retry.is_ok(),
+            "retry after closing the file failed: {retry:?}"
+        );
+        assert!(!root.join("smartcut").exists());
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[cfg(target_os = "windows")]

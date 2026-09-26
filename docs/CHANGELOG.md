@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-09-26
+
+- Fixed full-length Cut Video exports when the displayed end time rounds past the source duration.
+- Added a direct path from completed downloads to the video timeline and a way back to the current editor.
+- Improved Windows output recycling when a file is locked and brought an existing window forward on a second launch.
+
 ## [0.18.1] - 2026-09-25
 
 - Refresh Windows desktop and Start menu icons during installation and updates, avoiding the cached old logo.

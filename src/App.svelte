@@ -174,6 +174,7 @@
   let runtimeMigrationError = $state("");
   let appVersion = $state("");
   const updaterEnabled=$derived(updatesAllowedForVersion(appVersion));
+  const devVersion=$derived(/-dev(?:\.|$)/i.test(appVersion) ? appVersion : "");
   let availableUpdate: Update | null = $state(null);
   let updatePanel = $state(false);
   let outputCleanupOpen = $state(false);
@@ -296,6 +297,15 @@
       if(path.toLowerCase().endsWith(".containerproject"))await loadProjectPath(path);
       else await loadMedia(path);
     }catch(reason){reportProblem(reason)}
+  }
+  async function openDownloadedMedia(path:string){
+    if(operationBusy)return;
+    if(!await loadMedia(path))return;
+    if(media?.kind==="video"){
+      const cutTool=kindTools("video").find(tool=>tool.id==="cut");
+      if(cutTool)chooseTool(cutTool);
+    }
+    downloaderOpen=false;
   }
   async function openProject(){
     if(operationBusy)return;
@@ -493,8 +503,9 @@
   }
   function setCutTime(key:"start"|"end",value:string){
     const seconds=parseTimecode(value),duration=media?.duration??0;
-    if(seconds===null||seconds<0||seconds>duration){error=language==="tr"?"Geçerli bir zaman gir (S, M:S veya H:M:S).":"Enter a valid time (S, M:S or H:M:S).";return}
-    setTimelineBoundary(key,seconds);seekToolbox(seconds);error="";
+    if(seconds===null||seconds<0||seconds>duration+.001){error=language==="tr"?"Geçerli bir zaman gir (S, M:S veya H:M:S).":"Enter a valid time (S, M:S or H:M:S).";return}
+    const clamped=Math.min(seconds,duration);
+    setTimelineBoundary(key,clamped);seekToolbox(clamped);error="";
   }
   function commitCutTime(key:"start"|"end"){
     const value=key==="start"?cutStartInput:cutEndInput;
@@ -567,7 +578,7 @@
         start=Math.max(0,end-visibleSpan);
       }
       if(startField)startField.value=Math.round(start*1000)/1000;
-      if(endField)endField.value=Math.round(end*1000)/1000;
+      if(endField)endField.value=Math.min(Math.round(end*1000)/1000,mediaDuration);
     }
   }
 
@@ -665,7 +676,7 @@
     return true;
   }
   function toolNumber(key:string){return Number(toolField(key)?.value??0)}
-  function setToolNumber(key:string,value:number){const field=toolField(key);if(field)field.value=Math.round(value*1000)/1000}
+  function setToolNumber(key:string,value:number){const field=toolField(key);if(field)field.value=key==="end"&&media?.duration?Math.min(Math.round(value*1000)/1000,media.duration):Math.round(value*1000)/1000}
   function toolValue(key:string){return String(toolField(key)?.value??"")}
   function setToolValue(key:string,value:string){const field=toolField(key);if(field)field.value=value}
   $effect(()=>{
@@ -1438,7 +1449,9 @@
     if(workspaceMode==="batch"&&batchWorkspace)batchSession=batchWorkspace.exportSession();
   }
   async function setWorkspaceMode(mode:"toolbox"|"autocut"|"batch"){
-    if(mode===workspaceMode||operationBusy)return;
+    if(operationBusy)return;
+    if(downloaderOpen){downloaderOpen=false;if(mode===workspaceMode)return}
+    if(mode===workspaceMode)return;
     captureWorkspaceSessions();
     const switchId=++workspaceSwitchId,loadId=mediaLoadId;
     const session=mode==="autocut"?autoCutSession:mode==="batch"?batchSession:null;
@@ -2031,6 +2044,8 @@
     if(isTauri())void invoke("set_tray_language",{language}).catch(reportProblem);
     let unlistenTrayUpdate:UnlistenFn|undefined;
     if(isTauri())void listen("tray-check-updates",()=>{void checkForUpdates(true)}).then(fn=>{if(disposed)fn();else unlistenTrayUpdate=fn});
+    let unlistenSecondOpen:UnlistenFn|undefined;
+    if(isTauri())void listen<string>("container-open-path",event=>{void openIncomingPath(event.payload)}).then(fn=>{if(disposed)fn();else unlistenSecondOpen=fn});
     let unlistenTrayHidden:UnlistenFn|undefined;
     if(isTauri())void listen("container-tray-hidden",()=>{
       document.querySelectorAll<HTMLMediaElement>("video,audio").forEach(element=>element.pause());
@@ -2146,7 +2161,7 @@
       }
     }).then((fn) => {if(disposed)fn();else unlistenDrop=fn});
 
-    return () => { disposed=true;unlistenProgress?.(); unlistenDrop?.(); unlistenTrayUpdate?.(); unlistenTrayHidden?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
+    return () => { disposed=true;unlistenProgress?.(); unlistenDrop?.(); unlistenTrayUpdate?.(); unlistenSecondOpen?.(); unlistenTrayHidden?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -2191,6 +2206,7 @@
 <main class="shell" class:drag-active={dragActive} inert={restoringSession||stageNavigating} aria-busy={restoringSession||stageNavigating}>
   <header class="topbar">
     <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt="" decoding="sync"><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt="" decoding="sync"></span>CONTAINER</span>
+    {#if !media && devVersion}<span class="dev-version mono" aria-label={`Development build version ${devVersion}`}><span>DEV BUILD</span><b>v{devVersion}</b></span>{/if}
     {#if media}
       {@render historyControl()}
       <div class="file-summary">
@@ -2203,10 +2219,11 @@
       </div>
       </div>
       <nav class="mode-tabs" aria-label="Workspace">
-        <button class:active={workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")} disabled={operationBusy&&workspaceMode!=="toolbox"}>{t("toolbox")}</button>
-        {#if media.kind === "video"}<button class:active={workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")} disabled={operationBusy&&workspaceMode!=="autocut"}>SMARTCUT</button>{/if}
-        <button class:active={workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
+        <button class:active={!downloaderOpen&&workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")} disabled={operationBusy&&workspaceMode!=="toolbox"}>{t("toolbox")}</button>
+        {#if media.kind === "video"}<button class:active={!downloaderOpen&&workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")} disabled={operationBusy&&workspaceMode!=="autocut"}>SMARTCUT</button>{/if}
+        <button class:active={!downloaderOpen&&workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
       </nav>
+      {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={language==="tr"?"Açık çalışmaya dön":"Return to current work"}>← {language==="tr"?"ÇALIŞMAYA DÖN":"BACK TO EDITOR"}</button>{/if}
       <div class="project-actions"><button onclick={saveProject} disabled={operationBusy}>{language==="tr"?"PROJEYİ KAYDET":"SAVE PROJECT"}</button></div>
       <button class="panel-reset-trigger" onclick={()=>panelResetDialogOpen=true} disabled={operationBusy} aria-label={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"} title={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M7 3.5v13M13 3.5v13"/></svg></button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={operationBusy}>{t("close")}</button>
@@ -2285,7 +2302,7 @@
   {/if}
 
   {#if downloaderOpen}
-    <DownloaderWorkspace {language} onbusychange={(value:boolean)=>downloaderBusy=value} />
+    <DownloaderWorkspace {language} onbusychange={(value:boolean)=>downloaderBusy=value} onopenmedia={openDownloadedMedia} />
   {:else if !media}
     <section class="landing">
       {#if autoEncoderTuning}

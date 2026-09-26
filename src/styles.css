@@ -45,8 +45,9 @@ button { color: inherit; }
 .batch-row-actions{display:flex;align-items:center;gap:4px}
 .batch-row-actions button{width:28px;height:28px;border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
 .batch-row-actions button:hover:not(:disabled){color:var(--text)}
-.topbar { display: flex; align-items: center; gap: 14px; padding: 0 20px; border-bottom: 1px solid var(--border); min-width: 0; }
+.topbar { position:relative; display: flex; align-items: center; gap: 14px; padding: 0 20px; border-bottom: 1px solid var(--border); min-width: 0; }
 .brand { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.dev-version{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:8px;max-width:calc(100% - 540px);padding:5px 9px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--muted);font-size:9px;line-height:1;white-space:nowrap;pointer-events:none}.dev-version>span{color:var(--blue);font-weight:700;letter-spacing:.07em}.dev-version>b{overflow:hidden;text-overflow:ellipsis;color:var(--text);font-weight:600}
 .brand-logo{width:28px;height:28px;object-fit:contain}
 .brand-logo-stack{position:relative;width:28px;height:28px;flex:0 0 28px}.brand-logo-stack .brand-logo{position:absolute;inset:0}.brand-logo-light{visibility:hidden}:root[data-theme="light"] .brand-logo-dark{visibility:hidden}:root[data-theme="light"] .brand-logo-light{visibility:visible}
 .brand i, .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 12px rgba(107,168,255,.8); }

@@ -19,7 +19,19 @@ fn configured_tool_version(key: &str) -> String {
         .to_owned()
 }
 
-fn locate(name: &str, override_name: &str) -> PathBuf {
+fn cached_deno_matches(path: &Path) -> bool {
+    let expected = format!("deno {} ", configured_tool_version("DENO_VERSION"));
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .is_some_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).starts_with(&expected)
+        })
+}
+
+fn locate(name: &str, override_name: &str, cached_sidecar: &Path) -> PathBuf {
     if let Some(path) = env::var_os(override_name).map(PathBuf::from) {
         if path.is_file() {
             return path.canonicalize().unwrap_or(path);
@@ -51,6 +63,10 @@ fn locate(name: &str, override_name: &str) -> PathBuf {
     let path = candidates
         .into_iter()
         .find(|path| path.is_file())
+        .or_else(|| {
+            (name == "deno" && cached_deno_matches(cached_sidecar))
+                .then(|| cached_sidecar.to_path_buf())
+        })
         .unwrap_or_else(|| {
             panic!("{name}.exe was not found. Install it or set {override_name} to its full path.")
         });
@@ -117,11 +133,13 @@ fn prepare_windows_sidecars() {
         ("yt-dlp", "CONTAINER_YT_DLP"),
         ("deno", "CONTAINER_DENO"),
     ] {
-        let source = locate(name, override_name);
         let destination = manifest
             .join("binaries")
             .join(format!("{name}-{target}.exe"));
-        copy_if_changed(&source, &destination);
+        let source = locate(name, override_name, &destination);
+        if source != destination {
+            copy_if_changed(&source, &destination);
+        }
         println!("cargo:rerun-if-env-changed={override_name}");
         println!("cargo:rerun-if-changed={}", source.display());
     }

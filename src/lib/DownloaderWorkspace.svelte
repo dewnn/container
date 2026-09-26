@@ -6,7 +6,7 @@
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
 
-  let { language, onbusychange }: { language: "tr" | "en"; onbusychange?: (value:boolean)=>void } = $props();
+  let { language, onbusychange, onopenmedia }: { language: "tr" | "en"; onbusychange?: (value:boolean)=>void; onopenmedia: (path:string)=>Promise<void> } = $props();
   interface DownloaderStatus { ready:boolean; version:string|null }
   interface DownloaderResult { output_dir:string; output_file:string|null; details:string }
   interface DownloadFormat { id:string; label:string; detail:string; kind:string; codec:string; rank:number; height:number|null }
@@ -95,7 +95,7 @@
     {#if analysis}<button class="downloader-run" onclick={download} disabled={!status?.ready||busy}>{busy?(language==="tr"?"İNDİRİLİYOR…":"DOWNLOADING…"):(language==="tr"?"↓ İNDİR":"↓ DOWNLOAD")}</button>{/if}
     {#if busy}<div class="downloader-live" class:pending={!downloadProgress||downloadProgress.percent===0}><i style:width={`${downloadProgress?.percent??0}%`}></i><span>{`${(downloadProgress?.percent??0).toFixed(1)}%`}</span><small class="download-transfer"><em>{downloadProgress?.downloaded??(language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…")}</em>{#if downloadProgress?.speed}<b>·</b><strong>{downloadProgress.speed}</strong>{/if}</small><button onclick={cancelDownload}>{language==="tr"?"İPTAL":"CANCEL"}</button></div>{/if}
     {#if message}<div class:failure={message.toLowerCase().includes("failed")||message.toLowerCase().includes("valid")||message.toLowerCase().includes("gerekli")} class="downloader-message">{message}</div>{/if}
-    {#if outputFile}<button class="downloader-output" onclick={()=>revealItemInDir(outputFile).catch(reportProblem)}>{language==="tr"?"İNDİRİLEN DOSYAYI GÖSTER":"SHOW DOWNLOADED FILE"}</button>{/if}
+    {#if outputFile}<div class="download-complete-actions"><button class="download-open-editor" onclick={()=>onopenmedia(outputFile)}>{formatKind==="video"?(language==="tr"?"ZAMAN ÇİZELGESİNDE AÇ →":"OPEN IN TIMELINE →"):(language==="tr"?"DÜZENLEMEK İÇİN AÇ →":"OPEN IN EDITOR →")}</button><button class="downloader-output" onclick={()=>revealItemInDir(outputFile).catch(reportProblem)}>{language==="tr"?"DOSYAYI GÖSTER":"SHOW FILE"}</button></div>{/if}
   </main>
   <footer class="download-note">{language==="tr"?"Doğrudan cihazına kaydedilir · Hesap ve tarayıcı çerezi kullanılmaz":"Saved to your device · No account or browser cookies"}</footer>
 </section>
@@ -127,7 +127,10 @@
   .compact-downloader .downloader-run{margin:14px 0 0;background:var(--text);color:var(--panel);padding:14px}
   .compact-downloader .downloader-live{margin:12px 0 0}
   .compact-downloader .downloader-message{margin:12px 0 0}
-  .compact-downloader .downloader-output{margin:12px 0 0;align-self:center;padding:8px}
+  .download-complete-actions{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;margin:12px 0 0}
+  .download-open-editor{min-height:34px;padding:8px 14px;border:1px solid var(--border);border-radius:6px;background:var(--text);color:var(--panel);font:700 10px var(--mono);cursor:pointer}
+  .download-open-editor:hover{filter:brightness(.88)}
+  .compact-downloader .downloader-output{margin:0;align-self:center;padding:8px}
   .download-note{flex:none;text-align:center;color:var(--muted-2);font:10px var(--mono);line-height:1.7;padding-top:16px}
   @media(max-width:600px){.compact-downloader{padding:16px}.compact-downloader .downloader-url{flex-direction:column}.compact-downloader .downloader-url button{padding:12px}}
 </style>

@@ -11,8 +11,8 @@ const sample = {
   bitrate: 3_000_000, size: 1_000_000, start_timecode: null,
 };
 
-async function mockDesktop(page: Page, options: { invalidSecond?: boolean; interrupted?: boolean; startupPath?: string | null; savedRecovery?: boolean; missingProjectSource?: boolean; fixture?: typeof sample } = {}) {
-  await page.addInitScript(({ media, invalidSecond, interrupted, startupPath, savedRecovery, missingProjectSource, dialogMessagesAllowed }) => {
+async function mockDesktop(page: Page, options: { invalidSecond?: boolean; interrupted?: boolean; startupPath?: string | null; savedRecovery?: boolean; missingProjectSource?: boolean; fixture?: typeof sample; version?: string } = {}) {
+  await page.addInitScript(({ media, invalidSecond, interrupted, startupPath, savedRecovery, missingProjectSource, dialogMessagesAllowed, version }) => {
     const callbacks = new Map<number, (...args: any[]) => void>();
     const events = new Map<string, number>();
     let callbackId = 0;
@@ -38,7 +38,7 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
         if (cmd === "plugin:dialog|save") return "C:\\fixtures\\sample.containerproject";
         if (cmd === "plugin:dialog|message") return "Cancel";
         if (cmd === "write_project") return null;
-        if (cmd === "plugin:app|version") return "0.16.0-dev.1";
+        if (cmd === "plugin:app|version") return version ?? "0.16.0-dev.1";
         if (cmd === "startup_media_path") return startupPath ?? null;
         if (cmd === "previous_session_interrupted") return !!interrupted;
         if (cmd === "ffmpeg_status") return { ready: true, ffmpeg_version: "9.0.1", ffprobe_version: "9.0.1" };
@@ -66,9 +66,9 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
       const id = events.get("tauri://drag-drop");
       if (id) callbacks.get(id)?.({ event: "tauri://drag-drop", payload: { paths: [path], position: { x: 0, y: 0 } } });
     };
-    (window as any).__TEST_EVENT__ = (name: string) => {
+    (window as any).__TEST_EVENT__ = (name: string, payload: unknown = null) => {
       const id = events.get(name);
-      if (id) callbacks.get(id)?.({ event: name, payload: null });
+      if (id) callbacks.get(id)?.({ event: name, payload });
     };
     Object.defineProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__", { value: { unregisterListener() {} } });
     if (!localStorage.getItem("container-language")) localStorage.setItem("container-language", "en");
@@ -82,6 +82,115 @@ async function openFixture(page: Page) {
   await page.locator(".dropzone").click();
   await expect(page.locator(".settings")).toBeVisible();
 }
+
+test("Cut Video exports the full duration without manually setting OUT",async({page})=>{
+  await mockDesktop(page,{fixture:{...sample,duration:100.05988}});
+  await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Cut Video");
+  await page.locator(".tool-row").filter({has:page.getByText("Cut Video",{exact:true})}).click();
+  await expect(page.getByRole("textbox",{name:"End time"})).toHaveValue("0:01:40.060");
+  await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="run_operation"
+    ? Number(args.request.params.end)>100.05988
+      ? Promise.reject(new Error("End exceeds source duration"))
+      : {output:"C:\\fixtures\\cut.mp4",elapsed:.1}
+    : undefined});
+  await page.getByRole("button",{name:/render cut video/i}).click();
+  await expect(page.locator(".job-head p")).toHaveText("complete");
+  const request=await page.evaluate(()=>(window as any).__TEST_CALLS__.find((call:any)=>call.cmd==="run_operation").args.request);
+  expect(request.params.start).toBe("0");
+  expect(Number(request.params.end)).toBe(100.05988);
+});
+
+test("downloaded media opens in the timeline and failed opening keeps the download action",async({page})=>{
+  await mockDesktop(page);
+  await page.evaluate((fixture)=>{(window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+    if(cmd==="analyze_download_url")return {title:"Example",uploader:"Creator",duration:12,thumbnail_path:null,formats:[{id:"best",label:"Best",detail:"",kind:"video",codec:"h264",rank:1,height:1080}]};
+    if(cmd==="download_media")return {output_dir:"C:\\fixtures",output_file:"C:\\fixtures\\downloaded.mp4",details:""};
+    if(cmd==="probe_media"&&args.path==="C:\\fixtures\\downloaded.mp4"){
+      if((window as any).__FAIL_DOWNLOADED__)throw new Error("Unable to open download");
+      return {...fixture,path:args.path,name:"downloaded.mp4"};
+    }
+    return undefined;
+  }},sample);
+  await page.locator(".downloader-quick-trigger").click();
+  await page.getByPlaceholder("https://…").fill("https://example.com/video");
+  await page.getByRole("button",{name:"ANALYZE LINK"}).click();
+  await page.getByRole("button",{name:/DOWNLOAD/}).click();
+  const openButton=page.getByRole("button",{name:"OPEN IN TIMELINE →"});
+  await expect(openButton).toBeVisible();
+  await page.evaluate(()=>(window as any).__FAIL_DOWNLOADED__=true);
+  await openButton.click();
+  await expect(openButton).toBeVisible();
+  await page.evaluate(()=>(window as any).__FAIL_DOWNLOADED__=false);
+  await openButton.click();
+  await expect(page.locator(".downloader-workspace")).toHaveCount(0);
+  await expect(page.locator(".filename")).toHaveText("downloaded.mp4");
+  await expect(page.locator(".tool-timeline")).toBeVisible();
+  await expect(page.getByRole("button",{name:/render cut video/i})).toBeVisible();
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="probe_media").at(-1).args.path)).toBe("C:\\fixtures\\downloaded.mp4");
+});
+
+test("downloader back returns to an existing media workspace without losing it",async({page})=>{
+  await mockDesktop(page);
+  await page.locator(".downloader-quick-trigger").click();
+  await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\sample.mp4"));
+  await expect(page.locator(".downloader-workspace")).toBeVisible();
+  await expect(page.getByRole("button",{name:"BACK TO EDITOR"})).toBeVisible();
+  await page.getByRole("button",{name:"BACK TO EDITOR"}).click();
+  await expect(page.locator(".downloader-workspace")).toHaveCount(0);
+  await expect(page.locator(".filename")).toHaveText("sample.mp4");
+  await expect(page.locator(".settings")).toBeVisible();
+});
+
+test("only DEV shows its runtime version in the landing header",async({page})=>{
+  await page.setViewportSize({width:1440,height:900});
+  await mockDesktop(page,{version:"0.18.2-dev.1"});
+  await expect(page.locator(".dev-version")).toHaveText("DEV BUILDv0.18.2-dev.1");
+  const badge=await page.locator(".dev-version").boundingBox();
+  expect(badge).not.toBeNull();
+  expect(Math.abs(badge!.x+badge!.width/2-720)).toBeLessThan(2);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/dev-version-landing.png"});
+  await page.setViewportSize({width:860,height:700});
+  const compactBadge=await page.locator(".dev-version").boundingBox();
+  const actions=await page.locator(".landing-header-actions").boundingBox();
+  expect(compactBadge!.x+compactBadge!.width).toBeLessThan(actions!.x);
+  await openFixture(page);
+  await expect(page.locator(".dev-version")).toHaveCount(0);
+});
+
+test("a second file launch opens in the already-running workspace",async({page})=>{
+  await page.addInitScript(()=>{(window as any).isTauri=true});
+  await mockDesktop(page);
+  await expect.poll(async()=>page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="plugin:event|listen"&&call.args.event==="container-open-path"))).toBe(true);
+  await page.evaluate(()=>(window as any).__TEST_EVENT__("container-open-path","C:\\fixtures\\second.mp4"));
+  await expect(page.locator(".settings")).toBeVisible();
+  await expect.poll(async()=>page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="probe_media").at(-1)?.args.path)).toBe("C:\\fixtures\\second.mp4");
+});
+
+test("output cleanup keeps the dialog on partial recycle failure and succeeds on retry",async({page})=>{
+  await mockDesktop(page);
+  await page.evaluate(()=>{
+    let attempts=0;
+    (window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="clean_output_folder"
+      ? ++attempts===1
+        ? Promise.reject(new Error("open.mp4 is still in use"))
+        : {cleaned:true,path:"C:\\Users\\Test\\Downloads\\CONTAINER Output"}
+      : undefined;
+  });
+  await page.locator(".output-clean-trigger").click();
+  await page.locator(".clean-confirm").click();
+  await expect(page.locator(".output-clean-layer")).toBeVisible();
+  await expect(page.locator("body")).toContainText("open.mp4 is still in use");
+  await page.locator(".clean-confirm").click();
+  await expect(page.locator(".output-clean-layer")).toHaveCount(0);
+  await expect(page.locator(".output-clean-toast")).toContainText("Recycle Bin");
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="clean_output_folder").length)).toBe(2);
+});
+
+test("stable releases never show the DEV version badge",async({page})=>{
+  await mockDesktop(page,{version:"0.18.2"});
+  await expect(page.locator(".dev-version")).toHaveCount(0);
+});
 
 test("Geist typography loads throughout Container at full and compact widths",async({page})=>{
   await mockDesktop(page);
