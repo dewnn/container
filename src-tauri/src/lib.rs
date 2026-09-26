@@ -8956,6 +8956,19 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
+    fn recycle_bin_contains_test_path(root: &Path, expected: &Path) -> bool {
+        // Shell metadata on a CI runner can spell the volume or profile root
+        // differently from std::env::temp_dir(). The unique test directory and
+        // its child path still identify the same recycled item.
+        let suffix =
+            PathBuf::from(root.file_name().unwrap()).join(expected.strip_prefix(root).unwrap());
+        trash::os_limited::list()
+            .unwrap()
+            .iter()
+            .any(|item| item.original_path().ends_with(&suffix))
+    }
+
+    #[cfg(target_os = "windows")]
     #[test]
     fn windows_recycle_bin_accepts_a_nested_output_folder() {
         let root = std::env::temp_dir().join(format!(
@@ -8980,10 +8993,7 @@ mod tests {
         );
         assert!(!root.join("smartcut").exists());
         assert!(
-            trash::os_limited::list()
-                .unwrap()
-                .iter()
-                .any(|item| item.original_path() == root.join("smartcut")),
+            recycle_bin_contains_test_path(&root, &root.join("smartcut")),
             "recycled folder was not found in the Windows Recycle Bin"
         );
         std::fs::remove_dir(&root).unwrap();
@@ -9029,10 +9039,7 @@ mod tests {
             "unlocked output should still reach the Recycle Bin"
         );
         assert!(
-            trash::os_limited::list()
-                .unwrap()
-                .iter()
-                .any(|item| item.original_path() == free),
+            recycle_bin_contains_test_path(&root, &free),
             "unlocked output was not found in the Windows Recycle Bin"
         );
 
