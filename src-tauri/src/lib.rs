@@ -8018,17 +8018,15 @@ mod tests {
         resolve_project_resources(&moved_project, &mut restored);
         assert_eq!(
             restored["mediaPath"],
-            moved
-                .join("media")
-                .join("clip.mp4")
+            dunce::canonicalize(moved.join("media").join("clip.mp4"))
+                .unwrap()
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             restored["toolbox"]["selected"]["fields"][0]["value"],
-            moved
-                .join("media")
-                .join("logo.png")
+            dunce::canonicalize(moved.join("media").join("logo.png"))
+                .unwrap()
                 .to_string_lossy()
                 .as_ref()
         );

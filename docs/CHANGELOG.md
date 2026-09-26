@@ -6,7 +6,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.18.3] - 2026-09-26
+## [0.18.4] - 2026-09-26
 
 - Fixed black, unplayable previews when reopening projects saved outside their media folder, including earlier Go Back stages.
 
