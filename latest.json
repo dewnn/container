@@ -1,11 +1,11 @@
 {
-  "version": "0.18.5",
-  "notes": "# Changes\n\n\n- Added a DWLNDR history that lists files still on disk and moves a selected download to the Recycle Bin after an in-app confirmation.\n- Replaced `.containerproject` with `.cproj` and its new Windows document icon. The old project format now shows a clear unsupported-format message.\n- Rounded the Windows app icon and refreshed the desktop, Start menu and installer icons. Replaced the output cleanup symbol with a trash icon.\n- Fixed a delayed history refresh hiding the action to open a completed download in the timeline, and made history writes safer.\n",
-  "pub_date": "2026-09-26T20:17:37.6725732Z",
+  "pub_date": "2026-09-26T23:18:21.4153765Z",
+  "version": "0.18.6",
+  "notes": "# Changes\n\n\n- Separated runtime caches and user data from the Windows installation folder. Existing download history and interrupted-session detection migrate without losing records; embedded Social Tag/model copies are regenerated in the dedicated cache.\n- Embedded the Windows application and CPROJ document icons in the executable, removing loose ICO files from new installations and migrating existing shortcuts on upgrades.\n- Consolidated bundled notices into one `licenses` folder and development tools/tests under `tooling`, without removing regression coverage.\n",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobVhSRzZlMzFWbkYwS20xanNmdWZrbnVDUUVTUURXbEJackFseUxHNzdMTnNrK0dRT0IzYlhWM1owR2sxQVJ5THQ3UEdtUGltN3F2UHpabGE1eU9DNHdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDUzODQxCWZpbGU6Q09OVEFJTkVSXzAuMTguNV94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC41CkJsNzc4ZnQ5QmJCamxuUWpUUms1c1QrUkYrQzR1QVpvUmVzM2hKaFJBbmNDMFoydUdENllrU3FuWEo5aERlMXlycXRBeFFvNUV2K0JBRUpJQWsvZ0J3PT0K",
-      "url": "https://github.com/dewnn/container/releases/download/v0.18.5/CONTAINER-Setup-0.18.5-x64.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNk1EQnR2UzdobWIxZlllQVdjZGI4Z2VGcWZaSll6dUJTWWhXU2lzZFpMTTNvZDI2RCtvZEtuMGNSdzRadStrVEZyMDF2NVJmYThlRHBJVlozRU4xeDI3aGtjcmUvTVFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDY0Njc3CWZpbGU6Q09OVEFJTkVSXzAuMTguNl94NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xOC42CjlSSjNiY1UzUXFNckdZdUpFT0JDOUhIOVRhb203QkZnbmF4SUxmL2JsbDZZZDlMbTV6NkZHSTd4aTU4cEFmZmNlNjYzZHEraDlDRDRLa05LOFZjUUJnPT0K",
+      "url": "https://github.com/dewnn/container/releases/download/v0.18.6/CONTAINER-Setup-0.18.6-x64.exe"
     }
   }
 }
