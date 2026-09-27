@@ -4220,15 +4220,31 @@ fn social_tag_mark_path_in(
     platform: &str,
     style: &str,
 ) -> Result<PathBuf, String> {
-    static CACHE_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CACHE_LOCK.lock().map_err(|e| e.to_string())?;
     let bytes: &[u8] = match (platform, style) {
         ("twitch", _) => include_bytes!("../resources/social-tags/twitch.png"),
         (_, "boxed") => include_bytes!("../resources/social-tags/kick-boxed.png"),
         _ => include_bytes!("../resources/social-tags/kick-plain.png"),
     };
+    social_tag_asset_path_in(directory, bytes, "png")
+}
+
+fn social_tag_asset_path(bytes: &[u8], extension: &str) -> Result<PathBuf, String> {
+    social_tag_asset_path_in(
+        &app_cache_directory()?.join("social-tags"),
+        bytes,
+        extension,
+    )
+}
+
+fn social_tag_asset_path_in(
+    directory: &Path,
+    bytes: &[u8],
+    extension: &str,
+) -> Result<PathBuf, String> {
+    static CACHE_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CACHE_LOCK.lock().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let path = directory.join(format!("{:x}.png", Sha256::digest(bytes)));
+    let path = directory.join(format!("{:x}.{extension}", Sha256::digest(bytes)));
     if std::fs::read(&path).ok().as_deref() != Some(bytes) {
         // Publish a complete file, including when DEV and stable export together.
         let pending = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -4263,6 +4279,85 @@ fn movie_filter_path(path: &Path) -> String {
         .collect()
 }
 
+struct KickBannerPlacement {
+    width: u64,
+    camera_left: f64,
+    camera_width: f64,
+    camera_bottom: f64,
+    seam: f64,
+    camera_below: bool,
+}
+
+fn clipper_kick_banner_filter(
+    params: &HashMap<String, String>,
+    username: &str,
+    requested: f64,
+    placement: KickBannerPlacement,
+) -> Result<String, String> {
+    let text = username.to_uppercase();
+    let estimated_units: f64 = text
+        .chars()
+        .map(|letter| match letter {
+            'I' | '1' | '.' | ',' | ':' | '!' | '|' => 0.29,
+            'M' | 'W' | '@' => 0.68,
+            _ => 0.5,
+        })
+        .sum();
+    let units = if params.contains_key("social_tag_text_units") {
+        check_range(
+            parse_number(params, "social_tag_text_units")?,
+            0.1,
+            100.0,
+            "Social Tag text width",
+        )?
+    } else {
+        estimated_units
+    };
+    let factor = (requested / 36.0)
+        .min(1.5)
+        .min(1056.0 / (566.0 + 32.0 * units))
+        .max(0.25);
+    let scale = placement.camera_width / 1080.0 * factor;
+    let strip_height = 101.0 * scale;
+    let y = if placement.camera_below {
+        placement.seam
+    } else {
+        placement.camera_bottom - strip_height
+    };
+    let bar_y = y + 37.0 * scale;
+    let art_width = (1080.0 * scale).round().max(1.0);
+    let art_height = strip_height.round().max(1.0);
+    let bar_width = placement.camera_width.round().max(1.0);
+    let visible_art_width = art_width.min(bar_width);
+    let bar_height = (64.0 * scale).round().max(1.0);
+    let art = social_tag_asset_path(
+        include_bytes!("../resources/social-tags/kick-banner.png"),
+        "png",
+    )?;
+    let background = social_tag_asset_path(
+        include_bytes!("../resources/social-tags/kick-banner-background.png"),
+        "png",
+    )?;
+    let font = social_tag_asset_path(
+        include_bytes!("../resources/social-tags/gotham-xnarrow-black.otf"),
+        "otf",
+    )?;
+    let text_x = placement.camera_left + 566.0 * scale;
+    let text_center_y = y + 71.0 * scale;
+    let text_size = (32.0 * scale).round().max(1.0);
+    let bar_x = placement
+        .camera_left
+        .round()
+        .clamp(0.0, placement.width as f64);
+    Ok(format!(
+        "null[social_source];movie=filename={}:dec_threads=1,crop=1080:64:0:1016,scale={bar_width:.0}:{bar_height:.0}:flags=lanczos,format=rgba[social_bar];[social_source][social_bar]overlay=x={bar_x:.0}:y={bar_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,scale={art_width:.0}:{art_height:.0}:flags=lanczos,crop={visible_art_width:.0}:{art_height:.0}:0:0,format=rgba[social_art];[social_barred][social_art]overlay=x={bar_x:.0}:y={y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
+        movie_filter_path(&background),
+        movie_filter_path(&art),
+        drawtext_escape(&font.to_string_lossy()),
+        drawtext_escape(&text),
+    ))
+}
+
 fn clipper_social_tag_filter(
     params: &HashMap<String, String>,
     layout: &str,
@@ -4285,7 +4380,7 @@ fn clipper_social_tag_filter(
         .get("social_tag_style")
         .map(String::as_str)
         .unwrap_or("boxed");
-    if !matches!(style, "boxed" | "plain") {
+    if !matches!(style, "boxed" | "plain" | "kick_banner") {
         return Err("Invalid Social Tag style.".into());
     }
     let position = params
@@ -4305,6 +4400,9 @@ fn clipper_social_tag_filter(
         .unwrap_or("kick");
     if !matches!(platform, "kick" | "twitch") {
         return Err("Invalid Social Tag platform.".into());
+    }
+    if style == "kick_banner" && platform != "kick" {
+        return Err("The Kick.com banner requires the Kick platform.".into());
     }
     let requested = check_range(
         parse_number(params, "social_tag_size")?,
@@ -4379,6 +4477,24 @@ fn clipper_social_tag_filter(
             seam = camera_bottom;
         }
         _ => {}
+    }
+    if style == "kick_banner" {
+        let camera_below =
+            layout == "split" && params.get("region_order").map(String::as_str) == Some("b_first");
+        return clipper_kick_banner_filter(
+            params,
+            username,
+            requested,
+            KickBannerPlacement {
+                width,
+                camera_left,
+                camera_width,
+                camera_bottom,
+                seam,
+                camera_below,
+            },
+        )
+        .map(Some);
     }
     let camera_right = camera_left + camera_width;
     // Only the boxed badge needs an inset against phone-side cropping.
@@ -9134,6 +9250,83 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(freecam.starts_with("drawbox=x=90:"));
+    }
+
+    #[tokio::test]
+    async fn kick_banner_renders_supplied_art_font_and_camera_seam() {
+        let info = MediaInfo {
+            path: "source.mp4".into(),
+            name: "source.mp4".into(),
+            kind: "video".into(),
+            duration: Some(1.0),
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            codec: "h264".into(),
+            audio_codec: None,
+            audio_tracks: Vec::new(),
+            pixel_format: Some("yuv420p".into()),
+            bits_per_raw_sample: Some(8),
+            color_transfer: None,
+            color_primaries: None,
+            color_space: None,
+            bitrate: None,
+            size: 1,
+            start_timecode: None,
+        };
+        for (layout, order, size) in [
+            ("split", "a_first", "36"),
+            ("split", "a_first", "54"),
+            ("split", "b_first", "36"),
+            ("squares", "a_first", "36"),
+            ("freecam", "a_first", "36"),
+        ] {
+            let params = values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_platform", "kick"),
+                ("social_tag_username", "adinross"),
+                ("social_tag_style", "kick_banner"),
+                ("social_tag_size", size),
+                ("social_tag_text_units", "4.3"),
+                ("region_a_height", "30"),
+                ("region_order", order),
+                ("region_a_x", "0"),
+                ("region_a_y", "0"),
+                ("region_a_w", "50"),
+                ("region_a_h", "50"),
+                ("freecam_x", "50"),
+                ("freecam_y", "2"),
+                ("freecam_size", "50"),
+            ]);
+            let filter = clipper_social_tag_filter(&params, layout, 360, 640, &info)
+                .unwrap()
+                .unwrap();
+            assert!(filter.contains("crop=1080:101:0:979"));
+            assert!(filter.contains("crop=1080:64:0:1016"));
+            assert!(filter.contains("text='ADINROSS'"));
+            assert!(filter.contains("drawtext=fontfile="));
+            let snapshot = std::env::var_os("CONTAINER_KICK_BANNER_SNAPSHOT_DIR")
+                .map(PathBuf::from)
+                .map(|directory| {
+                    directory.join(format!("kick-banner-{layout}-{order}-{size}.png"))
+                });
+            let mut command = hidden_command("ffmpeg");
+            command
+                .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+                .arg("color=c=0x303844:s=360x640:r=1:d=1")
+                .args(["-vf", &filter, "-frames:v", "1"]);
+            if let Some(path) = snapshot.as_ref() {
+                command.arg(path);
+            } else {
+                command.args(["-f", "null", "-"]);
+            }
+            let output = command.output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{layout} {order} {size} Kick banner FFmpeg render failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[tokio::test]

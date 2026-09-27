@@ -78,7 +78,7 @@ export const tools: Tool[] = [
       select("social_tag_enabled", "Social Tag", "false", [["false","Off"],["true","On"]]),
       select("social_tag_platform", "Social Tag platform", "kick", [["kick","Kick"],["twitch","Twitch"]]),
       {key:"social_tag_username",label:"Social Tag username",type:"text",value:""},
-      select("social_tag_style", "Social Tag style", "boxed", [["boxed","Kick badge"],["plain","Kick wordmark"]]),
+      select("social_tag_style", "Social Tag style", "boxed", [["boxed","Kick badge"],["plain","Kick wordmark"],["kick_banner","Kick.com banner"]]),
       select("social_tag_boxed_position", "Boxed Social Tag position", "center", [["left","Left"],["center","Center"],["right","Right"]]),
       select("social_tag_plain_position", "Plain Social Tag position", "center", [["left","Left"],["center","Center"],["right","Right"]]),
       number("social_tag_size", "Social Tag size", 36, 20, 96, 1, "px"),

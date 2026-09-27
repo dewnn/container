@@ -1417,6 +1417,53 @@ test("Social Tag positions move across the camera and retain per-style choices",
   await expect(position).toHaveValue("right");
 });
 
+test("Kick.com banner uses the supplied art and Gotham font at the camera seam",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByText("Social Tag",{exact:true}).click();
+  await page.getByPlaceholder("kanaladi").fill("adinross");
+  const style=page.getByRole("combobox",{name:"Style"});
+  const platform=page.getByRole("combobox",{name:"Platform"});
+  await platform.selectOption("twitch");
+  await style.selectOption("kick_banner");
+  await expect(platform).toHaveValue("kick");
+  await expect(page.getByRole("combobox",{name:"Position"})).toHaveCount(0);
+  const banner=page.locator(".clipper-social-banner");
+  await expect(banner).toBeVisible();
+  await expect(banner.locator(".clipper-social-banner-name")).toHaveText("ADINROSS");
+  await expect.poll(()=>banner.locator("img").evaluateAll(images=>images.map(image=>(image as HTMLImageElement).naturalWidth))).toEqual([1080,1080]);
+  await expect.poll(()=>page.evaluate(()=>document.fonts.check('32px "Gotham XNarrow Black"'))).toBe(true);
+  const camera=await page.locator(".region-a").boundingBox();
+  const small=await banner.boundingBox();
+  expect(camera).not.toBeNull();expect(small).not.toBeNull();
+  expect(Math.abs(small!.x-camera!.x)).toBeLessThan(3);
+  expect(Math.abs(small!.width-camera!.width)).toBeLessThan(3);
+  expect(Math.abs(small!.y+small!.height-camera!.y-camera!.height)).toBeLessThan(3);
+  const name=await banner.locator(".clipper-social-banner-name").boundingBox();
+  expect(name).not.toBeNull();
+  expect(Math.abs(name!.y+name!.height/2-small!.y-small!.height*71/101)).toBeLessThan(2);
+  const size=page.locator(".clipper-watermark-controls input[type=range]");
+  await size.fill("54");
+  const large=await banner.boundingBox();
+  expect(large).not.toBeNull();
+  expect(large!.height).toBeGreaterThan(small!.height*1.4);
+  expect(Math.abs(large!.y+large!.height-camera!.y-camera!.height)).toBeLessThan(3);
+  const art=await banner.locator(".clipper-social-banner-art").boundingBox();
+  const background=await banner.locator(".clipper-social-banner-bg").boundingBox();
+  expect(art).not.toBeNull();expect(background).not.toBeNull();
+  expect(art!.width).toBeGreaterThan(large!.width);
+  expect(art!.height).toBeGreaterThan(large!.height*9);
+  expect(background!.height).toBeGreaterThan(large!.height*8);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/kick-banner-preview.png"});
+  await page.getByPlaceholder("kanaladi").fill("averylongkickusername1234567890");
+  const longBanner=await banner.boundingBox();
+  const longName=await banner.locator(".clipper-social-banner-name").boundingBox();
+  expect(longBanner).not.toBeNull();expect(longName).not.toBeNull();
+  expect(longName!.x+longName!.width).toBeLessThanOrEqual(longBanner!.x+longBanner!.width+1);
+});
+
 test("Social Tag preview keeps text and icon aligned at small sizes",async({page})=>{
   await mockDesktop(page);
   await openFixture(page);

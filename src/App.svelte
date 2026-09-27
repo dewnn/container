@@ -17,6 +17,7 @@
   import { startupAction } from "./lib/startupRecovery";
   import { projectResources, replaceProjectResource, type ProjectResource } from "./lib/projectResources";
   import { socialTagGeometry } from "./lib/socialTagGeometry";
+  import { socialBannerGeometry } from "./lib/socialBannerGeometry";
   import SmartCutWorkspace from "./lib/SmartCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
   import StageHistoryControl from "./lib/StageHistory.svelte";
@@ -29,6 +30,8 @@
   import { reportProblem, type ToastDetail } from "./lib/toast";
   import kickMark from "./assets/kick-mark.svg";
   import twitchMark from "./assets/twitch-mark.svg";
+  import kickBanner from "../src-tauri/resources/social-tags/kick-banner.png";
+  import kickBannerBackground from "../src-tauri/resources/social-tags/kick-banner-background.png";
 
   interface MediaInfo {
     path: string;
@@ -86,6 +89,7 @@
   let frame = $state("—");
   let elapsed = $state(0);
   let search = $state("");
+  let bannerFontReady = $state(false);
   let favoriteIds:string[]=$state([]);
   let favoritesOnly=$state(false);
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
@@ -1260,6 +1264,34 @@
     const units=context.measureText(username).width/100;
     return Number.isFinite(units)&&units>0?units:undefined;
   }
+  function socialBannerTextUnits(username:string){
+    void bannerFontReady;
+    const context=document.createElement("canvas").getContext("2d");
+    if(!context||!username)return undefined;
+    context.font='100px "Gotham XNarrow Black"';
+    const units=context.measureText(username.toUpperCase()).width/100;
+    return Number.isFinite(units)&&units>0?units:undefined;
+  }
+  function socialBannerPreviewStyle(){
+    const box=verticalOutputBox();if(!box)return "display:none";
+    const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
+    const geometry=socialBannerGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y"),username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),textUnits:socialBannerTextUnits(toolValue("social_tag_username").trim())});
+    let left=box.left+geometry.x*box.width/width,top=box.top+geometry.y*box.height/height,previewWidth=geometry.width*box.width/width;
+    const layout=toolValue("vertical_layout");
+    if(["split","squares","freecam"].includes(layout)){
+      const source=transformDisplayBox();
+      if(source){
+        left=(source.stageWidth-source.width)/2+source.width*toolNumber("region_a_x")/100;
+        const cameraTop=(source.stageHeight-source.height)/2+source.height*toolNumber("region_a_y")/100;
+        const cameraHeight=source.height*toolNumber("region_a_h")/100;
+        previewWidth=source.width*toolNumber("region_a_w")/100;
+        const previewHeight=geometry.height*previewWidth/geometry.width;
+        top=layout==="split"&&toolValue("region_order")==="b_first"?cameraTop:cameraTop+cameraHeight-previewHeight;
+      }
+    }
+    const scale=previewWidth/geometry.width;
+    return `left:${left}px;top:${top}px;width:${previewWidth}px;height:${geometry.height*scale}px;--banner-bar-height:${geometry.barHeight*scale}px;--banner-bg-height:${geometry.barHeight*scale*1080/64}px;--banner-art-width:${geometry.artWidth*scale}px;--banner-text-left:${(geometry.textX-geometry.x)*scale}px;--banner-text-top:${(geometry.textCenterY-geometry.y)*scale}px;--banner-text-size:${geometry.textSize*scale}px`;
+  }
   function socialTagPreviewStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
     const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
@@ -1791,7 +1823,7 @@
   function paramsFrom(tool: Tool) {
     const params=Object.fromEntries(tool.fields.map((field) => [field.key, String(field.value)]));
     if(tool.id==="clipper"&&params.social_tag_enabled==="true"){
-      const units=socialTagTextUnits(params.social_tag_username.trim());
+      const units=params.social_tag_style==="kick_banner"?socialBannerTextUnits(params.social_tag_username.trim()):socialTagTextUnits(params.social_tag_username.trim());
       if(units!==undefined)params.social_tag_text_units=units.toFixed(5);
     }
     if(tool.id==="merge_videos")params.inputs=JSON.stringify(mergeInputs);
@@ -2039,6 +2071,7 @@
 
   onMount(() => {
     let disposed=false;
+    void document.fonts.load('32px "Gotham XNarrow Black"').then(()=>{if(!disposed)bannerFontReady=true}).catch(()=>{});
     const saved=localStorage.getItem("container-language");
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
     document.documentElement.lang=language;
@@ -2435,10 +2468,18 @@
                 <span class="clipper-watermark-preview" style={clipperWatermarkPreviewStyle()}>{toolValue("watermark_text")}</span>
               {/if}
               {#if selected?.id==="clipper"&&toolValue("social_tag_enabled")==="true"&&toolValue("social_tag_username").trim()}
-                <div class="clipper-social-tag" class:boxed={toolValue("social_tag_style")==="boxed"} class:twitch={toolValue("social_tag_platform")==="twitch"} style={socialTagPreviewStyle()}>
-                  <span class="clipper-social-icon"><img src={toolValue("social_tag_platform")==="twitch"?twitchMark:kickMark} alt="" /></span>
-                  <span class="clipper-social-name">{toolValue("social_tag_username").trim()}</span>
-                </div>
+                {#if toolValue("social_tag_style")==="kick_banner"}
+                  <div class="clipper-social-banner" style={socialBannerPreviewStyle()} aria-label="Kick.com banner preview">
+                    <img class="clipper-social-banner-bg" src={kickBannerBackground} alt="" />
+                    <img class="clipper-social-banner-art" src={kickBanner} alt="" />
+                    <span class="clipper-social-banner-name">{toolValue("social_tag_username").trim().toUpperCase()}</span>
+                  </div>
+                {:else}
+                  <div class="clipper-social-tag" class:boxed={toolValue("social_tag_style")==="boxed"} class:twitch={toolValue("social_tag_platform")==="twitch"} style={socialTagPreviewStyle()}>
+                    <span class="clipper-social-icon"><img src={toolValue("social_tag_platform")==="twitch"?twitchMark:kickMark} alt="" /></span>
+                    <span class="clipper-social-name">{toolValue("social_tag_username").trim()}</span>
+                  </div>
+                {/if}
               {/if}
               {#if selected?.id === "text"}
                 <div class="text-preview-layer">
@@ -2774,11 +2815,13 @@
                   <div class="clipper-watermark-controls">
                     <label class="watermark-toggle"><input type="checkbox" checked={toolValue("social_tag_enabled")==="true"} onchange={(event)=>setToolValue("social_tag_enabled",event.currentTarget.checked?"true":"false")}><span>Social Tag</span></label>
                     {#if toolValue("social_tag_enabled")==="true"}
-                      <label class="watermark-text-field"><span>{language==="tr"?"Platform":"Platform"}</span><select value={toolValue("social_tag_platform")} onchange={(event)=>setToolValue("social_tag_platform",event.currentTarget.value)}><option value="kick">Kick</option><option value="twitch">Twitch</option></select></label>
+                      <label class="watermark-text-field"><span>{language==="tr"?"Platform":"Platform"}</span><select value={toolValue("social_tag_platform")} onchange={(event)=>setToolValue("social_tag_platform",event.currentTarget.value)}><option value="kick">Kick</option><option value="twitch" disabled={toolValue("social_tag_style")==="kick_banner"}>Twitch</option></select></label>
                       <label class="watermark-text-field"><span>{language==="tr"?"Kullanıcı adı":"Username"}</span><input type="text" maxlength="32" placeholder="kanaladi" value={toolValue("social_tag_username")} oninput={(event)=>setToolValue("social_tag_username",event.currentTarget.value)}></label>
-                      <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>setToolValue("social_tag_style",event.currentTarget.value)}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option></select></label>
-                      <label class="watermark-text-field"><span>{language==="tr"?"Konum":"Position"}</span><select value={toolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position")} onchange={(event)=>setToolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position",event.currentTarget.value)}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
-                      <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("social_tag_size").toFixed(0)} px</small></span><input type="range" min="20" max="96" step="1" value={toolNumber("social_tag_size")} oninput={(event)=>setToolNumber("social_tag_size",Number(event.currentTarget.value))}></label>
+                      <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>{const value=event.currentTarget.value;setToolValue("social_tag_style",value);if(value==="kick_banner"){setToolValue("social_tag_platform","kick");if(toolNumber("social_tag_size")>54)setToolNumber("social_tag_size",54)}}}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option><option value="kick_banner">{language==="tr"?"Kick.com şeridi":"Kick.com banner"}</option></select></label>
+                      {#if toolValue("social_tag_style")!=="kick_banner"}
+                        <label class="watermark-text-field"><span>{language==="tr"?"Konum":"Position"}</span><select value={toolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position")} onchange={(event)=>setToolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position",event.currentTarget.value)}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
+                      {/if}
+                      <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("social_tag_size").toFixed(0)} px</small></span><input type="range" min="20" max={toolValue("social_tag_style")==="kick_banner"?54:96} step="1" value={toolNumber("social_tag_size")} oninput={(event)=>setToolNumber("social_tag_size",Number(event.currentTarget.value))}></label>
                     {/if}
                   </div>
                 </section>
