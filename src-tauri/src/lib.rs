@@ -4313,45 +4313,51 @@ fn clipper_kick_banner_filter(
     } else {
         estimated_units
     };
-    let factor = (requested / 36.0)
-        .min(1.5)
-        .min(1056.0 / (566.0 + 32.0 * units))
+    let design_name_end = 516.0 + 147.0 * 1.18 + 32.0 * 1.18 * units;
+    // 54 matches the supplied reference. Scale the logo, wordmark, name and
+    // the gaps about one pivot; long names fit without squeezing only text.
+    let factor = (requested / 54.0)
+        .min(1.0)
+        .min(516.0 / (design_name_end - 540.0).max(1.0))
         .max(0.25);
-    let scale = placement.camera_width / 1080.0 * factor;
-    let strip_height = 101.0 * scale;
+    let base = placement.camera_width / 1080.0;
+    let logo_scale = base * factor * 1.035;
+    let text_scale = base * factor * 1.18;
+    let strip_height = 113.0 * logo_scale;
     let y = if placement.camera_below {
         placement.seam
     } else {
         placement.camera_bottom - strip_height
     };
-    let bar_y = y + 37.0 * scale;
-    let art_width = (1080.0 * scale).round().max(1.0);
-    let art_height = strip_height.round().max(1.0);
+    let bottom = y + strip_height;
+    let bar_y = bottom - 69.0 * text_scale;
+    let logo_width = (350.0 * logo_scale).round().max(1.0);
+    let logo_height = (101.0 * logo_scale).round().max(1.0);
+    let logo_x = placement.camera_left + base * (540.0 + factor * (-31.5 - 540.0));
+    let logo_y = bottom - 113.0 * logo_scale;
+    let prefix_width = (147.0 * text_scale).round().max(1.0);
+    let prefix_height = (101.0 * text_scale).round().max(1.0);
+    let prefix_y = bottom - 106.0 * text_scale;
+    let prefix_x = placement.camera_left + base * (540.0 + factor * (516.0 - 540.0));
     let bar_width = placement.camera_width.round().max(1.0);
-    let visible_art_width = art_width.min(bar_width);
-    let bar_height = (64.0 * scale).round().max(1.0);
+    let bar_height = (69.0 * text_scale).round().max(1.0);
     let art = social_tag_asset_path(
         include_bytes!("../resources/social-tags/kick-banner.png"),
-        "png",
-    )?;
-    let background = social_tag_asset_path(
-        include_bytes!("../resources/social-tags/kick-banner-background.png"),
         "png",
     )?;
     let font = social_tag_asset_path(
         include_bytes!("../resources/social-tags/gotham-xnarrow-black.otf"),
         "otf",
     )?;
-    let text_x = placement.camera_left + 566.0 * scale;
-    let text_center_y = y + 71.0 * scale;
-    let text_size = (32.0 * scale).round().max(1.0);
+    let text_x = prefix_x + 147.0 * text_scale;
+    let text_center_y = bottom - 35.0 * text_scale;
+    let text_size = (32.0 * text_scale).round().max(1.0);
     let bar_x = placement
         .camera_left
         .round()
         .clamp(0.0, placement.width as f64);
     Ok(format!(
-        "null[social_source];movie=filename={}:dec_threads=1,crop=1080:64:0:1016,scale={bar_width:.0}:{bar_height:.0}:flags=lanczos,format=rgba[social_bar];[social_source][social_bar]overlay=x={bar_x:.0}:y={bar_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,scale={art_width:.0}:{art_height:.0}:flags=lanczos,crop={visible_art_width:.0}:{art_height:.0}:0:0,format=rgba[social_art];[social_barred][social_art]overlay=x={bar_x:.0}:y={y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
-        movie_filter_path(&background),
+        "drawbox=x={bar_x:.0}:y={bar_y:.0}:w={bar_width:.0}:h={bar_height:.0}:color=black:t=fill[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,split=2[social_logo_source][social_prefix_source];[social_logo_source]crop=350:101:0:0,scale={logo_width:.0}:{logo_height:.0}:flags=lanczos,format=rgba[social_logo];[social_prefix_source]crop=147:101:419:0,scale={prefix_width:.0}:{prefix_height:.0}:flags=lanczos,format=rgba[social_prefix];[social_barred][social_logo]overlay=x={logo_x:.0}:y={logo_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_logoed];[social_logoed][social_prefix]overlay=x={prefix_x:.0}:y={prefix_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
         movie_filter_path(&art),
         drawtext_escape(&font.to_string_lossy()),
         drawtext_escape(&text),
@@ -9275,7 +9281,9 @@ mod tests {
             start_timecode: None,
         };
         for (layout, order, size) in [
+            ("split", "a_first", "20"),
             ("split", "a_first", "36"),
+            ("split", "a_first", "45"),
             ("split", "a_first", "54"),
             ("split", "b_first", "36"),
             ("squares", "a_first", "36"),
@@ -9302,7 +9310,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(filter.contains("crop=1080:101:0:979"));
-            assert!(filter.contains("crop=1080:64:0:1016"));
+            assert!(filter.contains("color=black:t=fill"));
             assert!(filter.contains("text='ADINROSS'"));
             assert!(filter.contains("drawtext=fontfile="));
             let snapshot = std::env::var_os("CONTAINER_KICK_BANNER_SNAPSHOT_DIR")
@@ -9316,6 +9324,8 @@ mod tests {
                 .arg("color=c=0x303844:s=360x640:r=1:d=1")
                 .args(["-vf", &filter, "-frames:v", "1"]);
             if let Some(path) = snapshot.as_ref() {
+                std::fs::write(path.with_extension("ffilter"), &filter).unwrap();
+                command.arg("-y");
                 command.arg(path);
             } else {
                 command.args(["-f", "null", "-"]);

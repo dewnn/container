@@ -19,11 +19,12 @@ for(const style of ["boxed","plain"] as const){
 }
 const measured=socialTagGeometry({width:360,height:640,sourceWidth:1920,sourceHeight:1080,layout:"split",style:"plain",position:"center",username:"Example",size:36,textUnits:4.72314,regionAHeight:30,regionOrder:"a_first",regionAWidth:50,regionARegionHeight:50,freecamSize:50,freecamX:50,freecamY:2});
 if(measured.x!==64||Math.abs(measured.anchorX-180)>1)throw new Error(`Measured Social Tag center drifted: ${JSON.stringify(measured)}`);
-const bannerInput={width:360,height:640,sourceWidth:1920,sourceHeight:1080,layout:"split",regionAHeight:30,regionOrder:"a_first",regionAWidth:50,regionARegionHeight:50,freecamSize:50,freecamX:50,freecamY:2,username:"ADINROSS",size:36,textUnits:4};
+const bannerInput={width:360,height:640,sourceWidth:1920,sourceHeight:1080,layout:"split",regionAHeight:30,regionOrder:"a_first",regionAWidth:50,regionARegionHeight:50,freecamSize:50,freecamX:50,freecamY:2,username:"ADINROSS",size:54,textUnits:4};
 const banner=socialBannerGeometry(bannerInput);
-if(Math.abs(banner.y-158.33333333333334)>.01||Math.abs(banner.textX-188.66666666666666)>.01||Math.abs(banner.textCenterY-182)>.01)throw new Error(`Kick banner source proportions drifted: ${JSON.stringify(banner)}`);
-const bigger=socialBannerGeometry({...bannerInput,size:54});
-if(Math.abs(bigger.height/banner.height-1.5)>.01||Math.abs(bigger.textSize/banner.textSize-1.5)>.01||Math.abs((bigger.textCenterY-bigger.y)/bigger.scale-71)>.01)throw new Error("Kick banner logo and text must scale together around the supplied art's centerline.");
+if(Math.abs(banner.y-153.015)>.01||Math.abs(banner.prefixX-172)>.01||Math.abs(banner.textCenterY-178.23333333333332)>.01)throw new Error(`Kick banner reference placement drifted: ${JSON.stringify(banner)}`);
+const smaller=socialBannerGeometry({...bannerInput,size:36});
+const gap=(g:typeof banner)=>g.prefixX-g.logoX-g.logoWidth;
+if(Math.abs(banner.height/smaller.height-1.5)>.01||Math.abs(banner.textSize/smaller.textSize-1.5)>.01||Math.abs(banner.logoWidth/smaller.logoWidth-1.5)>.01||Math.abs(gap(banner)/gap(smaller)-1.5)>.01)throw new Error("Kick banner logo, font and gaps must scale proportionally.");
 const long=socialBannerGeometry({...bannerInput,size:54,username:"A_VERY_LONG_KICK_USERNAME_12345",textUnits:18});
 if(long.textX+long.textSize*18>long.x+long.width-5)throw new Error("Long Kick banner usernames must fit inside the camera width.");
 const reversed=socialBannerGeometry({...bannerInput,regionOrder:"b_first"});

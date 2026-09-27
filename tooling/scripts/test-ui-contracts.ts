@@ -88,7 +88,6 @@ const contracts: Array<[string, boolean]> = [
   ["Social Tag positions keep independent style defaults and camera-relative anchors", tools.includes('"social_tag_boxed_position", "Boxed Social Tag position", "center"') && tools.includes('"social_tag_plain_position", "Plain Social Tag position", "center"') && app.includes('socialTagGeometry({width,height') && socialGeometry.includes('cameraLeft+cameraWidth/2') && socialGeometry.includes('cameraRight') && backend.includes('"social_tag_boxed_position"') && backend.includes('"social_tag_plain_position"')],
   ["Kick.com banner keeps the supplied raster art and font byte-for-byte", [
     ["kick-banner.png","3d0ca12b5d10042da855230612fc5e9343d5fe3c84d68660723dc7879cd0e363"],
-    ["kick-banner-background.png","f8637527900096be382ca836234a04ba647129f106a8cf20ba31ccb0041ed5d2"],
     ["gotham-xnarrow-black.otf","fa500b06c1335dec86c502507b7c0c7458c3d2e769fbb7429bb6b90f9219533c"],
   ].every(([name,hash])=>createHash("sha256").update(readFileSync(new URL(name,markRoot))).digest("hex")===hash) && tools.includes('"kick_banner","Kick.com banner"') && css.includes('font-family:"Gotham XNarrow Black"') && backend.includes('clipper_kick_banner_filter(')],
   ["plain Social Tag remains legible over white video", css.includes('-webkit-text-stroke:.055em #050505') && backend.includes('borderw=3:bordercolor=black@0.95')],

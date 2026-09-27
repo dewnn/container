@@ -31,7 +31,6 @@
   import kickMark from "./assets/kick-mark.svg";
   import twitchMark from "./assets/twitch-mark.svg";
   import kickBanner from "../src-tauri/resources/social-tags/kick-banner.png";
-  import kickBannerBackground from "../src-tauri/resources/social-tags/kick-banner-background.png";
 
   interface MediaInfo {
     path: string;
@@ -1290,7 +1289,7 @@
       }
     }
     const scale=previewWidth/geometry.width;
-    return `left:${left}px;top:${top}px;width:${previewWidth}px;height:${geometry.height*scale}px;--banner-bar-height:${geometry.barHeight*scale}px;--banner-bg-height:${geometry.barHeight*scale*1080/64}px;--banner-art-width:${geometry.artWidth*scale}px;--banner-text-left:${(geometry.textX-geometry.x)*scale}px;--banner-text-top:${(geometry.textCenterY-geometry.y)*scale}px;--banner-text-size:${geometry.textSize*scale}px`;
+    return `left:${left}px;top:${top}px;width:${previewWidth}px;height:${geometry.height*scale}px;--banner-bar-height:${geometry.barHeight*scale}px;--banner-logo-left:${(geometry.logoX-geometry.x)*scale}px;--banner-logo-width:${geometry.logoWidth*scale}px;--banner-logo-art-width:${geometry.logoArtWidth*scale}px;--banner-logo-image-bottom:${geometry.logoImageBottom*scale}px;--banner-prefix-left:${(geometry.prefixX-geometry.x)*scale}px;--banner-prefix-width:${geometry.prefixWidth*scale}px;--banner-prefix-art-width:${geometry.prefixArtWidth*scale}px;--banner-prefix-image-left:${geometry.prefixImageLeft*scale}px;--banner-prefix-image-bottom:${geometry.prefixImageBottom*scale}px;--banner-text-left:${(geometry.textX-geometry.x)*scale}px;--banner-text-top:${(geometry.textCenterY-geometry.y)*scale}px;--banner-text-size:${geometry.textSize*scale}px`;
   }
   function socialTagPreviewStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
@@ -2470,8 +2469,9 @@
               {#if selected?.id==="clipper"&&toolValue("social_tag_enabled")==="true"&&toolValue("social_tag_username").trim()}
                 {#if toolValue("social_tag_style")==="kick_banner"}
                   <div class="clipper-social-banner" style={socialBannerPreviewStyle()} aria-label="Kick.com banner preview">
-                    <img class="clipper-social-banner-bg" src={kickBannerBackground} alt="" />
-                    <img class="clipper-social-banner-art" src={kickBanner} alt="" />
+                    <span class="clipper-social-banner-bg"></span>
+                    <span class="clipper-social-banner-logo"><img class="clipper-social-banner-logo-art" src={kickBanner} alt="" /></span>
+                    <span class="clipper-social-banner-prefix"><img class="clipper-social-banner-prefix-art" src={kickBanner} alt="" /></span>
                     <span class="clipper-social-banner-name">{toolValue("social_tag_username").trim().toUpperCase()}</span>
                   </div>
                 {:else}
@@ -2817,7 +2817,7 @@
                     {#if toolValue("social_tag_enabled")==="true"}
                       <label class="watermark-text-field"><span>{language==="tr"?"Platform":"Platform"}</span><select value={toolValue("social_tag_platform")} onchange={(event)=>setToolValue("social_tag_platform",event.currentTarget.value)}><option value="kick">Kick</option><option value="twitch" disabled={toolValue("social_tag_style")==="kick_banner"}>Twitch</option></select></label>
                       <label class="watermark-text-field"><span>{language==="tr"?"Kullanıcı adı":"Username"}</span><input type="text" maxlength="32" placeholder="kanaladi" value={toolValue("social_tag_username")} oninput={(event)=>setToolValue("social_tag_username",event.currentTarget.value)}></label>
-                      <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>{const value=event.currentTarget.value;setToolValue("social_tag_style",value);if(value==="kick_banner"){setToolValue("social_tag_platform","kick");if(toolNumber("social_tag_size")>54)setToolNumber("social_tag_size",54)}}}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option><option value="kick_banner">{language==="tr"?"Kick.com şeridi":"Kick.com banner"}</option></select></label>
+                      <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>{const value=event.currentTarget.value;setToolValue("social_tag_style",value);if(value==="kick_banner"){setToolValue("social_tag_platform","kick");setToolNumber("social_tag_size",54)}}}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option><option value="kick_banner">{language==="tr"?"Kick.com şeridi":"Kick.com banner"}</option></select></label>
                       {#if toolValue("social_tag_style")!=="kick_banner"}
                         <label class="watermark-text-field"><span>{language==="tr"?"Konum":"Position"}</span><select value={toolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position")} onchange={(event)=>setToolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position",event.currentTarget.value)}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
                       {/if}
