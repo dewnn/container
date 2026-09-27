@@ -32,11 +32,11 @@ export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometr
     cameraBottom=cameraTop+cameraHeight;seam=cameraBottom;
   }
   const cameraRight=cameraLeft+cameraWidth;
-  // Tall phone screens can crop a 9:16 upload horizontally. Keep the whole
-  // badge inside the central 80%, even when it is anchored to a camera edge.
-  const safeLeft=width*.1,safeRight=width*.9;
+  // Only the boxed badge needs an inset against phone-side cropping.
+  const inset=style==="boxed"?width*.05:0;
+  const safeLeft=inset,safeRight=width-inset;
   const targetX=position==="left"?Math.max(cameraLeft,safeLeft):position==="center"?cameraLeft+cameraWidth/2:Math.min(cameraRight,safeRight);
-  const available=Math.max(24,position==="left"?safeRight-targetX:position==="right"?targetX-safeLeft:2*Math.min(targetX-safeLeft,safeRight-targetX));
+  const available=style==="boxed"?Math.max(24,position==="left"?safeRight-targetX:position==="right"?targetX-safeLeft:2*Math.min(targetX-safeLeft,safeRight-targetX)):width*.84;
   const fontSize=Math.min(input.size,available/(units*unitScale+2.4));
   const side=Math.max(8,Math.round(fontSize*1.5));
   const gap=style==="plain"?fontSize*.22:0;

@@ -4381,21 +4381,29 @@ fn clipper_social_tag_filter(
         _ => {}
     }
     let camera_right = camera_left + camera_width;
-    // Tall phone screens can crop a 9:16 upload horizontally. Match the
-    // preview's central-80% safe area for every Social Tag position.
-    let safe_left = width as f64 * 0.1;
-    let safe_right = width as f64 * 0.9;
+    // Only the boxed badge needs an inset against phone-side cropping.
+    let inset = if style == "boxed" {
+        width as f64 * 0.05
+    } else {
+        0.0
+    };
+    let safe_left = inset;
+    let safe_right = width as f64 - inset;
     let target_x = match position {
         "left" => camera_left.max(safe_left),
         "center" => camera_left + camera_width / 2.0,
         _ => camera_right.min(safe_right),
     };
-    let available = (match position {
-        "left" => safe_right - target_x,
-        "right" => target_x - safe_left,
-        _ => 2.0 * (target_x - safe_left).min(safe_right - target_x),
-    })
-    .max(24.0);
+    let available = if style == "boxed" {
+        (match position {
+            "left" => safe_right - target_x,
+            "right" => target_x - safe_left,
+            _ => 2.0 * (target_x - safe_left).min(safe_right - target_x),
+        })
+        .max(24.0)
+    } else {
+        width as f64 * 0.84
+    };
     let unit_scale = if !measured_units && style == "boxed" {
         1.1
     } else {
@@ -9049,7 +9057,7 @@ mod tests {
                 assert!(filter.contains("y=192-text_h/2"));
             } else {
                 if position == "left" {
-                    assert!(filter.starts_with("drawbox=x=36:"));
+                    assert!(filter.starts_with("drawbox=x=18:"));
                 }
                 let mut segments = filter.split(',');
                 let icon = segments.next().unwrap();
@@ -9436,16 +9444,16 @@ mod tests {
                     let badge = if platform == "kick" {
                         rgb[0] > 55 && rgb[0] < 115 && rgb[1] > 180 && rgb[2] < 70
                     } else {
-                        (36..90).contains(&(index % 360))
+                        (18..72).contains(&(index % 360))
                             && rgb.iter().all(|channel| *channel > 225)
                     };
                     badge.then_some((index % 360, index / 360))
                 })
                 .collect();
             assert!(!colored.is_empty(), "{platform} badge color is missing");
-            assert_eq!(colored.iter().map(|point| point.0).min(), Some(36));
+            assert_eq!(colored.iter().map(|point| point.0).min(), Some(18));
             assert_eq!(colored.iter().map(|point| point.1).min(), Some(138));
-            assert_eq!(colored.iter().map(|point| point.0).max(), Some(89));
+            assert_eq!(colored.iter().map(|point| point.0).max(), Some(71));
             assert_eq!(colored.iter().map(|point| point.1).max(), Some(191));
             let text_rows: Vec<usize> = output
                 .stdout
@@ -9456,7 +9464,7 @@ mod tests {
                 .filter_map(|(index, rgb)| {
                     let x = index % 360;
                     let y = index / 360;
-                    ((90..240).contains(&x)
+                    ((72..222).contains(&x)
                         && (138..192).contains(&y)
                         && rgb.iter().all(|channel| *channel > 190))
                     .then_some(y)

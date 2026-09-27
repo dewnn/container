@@ -18,6 +18,7 @@ assert(edited.title === "GIF Maker", "Changing language must not mutate the prev
 
 const clipper = tools.find(tool => tool.id === "clipper")!;
 const named = localizedTool(clipper, "en");
+assert(named.fields.find(field => field.key === "social_tag_boxed_position")?.value === "center", "New boxed Social Tags must start centered.");
 named.fields.find(field => field.key === "social_tag_username")!.value = "example_user";
 assert(preserveToolValues(localizedTool(clipper, "tr"), named).fields.find(field => field.key === "social_tag_username")?.value === "example_user", "The Social Tag name was lost on language change.");
 const legacyClipper = { ...named, fields: named.fields.filter(field => !field.key.startsWith("social_tag_") || !field.key.endsWith("_position")) };

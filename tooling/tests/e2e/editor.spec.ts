@@ -1375,14 +1375,15 @@ test("Social Tag positions move across the camera and retain per-style choices",
   const tag = page.locator(".clipper-social-tag");
   const x = async () => (await tag.boundingBox())?.x ?? -1;
 
-  await expect(position).toHaveValue("left");
+  await expect(position).toHaveValue("center");
   await expect(tag).toBeVisible();
+  await position.selectOption("left");
   const boxedLeft = await x();
   const camera = await page.locator(".region-a").boundingBox();
   const boxedBounds = await tag.boundingBox();
   expect(camera).not.toBeNull();
   expect(boxedBounds).not.toBeNull();
-  expect(Math.abs(boxedBounds!.x - (camera!.x + camera!.width * .1))).toBeLessThan(3);
+  expect(Math.abs(boxedBounds!.x - (camera!.x + camera!.width * .05))).toBeLessThan(3);
   expect(Math.abs(boxedBounds!.y + boxedBounds!.height - camera!.y - camera!.height)).toBeLessThan(3);
   await position.selectOption("center");
   const boxedCenter = await x();
@@ -1391,7 +1392,7 @@ test("Social Tag positions move across the camera and retain per-style choices",
   await position.selectOption("right");
   const boxedRight = await x();
   const rightBounds = await tag.boundingBox();
-  expect(Math.abs(rightBounds!.x + rightBounds!.width - camera!.x - camera!.width * .9)).toBeLessThan(3);
+  expect(Math.abs(rightBounds!.x + rightBounds!.width - camera!.x - camera!.width * .95)).toBeLessThan(3);
   expect(boxedLeft).toBeLessThan(boxedCenter);
   expect(boxedCenter).toBeLessThan(boxedRight);
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-boxed-right.png" });
@@ -1404,8 +1405,11 @@ test("Social Tag positions move across the camera and retain per-style choices",
   expect(Math.abs(plainBounds!.y + plainBounds!.height / 2 - camera!.y - camera!.height)).toBeLessThan(3);
   await position.selectOption("left");
   const plainLeft = await x();
+  expect(Math.abs(plainLeft - camera!.x)).toBeLessThan(3);
   await position.selectOption("right");
   const plainRight = await x();
+  const plainRightBounds = await tag.boundingBox();
+  expect(Math.abs(plainRightBounds!.x + plainRightBounds!.width - camera!.x - camera!.width)).toBeLessThan(3);
   expect(plainLeft).toBeLessThan(plainCenter);
   expect(plainCenter).toBeLessThan(plainRight);
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-plain-right.png" });
