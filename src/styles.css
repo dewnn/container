@@ -222,7 +222,7 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 .clipper-preview-tabs{display:flex;gap:4px}.clipper-preview-tabs button{padding:5px 7px;font:500 9px var(--mono);border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--muted)}.clipper-preview-tabs button.active{border-color:var(--blue);color:var(--blue);background:rgba(107,168,255,.08)}
 .job-stats { display: flex; gap: 18px; font-size: 10px; }.job-stats span { display: flex; flex-direction: column; gap: 3px; }
 .job-meta{display:contents}.job-stats{grid-column:2;grid-row:1;align-self:center}.job-actions{grid-column:3;grid-row:1;align-self:end;display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;min-width:0}.job-action{padding:5px 8px;font:500 10px var(--mono);white-space:nowrap}
-@container (max-width:650px){.job-head{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;row-gap:3px}.job-status-line{flex-wrap:wrap}.job-stats{grid-column:2;grid-row:1}.job-actions{grid-column:1/-1;grid-row:2}}
+@container (max-width:650px){.job-head{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;row-gap:3px}.job-status-line{flex-wrap:wrap}.job-stats{grid-column:2;grid-row:1}.job-actions{grid-column:1/-1;grid-row:2;justify-content:flex-start}}
 .progress-track { background: #070708; margin: 0 16px; border-radius: 99px; overflow: hidden; }
 .progress-track div { height: 100%; background: linear-gradient(90deg,var(--blue),var(--green)); transition: width .18s; }
 .error-box { position: absolute; left: 30%; right: 30%; bottom: 20px; z-index: 4; background: rgba(64,15,20,.96); color: #ffc2c6; border: 1px solid rgba(250,100,109,.5); border-radius: 7px; padding: 10px 13px; font-size: 11px; }

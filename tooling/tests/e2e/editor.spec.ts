@@ -1875,7 +1875,7 @@ test("Social Tag preview keeps text and icon aligned at small sizes",async({page
     const settings=(await page.locator(".settings").boundingBox())!;
     for(const action of await page.locator(".job .job-action").all()){
       const bounds=(await action.boundingBox())!;
-      expect(bounds.x).toBeGreaterThanOrEqual(processBounds.x-1);
+      expect(bounds.x,`${width}px: ${await action.innerText()} must stay inside Process`).toBeGreaterThanOrEqual(processBounds.x-1);
       expect(bounds.x+bounds.width).toBeLessThanOrEqual(processBounds.x+processBounds.width+1);
       expect(bounds.x+bounds.width).toBeLessThan(settings.x);
       expect(bounds.y+bounds.height).toBeLessThanOrEqual(processBounds.y+processBounds.height+1);
