@@ -1871,14 +1871,17 @@ test("Social Tag preview keeps text and icon aligned at small sizes",async({page
   for(const width of [1440,1100,900]){
     await page.setViewportSize({width,height:900});
     if(width===1440&&process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/clipper-process-actions-1440.png"});
-    const processBounds=(await page.locator(".job").boundingBox())!;
-    const settings=(await page.locator(".settings").boundingBox())!;
-    for(const action of await page.locator(".job .job-action").all()){
-      const bounds=(await action.boundingBox())!;
-      expect(bounds.x,`${width}px: ${await action.innerText()} must stay inside Process`).toBeGreaterThanOrEqual(processBounds.x-1);
-      expect(bounds.x+bounds.width).toBeLessThanOrEqual(processBounds.x+processBounds.width+1);
-      expect(bounds.x+bounds.width).toBeLessThan(settings.x);
-      expect(bounds.y+bounds.height).toBeLessThanOrEqual(processBounds.y+processBounds.height+1);
+    const snapshot=await page.evaluate(()=>{
+      const process=document.querySelector(".job")!.getBoundingClientRect();
+      const settings=document.querySelector(".settings")!.getBoundingClientRect();
+      const actions=Array.from(document.querySelectorAll(".job .job-action"),action=>({label:action.textContent?.trim()??"",bounds:action.getBoundingClientRect().toJSON()}));
+      return {process:process.toJSON(),settings:settings.toJSON(),actions};
+    });
+    for(const {label,bounds} of snapshot.actions){
+      expect(bounds.x,`${width}px: ${label} must stay inside Process`).toBeGreaterThanOrEqual(snapshot.process.x-1);
+      expect(bounds.x+bounds.width).toBeLessThanOrEqual(snapshot.process.x+snapshot.process.width+1);
+      expect(bounds.x+bounds.width).toBeLessThan(snapshot.settings.x);
+      expect(bounds.y+bounds.height).toBeLessThanOrEqual(snapshot.process.y+snapshot.process.height+1);
     }
   }
 });
