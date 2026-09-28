@@ -11,6 +11,12 @@
     "dialog:allow-save",
     "dialog:allow-message",
     {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$DOWNLOAD/CONTAINER Output/**" }
+      ]
+    },
+    {
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [
         { "path": "$DOWNLOAD/CONTAINER Output/**" },

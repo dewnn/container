@@ -23,12 +23,12 @@ named.fields.find(field => field.key === "social_tag_username")!.value = "exampl
 assert(preserveToolValues(localizedTool(clipper, "tr"), named).fields.find(field => field.key === "social_tag_username")?.value === "example_user", "The Social Tag name was lost on language change.");
 const legacyClipper = { ...named, fields: named.fields.filter(field => !field.key.startsWith("social_tag_") || !field.key.endsWith("_position")) };
 const restoredClipper = preserveToolValues(localizedTool(clipper, "en"), legacyClipper);
-assert(restoredClipper.fields.find(field => field.key === "social_tag_boxed_position")?.value === "left", "Older boxed tags must remain on the left.");
+assert(restoredClipper.fields.find(field => field.key === "social_tag_boxed_position")?.value === "center", "Older boxed tags must migrate to center.");
 assert(restoredClipper.fields.find(field => field.key === "social_tag_plain_position")?.value === "center", "Older plain tags must remain centered.");
 named.fields.find(field => field.key === "social_tag_boxed_position")!.value = "right";
 named.fields.find(field => field.key === "social_tag_plain_position")!.value = "left";
 const translatedPositions = preserveToolValues(localizedTool(clipper, "tr"), named);
-assert(translatedPositions.fields.find(field => field.key === "social_tag_boxed_position")?.value === "right" && translatedPositions.fields.find(field => field.key === "social_tag_plain_position")?.value === "left", "Each Social Tag style must keep its own position.");
+assert(translatedPositions.fields.find(field => field.key === "social_tag_boxed_position")?.value === "center" && translatedPositions.fields.find(field => field.key === "social_tag_plain_position")?.value === "left", "Boxed badges stay centered while plain tags retain position.");
 
 for (const tag of ["INPUT", "SELECT", "TEXTAREA"]) {
   assert(isTextEditingTarget(tag, false), `${tag} must keep its native undo and keyboard handling.`);

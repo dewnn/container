@@ -9,7 +9,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { confirm, open, save } from "@tauri-apps/plugin-dialog";
-  import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { armCompletionSound, playCompletionSound } from "./lib/completionSound";
   import { check, Update } from "@tauri-apps/plugin-updater";
   import { localizedForSection, localizedTool, preserveToolValues, type Field, type MediaKind, type Tool } from "./lib/tools";
@@ -18,6 +18,8 @@
   import { projectResources, replaceProjectResource, type ProjectResource } from "./lib/projectResources";
   import { socialTagGeometry } from "./lib/socialTagGeometry";
   import { socialBannerGeometry } from "./lib/socialBannerGeometry";
+  import ClipperLayoutPreview from "./lib/ClipperLayoutPreview.svelte";
+  import { clipperLayoutGeometry, type ClipperLayoutInput } from "./lib/clipperLayoutGeometry";
   import SmartCutWorkspace from "./lib/SmartCutWorkspace.svelte";
   import BatchWorkspace from "./lib/BatchWorkspace.svelte";
   import StageHistoryControl from "./lib/StageHistory.svelte";
@@ -70,6 +72,7 @@
   let stageNavigating=$state(false);
 
   const mediaDialogFilters=[{name:"Media",extensions:["mp4","mov","mkv","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","jpg","jpeg","png","webp","bmp","tif","tiff","avif","heic","heif"]}];
+  const videoExtensions=new Set(["mp4","mov","mkv","avi","webm","m4v"]);
 
   let media: MediaInfo | null = $state(null);
   let mediaUrl = $state("");
@@ -92,11 +95,13 @@
   let favoriteIds:string[]=$state([]);
   let favoritesOnly=$state(false);
   let workspaceMode: "toolbox" | "autocut" | "batch" = $state("toolbox");
+  let batchInitialPaths:string[]=$state([]);
+  let batchQueueCount=$state(0);
   let downloaderOpen = $state(false);
   let downloaderBusy = $state(false);
   let autoCutBusy=$state(false),batchBusy=$state(false);
   let autoCutWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void;resetPanelWidths:()=>void}|null=$state(null);
-  let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void;resetPanelWidths:()=>void}|null=$state(null);
+  let batchWorkspace:{undo:()=>void;redo:()=>void;exportSession:()=>unknown;restoreSession:(value:any)=>void;resetPanelWidths:()=>void;addPaths:(paths:string[])=>void}|null=$state(null);
   let autoCutSession:unknown=$state(null),batchSession:unknown=$state(null);
   let recoveryCandidate:RecoverySession|null=$state(null);
   let projectFilesOpen=$state(false);
@@ -119,6 +124,10 @@
   let toolboxMetadataVersion=$state(0);
   let transformSourceBox: HTMLElement | null = $state(null);
   let freecamLayoutBox: HTMLElement | null = $state(null);
+  let clipperGuidesActive = $state(false);
+  let clipperPreviewMode = $state<"output"|"source">("source");
+  const multiRegionClipper=$derived.by(()=>selected?.id==="clipper"&&["split","squares","freecam"].includes(toolValue("vertical_layout")));
+  const clipperOutputVisible=$derived(multiRegionClipper&&clipperPreviewMode==="output");
   let toolboxCurrent = $state(0);
   let toolboxPlaying = $state(false);
   let toolboxVolume = $state(1);
@@ -301,6 +310,25 @@
       else if(path.toLowerCase().endsWith(".containerproject"))throw new Error(language==="tr"?"Bu eski proje biçimi artık desteklenmiyor. Yalnızca .cproj dosyaları açılabilir.":"This old project format is no longer supported. Only .cproj files can be opened.");
       else await loadMedia(path);
     }catch(reason){reportProblem(reason)}
+  }
+  async function openIncomingPaths(paths:string[]){
+    if(operationBusy)return;
+    const unique=[...new Map(paths.filter(Boolean).map(path=>[path.toLowerCase(),path])).values()];
+    if(unique.length===0)return;
+    if(workspaceMode==="batch"&&batchWorkspace&&unique.every(path=>videoExtensions.has(path.split(".").pop()?.toLowerCase()??""))){batchWorkspace.addPaths(unique);return}
+    if(unique.length===1){await openIncomingPath(unique[0]);return}
+    if(unique.some(path=>!videoExtensions.has(path.split(".").pop()?.toLowerCase()??""))){
+      showToast(language==="tr"?"Çoklu içe aktarma yalnızca videoları kabul eder. Ses/görsel dosyalarını ayrı açabilirsin.":"Multi-import accepts videos only. Open audio and images separately.");
+      return;
+    }
+    if(!await loadMedia(unique[0]))return;
+    if(media?.kind!=="video"){
+      showToast(language==="tr"?"Seçilen dosyalar video olmalı.":"Selected files must be videos.");
+      return;
+    }
+    batchInitialPaths=unique;
+    batchQueueCount=unique.length;
+    workspaceMode="batch";
   }
   async function openDownloadedMedia(path:string){
     if(operationBusy)return;
@@ -617,7 +645,7 @@
       activeTextId=null;
     }
     selected = localizedTool(tool,language);
-    if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}
+    if(selected.id==="clipper"){clipperPreviewMode="source";setCropPreset("9:16",true);centerContentRegion()}
     if(selected.id==="merge_videos"&&media)mergeInputs=[media.path];
     if(selected.id==="subtitles"&&media)void loadSubtitleTracks();
     if(selected.id==="text")void ensureSystemFonts();
@@ -645,7 +673,13 @@
   function resetSelectedTool(){
     if(!selected)return;
     const source=kindTools(activeKind).find(item=>item.id===selected?.id);
-    if(source){selected=localizedTool(source,language);configureTimelineFields(selected);if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}}
+    if(source){
+      const layout=selected.id==="clipper"?toolValue("vertical_layout"):null;
+      selected=localizedTool(source,language);
+      if(layout){const field=toolField("vertical_layout");if(field)field.value=layout}
+      configureTimelineFields(selected);
+      if(selected.id==="clipper"){setCropPreset("9:16",true);centerContentRegion()}
+    }
     colorEnabled={};colorPreviewVisible=true;textLayers=[];activeTextId=null;qualityAnalysis=null;error="";
   }
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
@@ -745,16 +779,20 @@
     return `position:absolute;left:50%;top:50%;width:${box.width}px;height:${box.height}px;transform:translate(-50%,-50%)`;
   }
   function previewVideoStyle(){
+    if(clipperOutputVisible)return "position:absolute;opacity:0;pointer-events:none;width:1px;height:1px";
     if(selected?.id==="clipper"&&["original","blur","fill"].includes(toolValue("vertical_layout"))){
       const box=verticalOutputBox();if(!box)return "";
-      const background=toolValue("canvas_background"),color=background==="white"?"#fff":background==="custom"?toolValue("canvas_color"):"#000";
       if(toolValue("vertical_layout")==="fill"){
         const maxX=Math.max(0,100-toolNumber("crop_w")),maxY=Math.max(0,100-toolNumber("crop_h"));
         const positionX=maxX?toolNumber("crop_x")/maxX*100:50,positionY=maxY?toolNumber("crop_y")/maxY*100:50;
-        return `position:absolute;z-index:2;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:cover;object-position:${positionX}% ${positionY}%;background:#000`;
+        const zoom=toolNumber("clipper_zoom")/100;
+        return `position:absolute;left:${-(zoom-1)*toolNumber("clipper_x")}%;top:${-(zoom-1)*toolNumber("clipper_y")}%;width:100%;height:100%;max-width:none;max-height:none;object-fit:cover;object-position:${positionX}% ${positionY}%;background:#000;transform:scale(${zoom});transform-origin:top left`;
       }
-      const foregroundBackground=toolValue("vertical_layout")==="blur"?"transparent":color;
-      return `position:absolute;z-index:2;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:contain;background:${foregroundBackground}`;
+      if(["original","blur"].includes(toolValue("vertical_layout"))){
+        const frame=blurForegroundGeometry();if(!frame)return "display:none";
+        return `position:absolute;left:${-(frame.scaledWidth-frame.box.width)*toolNumber("clipper_x")/100}px;top:${-(frame.scaledHeight-frame.height)*toolNumber("clipper_y")/100}px;width:${frame.scaledWidth}px;height:${frame.scaledHeight}px;max-width:none;max-height:none;object-fit:fill`;
+      }
+      return "";
     }
     const geometry=["transform","clipper"].includes(selected?.id??"")?transformPreviewStyle():neutralPreviewStyle();
     return `${geometry};${colorPreviewStyle()}`;
@@ -767,9 +805,36 @@
     let width=availableHeight*ratio,height=availableHeight;if(width>availableWidth){width=availableWidth;height=width/ratio}
     return {left:(stageWidth-width)/2,top:(stageHeight-height)/2,width,height};
   }
+  function blurForegroundGeometry(){
+    const box=verticalOutputBox();if(!box)return null;
+    const source=previewSourceDimensions(),zoom=toolNumber("clipper_zoom")/100;
+    const naturalHeight=box.width*source.height/Math.max(1,source.width);
+    const height=Math.min(box.height,naturalHeight);
+    const scaledWidth=box.width*zoom,scaledHeight=naturalHeight*zoom;
+    const top=box.top+(box.height-height)/2;
+    return {box,scaledWidth,scaledHeight,height,top};
+  }
+  function blurForegroundBoxStyle(){
+    if(selected?.id!=="clipper")return "display:contents";
+    if(toolValue("vertical_layout")==="fill"){
+      const box=verticalOutputBox();return box?`position:absolute;z-index:2;overflow:hidden;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px`:"display:none";
+    }
+    if(!["original","blur"].includes(toolValue("vertical_layout")))return "display:contents";
+    const frame=blurForegroundGeometry();if(!frame)return "display:none";
+    return `position:absolute;z-index:2;overflow:hidden;left:${frame.box.left}px;top:${frame.top}px;width:${frame.box.width}px;height:${frame.height}px`;
+  }
+  function blurPanLayerStyle(){
+    const frame=blurForegroundGeometry();if(!frame)return "display:none";
+    return `left:${frame.box.left}px;top:${frame.top}px;width:${frame.box.width}px;height:${frame.height}px`;
+  }
   function verticalBackdropStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
-    return `position:absolute;z-index:1;pointer-events:none;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:cover;filter:blur(${Math.max(10,box.width*.045)}px);clip-path:inset(0)`;
+    return `position:absolute;z-index:1;pointer-events:none;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:cover;filter:blur(${toolNumber("blur_strength")*box.width/1080}px);clip-path:inset(0)`;
+  }
+  function originalCanvasStyle(){
+    const box=verticalOutputBox();if(!box)return "display:none";
+    const background=toolValue("canvas_background"),color=background==="white"?"#fff":background==="custom"?toolValue("canvas_color"):"#000";
+    return `position:absolute;z-index:1;pointer-events:none;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;background:${color}`;
   }
   function syncTransformBackdrop(force=false){
     if(!toolboxVideo||!transformBackdropVideo)return;
@@ -942,7 +1007,7 @@
     const values={high:{crf:16,preset:"slow",goal:"high"},balanced:{crf:20,preset:"veryfast",goal:"balanced"},small:{crf:24,preset:"veryfast",goal:"small"}}[profile];
     setToolNumber("crf",values.crf);setToolValue("preset",values.preset);setToolValue("goal",values.goal);qualityAnalysis=null;
   }
-  function trackEditorPointer(event:PointerEvent,move:(event:PointerEvent)=>void){
+  function trackEditorPointer(event:PointerEvent,move:(event:PointerEvent)=>void,onStop?:()=>void){
     const pointerId=event.pointerId,target=event.currentTarget as HTMLElement;
     target.setPointerCapture?.(pointerId);
     const onMove=(next:PointerEvent)=>{if(next.pointerId===pointerId)move(next)};
@@ -953,6 +1018,7 @@
       window.removeEventListener("pointercancel",stop);
       window.removeEventListener("blur",onBlur);
       if(target.hasPointerCapture?.(pointerId))target.releasePointerCapture(pointerId);
+      onStop?.();
     };
     const onBlur=()=>stop();
     window.addEventListener("pointermove",onMove);
@@ -1109,6 +1175,7 @@
   }
   const socialOutputSizes:Record<string,[number,number]>={"9:16":[1080,1920],"16:9":[1920,1080],"1:1":[1080,1080],"4:5":[1080,1350]};
   function setVerticalLayout(layout:"original"|"blur"|"fill"|"split"|"squares"|"freecam"){
+    flushEditorSnapshot();
     cameraDetectionMessage="";
     setToolValue("vertical_layout",layout);
     setCropPreset("9:16",true);
@@ -1117,6 +1184,7 @@
       if(toolValue("canvas_background")==="transparent")setToolValue("canvas_background","black");
     }
     if(["split","squares","freecam"].includes(layout))centerContentRegion();
+    flushEditorSnapshot();
   }
   function contentTargetDimensions(){
     const layout=toolValue("vertical_layout");
@@ -1222,18 +1290,67 @@
   function startFillPan(event:PointerEvent){
     const box=verticalOutputBox();if(!box||toolValue("vertical_layout")!=="fill")return;
     event.preventDefault();event.stopPropagation();
+    clipperGuidesActive=true;
+    if(toolNumber("clipper_zoom")>100){
+      const startX=event.clientX,startY=event.clientY,initialX=toolNumber("clipper_x"),initialY=toolNumber("clipper_y"),travel=toolNumber("clipper_zoom")/100-1;
+      trackEditorPointer(event,(moveEvent)=>{
+        setToolNumber("clipper_x",snapClipperCenter(initialX-(moveEvent.clientX-startX)/box.width/travel*100));
+        setToolNumber("clipper_y",snapClipperCenter(initialY-(moveEvent.clientY-startY)/box.height/travel*100));
+      },()=>clipperGuidesActive=false);
+      return;
+    }
     const startX=event.clientX,startY=event.clientY,initialX=toolNumber("crop_x"),initialY=toolNumber("crop_y"),width=toolNumber("crop_w"),height=toolNumber("crop_h");
     const move=(moveEvent:PointerEvent)=>{
-      const x=Math.max(0,Math.min(100-width,initialX-(moveEvent.clientX-startX)/box.width*width));
-      const y=Math.max(0,Math.min(100-height,initialY-(moveEvent.clientY-startY)/box.height*height));
+      const spanX=100-width,spanY=100-height;
+      const rawX=Math.max(0,Math.min(spanX,initialX-(moveEvent.clientX-startX)/box.width*width));
+      const rawY=Math.max(0,Math.min(spanY,initialY-(moveEvent.clientY-startY)/box.height*height));
+      const x=spanX*snapClipperCenter(spanX?rawX/spanX*100:50)/100;
+      const y=spanY*snapClipperCenter(spanY?rawY/spanY*100:50)/100;
       setToolNumber("crop_x",x);setToolNumber("crop_y",y);
     };
-    trackEditorPointer(event,move);
+    trackEditorPointer(event,move,()=>clipperGuidesActive=false);
+  }
+  function snapClipperCenter(value:number){
+    const clamped=Math.max(0,Math.min(100,value));
+    return Math.abs(clamped-50)<=2.5?50:clamped;
+  }
+  function clipperGuideAxes(){
+    if(toolValue("vertical_layout")==="fill"&&toolNumber("clipper_zoom")===100){
+      const spanX=100-toolNumber("crop_w"),spanY=100-toolNumber("crop_h");
+      return {x:Math.abs((spanX?toolNumber("crop_x")/spanX*100:50)-50)<.1,y:Math.abs((spanY?toolNumber("crop_y")/spanY*100:50)-50)<.1};
+    }
+    return {x:Math.abs(toolNumber("clipper_x")-50)<.1,y:Math.abs(toolNumber("clipper_y")-50)<.1};
+  }
+  function wheelClipperZoom(event:WheelEvent){
+    if(selected?.id!=="clipper"||!["original","blur","fill"].includes(toolValue("vertical_layout")))return;
+    event.preventDefault();event.stopPropagation();
+    if(!event.deltaY)return;
+    setToolNumber("clipper_zoom",Math.max(100,Math.min(300,toolNumber("clipper_zoom")+(event.deltaY<0?10:-10))));
+  }
+  function startBlurPan(event:PointerEvent){
+    const frame=blurForegroundGeometry();if(!frame||!["original","blur"].includes(toolValue("vertical_layout")))return;
+    event.preventDefault();event.stopPropagation();
+    clipperGuidesActive=true;
+    const startX=event.clientX,startY=event.clientY,initialX=toolNumber("clipper_x"),initialY=toolNumber("clipper_y");
+    trackEditorPointer(event,(moveEvent)=>{
+      const horizontal=frame.scaledWidth-frame.box.width,vertical=frame.scaledHeight-frame.height;
+      if(horizontal>0)setToolNumber("clipper_x",snapClipperCenter(initialX-(moveEvent.clientX-startX)/horizontal*100));
+      if(vertical>0)setToolNumber("clipper_y",snapClipperCenter(initialY-(moveEvent.clientY-startY)/vertical*100));
+    },()=>clipperGuidesActive=false);
+  }
+  function clipperLayoutInput():ClipperLayoutInput {
+    const source=previewSourceDimensions();
+    const region=(id:string)=>({x:toolNumber(`region_${id}_x`),y:toolNumber(`region_${id}_y`),width:toolNumber(`region_${id}_w`),height:toolNumber(`region_${id}_h`)});
+    return {width:toolNumber("output_width")||1080,height:toolNumber("output_height")||1920,sourceWidth:source.width,sourceHeight:source.height,layout:toolValue("vertical_layout"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),camera:region("a"),content:region("b"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")};
   }
   function freecamPlacement(){
-    const source=previewSourceDimensions(),regionWidth=Math.max(1,source.width*toolNumber("region_a_w")/100),regionHeight=Math.max(1,source.height*toolNumber("region_a_h")/100);
-    const width=Math.max(15,Math.min(90,toolNumber("freecam_size"))),height=Math.min(90,width*(9/16)/(regionWidth/regionHeight));
-    return {width,height,left:(100-width)*toolNumber("freecam_x")/100,top:(100-height)*toolNumber("freecam_y")/100};
+    const input=clipperLayoutInput(),{camera}=clipperLayoutGeometry(input);
+    return {width:camera.width/input.width*100,height:camera.height/input.height*100,left:camera.x/input.width*100,top:camera.y/input.height*100};
+  }
+  async function playRenderedOutput(){
+    if(!output||operationBusy)return;
+    if(outputStale)showToast(language==="tr"?"Son render oynatılıyor; yeni ayarlar henüz işlenmedi.":"Playing the last render; the new settings have not been rendered yet.","info");
+    try{await openPath(output)}catch(error){reportProblem(error)}
   }
   function clipperWatermarkPreviewStyle(background=false){
     const box=verticalOutputBox();if(!box)return "display:none";
@@ -1274,20 +1391,8 @@
   function socialBannerPreviewStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
     const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
-    const geometry=socialBannerGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y"),username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),textUnits:socialBannerTextUnits(toolValue("social_tag_username").trim())});
-    let left=box.left+geometry.x*box.width/width,top=box.top+geometry.y*box.height/height,previewWidth=geometry.width*box.width/width;
-    const layout=toolValue("vertical_layout");
-    if(["split","squares","freecam"].includes(layout)){
-      const source=transformDisplayBox();
-      if(source){
-        left=(source.stageWidth-source.width)/2+source.width*toolNumber("region_a_x")/100;
-        const cameraTop=(source.stageHeight-source.height)/2+source.height*toolNumber("region_a_y")/100;
-        const cameraHeight=source.height*toolNumber("region_a_h")/100;
-        previewWidth=source.width*toolNumber("region_a_w")/100;
-        const previewHeight=geometry.height*previewWidth/geometry.width;
-        top=layout==="split"&&toolValue("region_order")==="b_first"?cameraTop:cameraTop+cameraHeight-previewHeight;
-      }
-    }
+    const geometry=socialBannerGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),seamOffset:toolNumber("social_tag_seam_offset"),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y"),username:toolValue("social_tag_username").trim(),size:toolNumber("social_tag_size"),textUnits:socialBannerTextUnits(toolValue("social_tag_username").trim())});
+    const left=box.left+geometry.x*box.width/width,top=box.top+geometry.y*box.height/height,previewWidth=geometry.width*box.width/width;
     const scale=previewWidth/geometry.width;
     return `left:${left}px;top:${top}px;width:${previewWidth}px;height:${geometry.height*scale}px;--banner-bar-height:${geometry.barHeight*scale}px;--banner-logo-left:${(geometry.logoX-geometry.x)*scale}px;--banner-logo-width:${geometry.logoWidth*scale}px;--banner-logo-art-width:${geometry.logoArtWidth*scale}px;--banner-logo-image-bottom:${geometry.logoImageBottom*scale}px;--banner-prefix-left:${(geometry.prefixX-geometry.x)*scale}px;--banner-prefix-width:${geometry.prefixWidth*scale}px;--banner-prefix-art-width:${geometry.prefixArtWidth*scale}px;--banner-prefix-image-left:${geometry.prefixImageLeft*scale}px;--banner-prefix-image-bottom:${geometry.prefixImageBottom*scale}px;--banner-text-left:${(geometry.textX-geometry.x)*scale}px;--banner-text-top:${(geometry.textCenterY-geometry.y)*scale}px;--banner-text-size:${geometry.textSize*scale}px`;
   }
@@ -1295,34 +1400,14 @@
     const box=verticalOutputBox();if(!box)return "display:none";
     const width=Math.max(2,toolNumber("output_width")||1080),height=Math.max(2,toolNumber("output_height")||1920);
     const boxed=toolValue("social_tag_style")==="boxed";
-    const position=toolValue(boxed?"social_tag_boxed_position":"social_tag_plain_position") as "left"|"center"|"right";
+    const position=(boxed?"center":toolValue("social_tag_plain_position")) as "left"|"center"|"right";
     const username=toolValue("social_tag_username").trim();
-    const geometry=socialTagGeometry({width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:boxed?"boxed":"plain",position,username,size:toolNumber("social_tag_size"),textUnits:socialTagTextUnits(username),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")});
+    const tagInput={width,height,sourceWidth:media?.width??1920,sourceHeight:media?.height??1080,layout:toolValue("vertical_layout"),style:boxed?"boxed" as const:"plain" as const,position,username,size:toolNumber("social_tag_size"),textUnits:socialTagTextUnits(username),regionAHeight:toolNumber("region_a_height"),regionOrder:toolValue("region_order"),regionAWidth:toolNumber("region_a_w"),regionARegionHeight:toolNumber("region_a_h"),freecamSize:toolNumber("freecam_size"),freecamX:toolNumber("freecam_x"),freecamY:toolNumber("freecam_y")};
+    const geometry=socialTagGeometry({...tagInput,seamOffset:toolNumber("social_tag_seam_offset")});
     const scaleX=box.width/width,scaleY=box.height/height;
-    let left=box.left+geometry.anchorX*scaleX;
-    let top=box.top+geometry.centerY*scaleY;
-    let boundsLeft=box.left,boundsRight=box.left+box.width;
-    // The source preview shows the camera crop at its original position, not
-    // inside the virtual 9:16 output box. Project both tag styles onto it.
-    const layout=toolValue("vertical_layout");
-    if(["split","squares","freecam"].includes(layout)){
-      const source=transformDisplayBox();
-      if(source){
-        const cameraLeft=(source.stageWidth-source.width)/2+source.width*toolNumber("region_a_x")/100;
-        const cameraTop=(source.stageHeight-source.height)/2+source.height*toolNumber("region_a_y")/100;
-        const cameraWidth=source.width*toolNumber("region_a_w")/100;
-        const cameraHeight=source.height*toolNumber("region_a_h")/100;
-        const even=(value:number)=>Math.floor(Math.round(value)/2)*2;
-        const outputCameraWidth=layout==="freecam"?even(width*toolNumber("freecam_size")/100):width;
-        const outputCameraLeft=layout==="freecam"?(width-outputCameraWidth)*toolNumber("freecam_x")/100:0;
-        const relativeX=(geometry.anchorX-outputCameraLeft)/Math.max(1,outputCameraWidth);
-        left=cameraLeft+relativeX*cameraWidth;
-        const seamAtCameraTop=layout==="split"&&toolValue("region_order")==="b_first";
-        top=boxed?cameraTop+cameraHeight-geometry.side*scaleX/2:cameraTop+(seamAtCameraTop?0:cameraHeight);
-        boundsLeft=boxed?cameraLeft:0;
-        boundsRight=boxed?cameraLeft+cameraWidth:source.stageWidth;
-      }
-    }
+    const left=box.left+geometry.anchorX*scaleX;
+    const top=box.top+geometry.centerY*scaleY;
+    const boundsLeft=box.left,boundsRight=box.left+box.width;
     const shift=position==="left"?"0":position==="right"?"-100%":"-50%";
     const available=position==="left"?boundsRight-left:position==="right"?left-boundsLeft:2*Math.min(left-boundsLeft,boundsRight-left);
     // Rasterize the small overlay at 2× and downscale it in the compositor so
@@ -1536,11 +1621,12 @@
   }
 
   async function selectMedia() {
-    const path = await open({
-      multiple: false,
+    const paths = await open({
+      multiple: true,
       filters: mediaDialogFilters,
     });
-    if (typeof path === "string") await loadMedia(path);
+    if (typeof paths === "string") await openIncomingPath(paths);
+    else if(Array.isArray(paths))await openIncomingPaths(paths);
   }
 
   function releaseTemporaryImagePreview(path:string){
@@ -1579,12 +1665,15 @@
       const previousPreview=temporaryImagePreviewPath;
       temporaryImagePreviewPath=preparedPreview;
       media = loaded;
+      clipperPreviewMode = "source";
       mergeInputs=[];
       activeKind = media.kind;
       mediaUrl = nextMediaUrl;
       output = "";
       if(previousPreview&&previousPreview!==preparedPreview)releaseTemporaryImagePreview(previousPreview);
       workspaceMode = "toolbox";
+      batchInitialPaths=[];
+      batchQueueCount=0;
       autoCutSession = null;
       batchSession = null;
       toolboxCurrent = 0;
@@ -1645,6 +1734,7 @@
     editHistory = [];
     editHistoryIndex = -1;
     autoCutSession=null;batchSession=null;discardRecovery();
+    batchInitialPaths=[];batchQueueCount=0;
     stageHistory=null;
   }
 
@@ -2152,6 +2242,11 @@
         return;
       }
       if (!media||restoringSession||stageNavigating) return;
+      if (event.ctrlKey && !event.altKey && key === "z" && target instanceof HTMLInputElement && target.type === "range") {
+        event.preventDefault();
+        if (event.shiftKey) redoEditor(); else undoEditor();
+        return;
+      }
       if(editingText)return;
       if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -2189,8 +2284,7 @@
       if (event.payload.type === "leave") dragActive = false;
       if (event.payload.type === "drop") {
         dragActive = false;
-        const path = event.payload.paths[0];
-        if (path) void openIncomingPath(path);
+        void openIncomingPaths(event.payload.paths);
       }
     }).then((fn) => {if(disposed)fn();else unlistenDrop=fn});
 
@@ -2242,7 +2336,9 @@
     {#if !media && devVersion}<span class="dev-version mono" aria-label={`Development build version ${devVersion}`}><span>DEV BUILD</span><b>v{devVersion}</b></span>{/if}
     {#if media}
       {@render historyControl()}
-      <div class="file-summary">
+      {#if workspaceMode==="batch"&&!downloaderOpen}
+      <div class="file-summary"><span class="filename mono">{language==="tr"?"TOPLU İŞLEM":"BATCH QUEUE"}</span><div class="chips mono"><span><b>{language==="tr"?"dosya":"files"}</b>{batchQueueCount}</span></div></div>
+      {:else}<div class="file-summary">
       <span class="filename mono" title={`${media.name}${media.kind!=="image"?`\n${language==="tr"?"Süre":"Duration"}: ${formatDuration(media.duration)}`:""}${media.width?`\n${language==="tr"?"Çözünürlük":"Resolution"}: ${media.width}×${media.height}`:""}${media.kind==="video"&&media.fps?`\nFPS: ${media.fps.toFixed(3)}`:""}\nCodec: ${media.codec}\n${language==="tr"?"Boyut":"Size"}: ${formatBytes(media.size)}`}>{media.name}</span>
       <div class="chips mono">
         {#if media.kind!=="image"}<span><b>dur</b>{formatDuration(media.duration)}</span>{/if}
@@ -2251,19 +2347,18 @@
         <span class="media-extra"><b>codec</b>{media.codec}</span><span class="media-extra"><b>size</b>{formatBytes(media.size)}</span>
       </div>
       </div>
+      {/if}
       <nav class="mode-tabs" aria-label="Workspace">
         <button class:active={!downloaderOpen&&workspaceMode === "toolbox"} onclick={() => setWorkspaceMode("toolbox")} disabled={operationBusy&&workspaceMode!=="toolbox"}>{t("toolbox")}</button>
         {#if media.kind === "video"}<button class:active={!downloaderOpen&&workspaceMode === "autocut"} onclick={() => setWorkspaceMode("autocut")} disabled={operationBusy&&workspaceMode!=="autocut"}>SMARTCUT</button>{/if}
         <button class:active={!downloaderOpen&&workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
       </nav>
-      {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={language==="tr"?"Açık çalışmaya dön":"Return to current work"}>← {language==="tr"?"ÇALIŞMAYA DÖN":"BACK TO EDITOR"}</button>{/if}
       <div class="project-actions"><button onclick={saveProject} disabled={operationBusy}>{language==="tr"?"PROJEYİ KAYDET":"SAVE PROJECT"}</button></div>
       <button class="panel-reset-trigger" onclick={()=>panelResetDialogOpen=true} disabled={operationBusy} aria-label={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"} title={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M7 3.5v13M13 3.5v13"/></svg></button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={operationBusy}>{t("close")}</button>
     {:else}
       <div class="landing-header-actions">
         <div class="language-switch landing-language"><button class:active={language==="tr"} onclick={()=>setLanguage("tr")}>TR</button><button class:active={language==="en"} onclick={()=>setLanguage("en")}>EN</button><i></i><button class="theme-button" class:active={theme==="dark"} title={language==="tr"?"Koyu tema":"Dark theme"} aria-label={language==="tr"?"Koyu tema":"Dark theme"} onclick={()=>setTheme("dark")}>☾</button><button class="theme-button" class:active={theme==="light"} title={language==="tr"?"Açık tema":"Light theme"} aria-label={language==="tr"?"Açık tema":"Light theme"} onclick={()=>setTheme("light")}>☀</button></div>
-        {#if downloaderOpen}<button class="downloader-back" onclick={()=>downloaderOpen=false} disabled={downloaderBusy} title={downloaderBusy?(language==="tr"?"İndirme tamamlanana veya iptal edilene kadar bekle":"Wait until the download finishes or is cancelled"):(language==="tr"?"Ana menüye dön":"Back to main menu")}>← {language==="tr"?"GERİ":"BACK"}</button>{/if}
         <div class="project-actions landing-project-actions"><button onclick={openProject} disabled={operationBusy}>{language==="tr"?"PROJE AÇ":"OPEN PROJECT"}</button></div>
         {#if updaterEnabled}<button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>{/if}
       </div>
@@ -2335,7 +2430,7 @@
   {/if}
 
   {#if downloaderOpen}
-    <DownloaderWorkspace {language} onbusychange={(value:boolean)=>downloaderBusy=value} onopenmedia={openDownloadedMedia} />
+    <DownloaderWorkspace {language} hasMedia={!!media} onback={()=>downloaderOpen=false} onbusychange={(value:boolean)=>downloaderBusy=value} onopenmedia={openDownloadedMedia} />
   {:else if !media}
     <section class="landing">
       {#if autoEncoderTuning}
@@ -2388,7 +2483,7 @@
     {#if workspaceMode === "autocut" && media.kind === "video"}
       <SmartCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
     {:else if workspaceMode === "batch"}
-      <BatchWorkspace bind:this={batchWorkspace} initialPath={media.path} {language} {availableEncoders} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} />
+      <BatchWorkspace bind:this={batchWorkspace} initialPaths={batchInitialPaths.length?batchInitialPaths:[media.path]} initialKind={media.kind} {language} {availableEncoders} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} onqueuechange={(count:number)=>batchQueueCount=count} />
     {:else}
     {@const panelSizes=toolboxPanelSizes()}
     <section class="workspace resizable" bind:this={toolboxWorkspace} style={`--toolbox-left:${panelSizes.left}px;--toolbox-right:${panelSizes.right}px`}>
@@ -2427,7 +2522,7 @@
 
       <section class="center-stack" class:timeline-active={timelineTool}>
         <div class="preview panel">
-          <div class="preview-head"><span>{t("preview")}</span><span class="mono">{t(media.kind).toUpperCase()} · {media.codec.toUpperCase()}</span></div>
+          <div class="preview-head"><span>{t("preview")}</span>{#if multiRegionClipper}<div class="clipper-preview-tabs" role="group" aria-label={language==="tr"?"Clipper önizleme görünümü":"Clipper preview view"}><button class:active={clipperPreviewMode==="source"} aria-pressed={clipperPreviewMode==="source"} onclick={()=>clipperPreviewMode="source"}>{language==="tr"?"KAYNAK BÖLGELERİ":"SOURCE REGIONS"}</button><button class:active={clipperPreviewMode==="output"} aria-pressed={clipperPreviewMode==="output"} onclick={()=>clipperPreviewMode="output"}>{language==="tr"?"ÇIKTI ÖNİZLEME":"OUTPUT PREVIEW"}</button></div>{:else}<span class="mono">{t(media.kind).toUpperCase()} · {media.codec.toUpperCase()}</span>{/if}</div>
           <div class="media-stage" class:ac-player={media.kind === "video"} class:toolbox-player={media.kind === "video"} bind:this={toolboxStage}>
             {#if media.kind === "video"}
               <div class="video-canvas" bind:this={toolboxCanvas}>
@@ -2436,9 +2531,16 @@
                 <!-- svelte-ignore a11y_media_has_caption -->
                 <video bind:this={transformBackdropVideo} class="transform-video-backdrop" style={verticalBackdropStyle()} src={mediaUrl} preload="metadata" muted tabindex="-1"></video>
               {/if}
+              {#if selected?.id==="clipper"&&toolValue("vertical_layout")==="original"}<div style={originalCanvasStyle()}></div>{/if}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; syncTransformBackdrop(); }} onplay={() => {toolboxPlaying=true;syncTransformBackdrop(true);void transformBackdropVideo?.play().catch(()=>{})}} onpause={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}} onended={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}}></video>
-              {#if selected?.id==="clipper"&&["split","squares","freecam"].includes(toolValue("vertical_layout"))}
+              <div style={blurForegroundBoxStyle()}>
+                <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; syncTransformBackdrop(); }} onplay={() => {toolboxPlaying=true;syncTransformBackdrop(true);void transformBackdropVideo?.play().catch(()=>{})}} onpause={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}} onended={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}}></video>
+              </div>
+              {#if clipperOutputVisible}
+                {@const outputBox=verticalOutputBox()}
+                {#if outputBox}<ClipperLayoutPreview video={toolboxVideo} input={clipperLayoutInput()} box={outputBox} />{/if}
+              {/if}
+              {#if multiRegionClipper&&clipperPreviewMode==="source"}
                 <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                   {#each [{id:"a" as const,label:"CAMERA REGION"},{id:"b" as const,label:"CONTENT REGION"}] as region}
                     <div class={`transform-crop transform-region region-${region.id}`} style:left={`${toolNumber(`region_${region.id}_x`)}%`} style:top={`${toolNumber(`region_${region.id}_y`)}%`} style:width={`${toolNumber(`region_${region.id}_w`)}%`} style:height={`${toolNumber(`region_${region.id}_h`)}%`} onpointerdown={(event)=>startTransformRegion(event,region.id,"move")} role="presentation">
@@ -2449,8 +2551,10 @@
                 </div>
               {:else if selected?.id==="clipper"&&toolValue("vertical_layout")==="fill"}
                 {@const fillBox=verticalOutputBox()}
-                {#if fillBox}<div class="fill-pan-layer" style:left={`${fillBox.left}px`} style:top={`${fillBox.top}px`} style:width={`${fillBox.width}px`} style:height={`${fillBox.height}px`} onpointerdown={startFillPan} role="presentation"><span>{language==="tr"?"KADRAJI SÜRÜKLE":"DRAG TO REFRAME"}</span></div>{/if}
-              {:else if ["transform","clipper"].includes(selected?.id??"") && toolValue("crop_mode") !== "off" && (selected?.id==="transform" || !["original","blur"].includes(toolValue("vertical_layout")))}
+                 {#if fillBox}<div class="fill-pan-layer" style:left={`${fillBox.left}px`} style:top={`${fillBox.top}px`} style:width={`${fillBox.width}px`} style:height={`${fillBox.height}px`} onpointerdown={startFillPan} onwheel={wheelClipperZoom} role="presentation"><span>{language==="tr"?"SÜRÜKLE · TEKERLEKLE YAKINLAŞ":"DRAG · WHEEL TO ZOOM"}</span></div>{/if}
+              {:else if selected?.id==="clipper"&&["blur","original"].includes(toolValue("vertical_layout"))}
+                 <div class="fill-pan-layer" style={blurPanLayerStyle()} onpointerdown={startBlurPan} onwheel={wheelClipperZoom} role="presentation"><span>{language==="tr"?"SÜRÜKLE · TEKERLEKLE YAKINLAŞ":"DRAG · WHEEL TO ZOOM"}</span></div>
+              {:else if selected?.id==="transform" && toolValue("crop_mode") !== "off"}
                 <div class="transform-source-box" bind:this={transformSourceBox} style={transformBoxStyle()}>
                   <div class="crop-shade top" style:height={`${toolNumber("crop_y")}%`}></div>
                   <div class="crop-shade left" style:left="0" style:top={`${toolNumber("crop_y")}%`} style:width={`${toolNumber("crop_x")}%`} style:height={`${toolNumber("crop_h")}%`}></div>
@@ -2461,12 +2565,23 @@
                     {#each transformHandles as handle}<button class={`crop-handle ${handle}`} aria-label={`Resize crop ${handle}`} onpointerdown={(event)=>startTransformCrop(event,handle)}></button>{/each}
                   </div>
                 </div>
-              {/if}
-              {#if selected?.id==="clipper"&&toolValue("watermark_enabled")==="true"&&toolValue("watermark_text").trim()}
+               {/if}
+               {#if selected?.id==="clipper"&&clipperGuidesActive&&["original","blur","fill"].includes(toolValue("vertical_layout"))}
+                 {@const output=verticalOutputBox()}
+                 {@const guides=clipperGuideAxes()}
+                 {#if output&&(guides.x||guides.y)}
+                   <div class="clipper-center-guides" style:left={`${output.left}px`} style:top={`${output.top}px`} style:width={`${output.width}px`} style:height={`${output.height}px`}>
+                     {#if guides.x}<i class="vertical"></i>{/if}
+                     {#if guides.y}<i class="horizontal"></i>{/if}
+                     {#if guides.x&&guides.y}<span>{language==="tr"?"MERKEZ":"CENTER"}</span>{/if}
+                   </div>
+                 {/if}
+               {/if}
+               {#if selected?.id==="clipper"&&(!multiRegionClipper||clipperOutputVisible)&&toolValue("watermark_enabled")==="true"&&toolValue("watermark_text").trim()}
                 <i class="clipper-watermark-background" style={clipperWatermarkPreviewStyle(true)}></i>
                 <span class="clipper-watermark-preview" style={clipperWatermarkPreviewStyle()}>{toolValue("watermark_text")}</span>
               {/if}
-              {#if selected?.id==="clipper"&&toolValue("social_tag_enabled")==="true"&&toolValue("social_tag_username").trim()}
+              {#if selected?.id==="clipper"&&(!multiRegionClipper||clipperOutputVisible)&&toolValue("social_tag_enabled")==="true"&&toolValue("social_tag_username").trim()}
                 {#if toolValue("social_tag_style")==="kick_banner"}
                   <div class="clipper-social-banner" style={socialBannerPreviewStyle()} aria-label="Kick.com banner preview">
                     <span class="clipper-social-banner-bg"></span>
@@ -2609,11 +2724,10 @@
 
         <div class="job panel">
           <div class="job-head">
-            <div><h3>{t("process")}</h3><p class="mono">{outputStale?(language==="tr"?"ayarlar değişti · yeniden işle":"settings changed · render again"):jobStatus}</p></div>
+            <div class="job-status"><h3>{t("process")}</h3><div class="job-status-line"><p class="mono">{outputStale?(language==="tr"?"ayarlar değişti · yeniden işle":"settings changed · render again"):jobStatus}</p>{#if output}<button class="ghost job-action play-render" disabled={operationBusy} onclick={playRenderedOutput} title={language==="tr"?"Son çıktıyı varsayılan oynatıcıda aç":"Open the last output in your default player"}>▶ {language==="tr"?"render’ı oynat":"play render"}</button>{/if}</div></div>
             <div class="job-meta">
               <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
-              {#if output}<button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => revealItemInDir(output)}>{outputStale?(language==="tr"?"önceki çıktı":"previous output"):t("showOutput")}</button>{/if}
-              {#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}
+              {#if output||busy}<div class="job-actions">{#if output}<button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => {if(outputStale)showToast(language==="tr"?"Bu eski çıktı. Yeni ayarları görmek için yeniden işle.":"This is the old output. Render again to see the new settings.","info");revealItemInDir(output)}}>{outputStale?(language==="tr"?"eski çıktı · güncellenmedi":"old output · not updated"):t("showOutput")}</button>{/if}{#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}</div>{/if}
             </div>
           </div>
           <div class="progress-track"><div style:width={`${progress}%`}></div></div>
@@ -2760,12 +2874,12 @@
                 <section>
                   <header><b>{language==="tr"?"DİKEY YERLEŞİM":"VERTICAL LAYOUT"}</b><small>1080×1920</small></header>
                   <div class="transform-options three">
-                    <button class:active={toolValue("vertical_layout")==="original"} onclick={()=>setVerticalLayout("original")}>{language==="tr"?"ORİJİNAL BOYUT":"ORIGINAL SIZE"}</button>
-                    <button class:active={toolValue("vertical_layout")==="blur"} onclick={()=>setVerticalLayout("blur")}>{language==="tr"?"BULANIK":"BLUR"}</button>
-                    <button class:active={toolValue("vertical_layout")==="fill"} onclick={()=>setVerticalLayout("fill")}>{language==="tr"?"DOLDUR":"FILL"}</button>
                     <button class:active={toolValue("vertical_layout")==="split"} onclick={()=>setVerticalLayout("split")}>{language==="tr"?"BÖL":"SPLIT"}</button>
                     <button class:active={toolValue("vertical_layout")==="squares"} onclick={()=>setVerticalLayout("squares")}>{language==="tr"?"KARELER":"SQUARES"}</button>
                     <button class:active={toolValue("vertical_layout")==="freecam"} onclick={()=>setVerticalLayout("freecam")}>FREECAM</button>
+                    <button class:active={toolValue("vertical_layout")==="original"} onclick={()=>setVerticalLayout("original")}>{language==="tr"?"ORİJİNAL BOYUT":"ORIGINAL SIZE"}</button>
+                    <button class:active={toolValue("vertical_layout")==="blur"} onclick={()=>setVerticalLayout("blur")}>{language==="tr"?"BULANIK":"BLUR"}</button>
+                    <button class:active={toolValue("vertical_layout")==="fill"} onclick={()=>setVerticalLayout("fill")}>{language==="tr"?"DOLDUR":"FILL"}</button>
                   </div>
                   {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}
                     <button class="auto-camera" class:working={cameraDetecting} onclick={autoDetectCamera} disabled={cameraDetecting||busy}><span>{cameraDetecting?"◌":"◇"}</span>{cameraDetecting?(language==="tr"?"KAMERA ARANIYOR…":"DETECTING CAMERA…"):(language==="tr"?"KAMERAYI OTOMATİK BUL":"AUTO-DETECT CAMERA")}<em title={language==="tr"?"Deneysel özellik":"Experimental feature"}>{language==="tr"?"DENEYSEL":"EXPERIMENTAL"}</em></button>
@@ -2779,15 +2893,15 @@
                     <label class="field"><span>{language==="tr"?"Tuval arka planı":"Canvas background"}</span><select value={toolValue("canvas_background")} onchange={(event)=>setToolValue("canvas_background",event.currentTarget.value)}><option value="black">{language==="tr"?"Siyah":"Black"}</option><option value="white">{language==="tr"?"Beyaz":"White"}</option><option value="custom">{language==="tr"?"Özel renk":"Custom color"}</option></select></label>
                     {#if toolValue("canvas_background")==="custom"}<label class="field"><span>{language==="tr"?"Arka plan rengi":"Background color"}</span><input type="text" maxlength="7" value={toolValue("canvas_color")} oninput={(event)=>setToolValue("canvas_color",event.currentTarget.value)}></label>{/if}
                   {/if}
-                  {#if toolValue("vertical_layout")==="split"}
-                    <details class="text-style-options clipper-advanced">
-                      <summary>{language==="tr"?"GELİŞMİŞ":"ADVANCED"}</summary>
-                      <label><span>{language==="tr"?"Sıralama":"Order"}</span><select value={toolValue("region_order")} onchange={(event)=>setSplitOrder(event.currentTarget.value)}><option value="a_first">{language==="tr"?"Kamera üstte":"Camera above content"}</option><option value="b_first">{language==="tr"?"İçerik üstte":"Content above camera"}</option></select></label>
-                      <label><span>{language==="tr"?"Üst bölüm yüksekliği":"Top region height"}</span><input type="range" min="20" max="80" step="1" value={toolNumber("region_a_height")} oninput={(event)=>setSplitHeight(Number(event.currentTarget.value))}><small>{toolNumber("region_a_height").toFixed(0)}%</small></label>
-                      <p>{language==="tr"?"Kamera ve içerik kutularını kaynak önizleme üzerinde sürükleyip kenarlarından boyutlandır.":"Drag Camera and Content on the source preview and resize them from their edges."}</p>
-                    </details>
-                  {/if}
                   {#if toolValue("vertical_layout")==="fill"}<p>{language==="tr"?"Video dikey tuvali tamamen doldurur. Sonuç önizlemesini sürükleyerek yatay kadrajı ayarla.":"The video fills the vertical canvas completely. Drag the result preview to adjust the horizontal framing."}</p>{/if}
+                  {#if toolValue("vertical_layout")==="blur"}
+                    <label class="watermark-slider"><span>{language==="tr"?"Arka plan bulanıklığı":"Background blur"}<small>{toolNumber("blur_strength").toFixed(0)} px</small></span><input type="range" min="0" max="60" step="1" value={toolNumber("blur_strength")} oninput={(event)=>setToolNumber("blur_strength",Number(event.currentTarget.value))}></label>
+                  {/if}
+                  {#if ["original","blur","fill"].includes(toolValue("vertical_layout"))}
+                    {#if toolValue("vertical_layout")==="fill"}<label class="watermark-slider"><span>{language==="tr"?"Video yakınlaştırma":"Video zoom"}<small>{toolNumber("clipper_zoom").toFixed(0)}%</small></span><input type="range" min="100" max="300" step="1" value={toolNumber("clipper_zoom")} oninput={(event)=>setToolNumber("clipper_zoom",Number(event.currentTarget.value))}></label>{/if}
+                    <button class="center-content" onclick={()=>{setToolNumber("clipper_zoom",100);setToolNumber("clipper_x",50);setToolNumber("clipper_y",50)}}>{language==="tr"?"ZOOMU SIFIRLA":"RESET ZOOM"}</button>
+                    {#if toolValue("vertical_layout")==="blur"}<p>{language==="tr"?"Net videoyu yakınlaştırıp sürükle; bulanık arka plan değişmez.":"Zoom and drag the sharp video; the blurred background stays unchanged."}</p>{/if}
+                  {/if}
                   {#if toolValue("vertical_layout")==="squares"}<p>{language==="tr"?"Kamera ve içerik, dikey tuvali eşit iki tam genişlikte bölüme ayırır.":"Camera and content divide the vertical canvas into two equal full-width sections."}</p>{/if}
                   {#if toolValue("vertical_layout")==="freecam"}
                     {@const freecam=freecamPlacement()}
@@ -2797,10 +2911,11 @@
                         {language==="tr"?"KAMERA":"CAMERA"}<i role="presentation" onpointerdown={(event)=>startFreecamPlacement(event,"resize")}></i>
                       </button>
                     </div>
-                    <p>{language==="tr"?"Kamerayı çıktı yerleşiminde sürükle; sağ alt köşeden boyutlandır. Kaynak kırpımını ana önizlemedeki Camera Region ile ayarla.":"Drag the camera in the output layout; resize it from the lower-right corner. Adjust its source crop with Camera Region in the main preview."}</p>
-                    <label><span>{language==="tr"?"Kamera konumu X":"Camera position X"}</span><input type="range" min="0" max="100" step="1" value={toolNumber("freecam_x")} oninput={(event)=>setToolNumber("freecam_x",Number(event.currentTarget.value))}></label>
-                    <label><span>{language==="tr"?"Kamera konumu Y":"Camera position Y"}</span><input type="range" min="0" max="100" step="1" value={toolNumber("freecam_y")} oninput={(event)=>setToolNumber("freecam_y",Number(event.currentTarget.value))}></label>
-                    <label><span>{language==="tr"?"Kamera boyutu":"Camera size"}</span><input type="range" min="15" max="90" step="1" value={toolNumber("freecam_size")} oninput={(event)=>setToolNumber("freecam_size",Number(event.currentTarget.value))}><small>{toolNumber("freecam_size").toFixed(0)}%</small></label>
+                    <p>{language==="tr"?"Kamerayı bu küçük yerleşimde sürükle; sağ alt köşeden boyutlandır. Kaynak kırpımını KAYNAK BÖLGELERİ görünümündeki Camera Region ile ayarla.":"Drag the camera in this layout; resize from the lower-right corner. Adjust its crop using Camera Region in SOURCE REGIONS."}</p>
+                     <label><span class="slider-title">{language==="tr"?"Kamera konumu X":"Camera position X"}<button type="button" class="slider-reset" aria-label={language==="tr"?"Kamera X konumunu sıfırla":"Reset camera X"} onclick={(event)=>{event.preventDefault();setToolNumber("freecam_x",50)}}>↺</button></span><input aria-label={language==="tr"?"Kamera konumu X":"Camera position X"} type="range" min="0" max="100" step="1" value={toolNumber("freecam_x")} oninput={(event)=>setToolNumber("freecam_x",Number(event.currentTarget.value))}></label>
+                     <label><span class="slider-title">{language==="tr"?"Kamera konumu Y":"Camera position Y"}<button type="button" class="slider-reset" aria-label={language==="tr"?"Kamera Y konumunu sıfırla":"Reset camera Y"} onclick={(event)=>{event.preventDefault();setToolNumber("freecam_y",2)}}>↺</button></span><input aria-label={language==="tr"?"Kamera konumu Y":"Camera position Y"} type="range" min="0" max="100" step="1" value={toolNumber("freecam_y")} oninput={(event)=>setToolNumber("freecam_y",Number(event.currentTarget.value))}></label>
+                     <label><span class="slider-title">{language==="tr"?"Kamera boyutu":"Camera size"}<button type="button" class="slider-reset" aria-label={language==="tr"?"Kamera boyutunu sıfırla":"Reset camera size"} onclick={(event)=>{event.preventDefault();setToolNumber("freecam_size",77)}}>↺</button></span><input aria-label={language==="tr"?"Kamera boyutu":"Camera size"} type="range" min="15" max="90" step="1" value={toolNumber("freecam_size")} oninput={(event)=>setToolNumber("freecam_size",Number(event.currentTarget.value))}><small>{toolNumber("freecam_size").toFixed(0)}%</small></label>
+                     <button class="center-content" onclick={()=>{setToolNumber("freecam_x",50);setToolNumber("freecam_y",2);setToolNumber("freecam_size",77)}}>{language==="tr"?"KAMERAYI SIFIRLA":"RESET CAMERA"}</button>
                   {/if}
                   <div class="clipper-watermark-controls">
                     <label class="watermark-toggle"><input type="checkbox" checked={toolValue("watermark_enabled")==="true"} onchange={(event)=>setToolValue("watermark_enabled",event.currentTarget.checked?"true":"false")}><span>Watermark</span></label>
@@ -2818,12 +2933,21 @@
                       <label class="watermark-text-field"><span>{language==="tr"?"Platform":"Platform"}</span><select value={toolValue("social_tag_platform")} onchange={(event)=>setToolValue("social_tag_platform",event.currentTarget.value)}><option value="kick">Kick</option><option value="twitch" disabled={toolValue("social_tag_style")==="kick_banner"}>Twitch</option></select></label>
                       <label class="watermark-text-field"><span>{language==="tr"?"Kullanıcı adı":"Username"}</span><input type="text" maxlength="32" placeholder="kanaladi" value={toolValue("social_tag_username")} oninput={(event)=>setToolValue("social_tag_username",event.currentTarget.value)}></label>
                       <label class="watermark-text-field"><span>{language==="tr"?"Görünüm":"Style"}</span><select value={toolValue("social_tag_style")} onchange={(event)=>{const value=event.currentTarget.value;setToolValue("social_tag_style",value);if(value==="kick_banner"){setToolValue("social_tag_platform","kick");setToolNumber("social_tag_size",54)}}}><option value="boxed">{language==="tr"?"Kutulu etiket":"Boxed badge"}</option><option value="plain">{language==="tr"?"Düz etiket":"Plain tag"}</option><option value="kick_banner">{language==="tr"?"Kick.com şeridi":"Kick.com banner"}</option></select></label>
-                      {#if toolValue("social_tag_style")!=="kick_banner"}
-                        <label class="watermark-text-field"><span>{language==="tr"?"Konum":"Position"}</span><select value={toolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position")} onchange={(event)=>setToolValue(toolValue("social_tag_style")==="boxed"?"social_tag_boxed_position":"social_tag_plain_position",event.currentTarget.value)}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
+                      {#if toolValue("social_tag_style")==="plain"}
+                        <label class="watermark-text-field"><span>{language==="tr"?"Konum":"Position"}</span><select value={toolValue("social_tag_plain_position")} onchange={(event)=>setToolValue("social_tag_plain_position",event.currentTarget.value)}><option value="left">{language==="tr"?"Sol":"Left"}</option><option value="center">{language==="tr"?"Orta":"Center"}</option><option value="right">{language==="tr"?"Sağ":"Right"}</option></select></label>
                       {/if}
-                      <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("social_tag_size").toFixed(0)} px</small></span><input type="range" min="20" max={toolValue("social_tag_style")==="kick_banner"?54:96} step="1" value={toolNumber("social_tag_size")} oninput={(event)=>setToolNumber("social_tag_size",Number(event.currentTarget.value))}></label>
+                       <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("social_tag_size").toFixed(0)} px</small></span><input type="range" min="20" max={toolValue("social_tag_style")==="kick_banner"?54:96} step="1" value={toolNumber("social_tag_size")} oninput={(event)=>setToolNumber("social_tag_size",Number(event.currentTarget.value))}></label>
+                       <label class="watermark-slider"><span class="slider-title"><span>{toolValue("social_tag_style")==="kick_banner"?(language==="tr"?"Şeridi kameradan uzaklaştır":"Move banner away from camera"):(language==="tr"?"Etiketi kameradan uzaklaştır":"Move tag away from camera")}</span><span class="slider-end"><small>{toolNumber("social_tag_seam_offset").toFixed(0)}%</small><button type="button" class="slider-reset" aria-label={language==="tr"?"Etiket mesafesini sıfırla":"Reset tag distance"} title={language==="tr"?"Varsayılan: 0%":"Default: 0%"} onclick={()=>setToolNumber("social_tag_seam_offset",0)}>↺</button></span></span><input aria-label={toolValue("social_tag_style")==="kick_banner"?(language==="tr"?"Şeridi kameradan uzaklaştır":"Move banner away from camera"):(language==="tr"?"Etiketi kameradan uzaklaştır":"Move tag away from camera")} type="range" min="0" max="100" step="1" value={toolNumber("social_tag_seam_offset")} oninput={(event)=>setToolNumber("social_tag_seam_offset",Number(event.currentTarget.value))}></label>
                     {/if}
                   </div>
+                  {#if toolValue("vertical_layout")==="split"}
+                    <details class="text-style-options clipper-advanced">
+                      <summary>{language==="tr"?"GELİŞMİŞ":"ADVANCED"}</summary>
+                      <label><span>{language==="tr"?"Sıralama":"Order"}</span><select value={toolValue("region_order")} onchange={(event)=>setSplitOrder(event.currentTarget.value)}><option value="a_first">{language==="tr"?"Kamera üstte":"Camera above content"}</option><option value="b_first">{language==="tr"?"İçerik üstte":"Content above camera"}</option></select></label>
+                      <label><span>{language==="tr"?"Üst bölüm yüksekliği":"Top region height"}</span><input type="range" min="20" max="80" step="1" value={toolNumber("region_a_height")} oninput={(event)=>setSplitHeight(Number(event.currentTarget.value))}><small>{toolNumber("region_a_height").toFixed(0)}%</small></label>
+                      <p>{language==="tr"?"Kamera ve içerik kutularını kaynak önizleme üzerinde sürükleyip kenarlarından boyutlandır.":"Drag Camera and Content on the source preview and resize them from their edges."}</p>
+                    </details>
+                  {/if}
                 </section>
               {/if}
               {#if selected.id==="transform"}

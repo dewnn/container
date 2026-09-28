@@ -1,3 +1,5 @@
+import { sourceRegion } from "./clipperLayoutGeometry.ts";
+
 export interface SocialTagGeometryInput {
   width:number; height:number; sourceWidth:number; sourceHeight:number;
   layout:string; style:"boxed"|"plain"; position:"left"|"center"|"right"; username:string; size:number;
@@ -5,12 +7,14 @@ export interface SocialTagGeometryInput {
   regionAHeight:number; regionOrder:string;
   regionAWidth:number; regionARegionHeight:number;
   freecamSize:number; freecamX:number; freecamY:number;
+  seamOffset?:number;
 }
 
 export interface SocialTagGeometry { x:number; y:number; side:number; fontSize:number; totalWidth:number; anchorX:number; centerY:number }
 
 export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometry {
-  const {width,height,layout,style,position,username}=input;
+  const {width,height,layout,style,username}=input;
+  const position=style==="boxed"?"center":input.position;
   const estimatedUnits=Array.from(username).reduce((sum,letter)=>sum+(/[ilI1.,:!|]/.test(letter)?.35:/[mwMW@]/.test(letter)?.9:/[A-Z]/.test(letter)?.72:.59),0);
   const measured=Number.isFinite(input.textUnits)&&input.textUnits!==undefined&&input.textUnits>0;
   const units=measured?input.textUnits!:estimatedUnits;
@@ -24,17 +28,23 @@ export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometr
     seam=Math.floor(height/4)*2;cameraBottom=seam;
   }else if(layout==="freecam"){
     cameraWidth=even(width*input.freecamSize/100);
-    const sourceWidth=input.sourceWidth*input.regionAWidth/100;
-    const sourceHeight=input.sourceHeight*input.regionARegionHeight/100;
+    const source=sourceRegion({x:0,y:0,width:input.regionAWidth,height:input.regionARegionHeight},input.sourceWidth,input.sourceHeight);
+    const sourceWidth=source.width,sourceHeight=source.height;
     const cameraHeight=Math.max(2,even(cameraWidth*sourceHeight/Math.max(1,sourceWidth)));
     cameraLeft=Math.max(0,width-cameraWidth)*input.freecamX/100;
     cameraTop=Math.max(0,height-cameraHeight)*input.freecamY/100;
     cameraBottom=cameraTop+cameraHeight;seam=cameraBottom;
+  }else if(layout==="blur"||layout==="original"){
+    const bandHeight=Math.min(height,width*input.sourceHeight/Math.max(1,input.sourceWidth));
+    cameraBottom=(height+bandHeight)/2;
+    seam=cameraBottom;
+  }else if(layout==="fill"){
+    cameraBottom=height*.55;seam=cameraBottom;
   }
   const cameraRight=cameraLeft+cameraWidth;
   // Only the boxed badge needs an inset against phone-side cropping.
   const inset=style==="boxed"?width*.05:0;
-  const safeLeft=inset,safeRight=width-inset;
+  const safeLeft=style==="boxed"?Math.max(inset,cameraLeft):inset,safeRight=style==="boxed"?Math.min(width-inset,cameraRight):width-inset;
   const targetX=position==="left"?Math.max(cameraLeft,safeLeft):position==="center"?cameraLeft+cameraWidth/2:Math.min(cameraRight,safeRight);
   const available=style==="boxed"?Math.max(24,position==="left"?safeRight-targetX:position==="right"?targetX-safeLeft:2*Math.min(targetX-safeLeft,safeRight-targetX)):width*.84;
   const fontSize=Math.min(input.size,available/(units*unitScale+2.4));
@@ -46,7 +56,11 @@ export function socialTagGeometry(input:SocialTagGeometryInput):SocialTagGeometr
   const rawX=position==="left"?targetX:position==="center"?targetX-totalWidth/2:targetX-totalWidth;
   const x=Math.round(Math.max(safeLeft,Math.min(rawX,Math.max(safeLeft,safeRight-totalWidth))));
   const anchorX=x+(position==="left"?0:position==="center"?totalWidth/2:totalWidth);
-  const centerY=style==="boxed"?Math.max(cameraBottom-side/2,cameraTop+side/2):seam;
+  const cameraBelow=layout==="split"&&input.regionOrder==="b_first";
+  const room=(cameraBelow?seam:height-cameraBottom)-(style==="plain"?side/2:0);
+  const maxOffset=Math.max(0,Math.min(height*.22,room));
+  const offset=maxOffset*(input.seamOffset??0)/100;
+  const centerY=(style==="boxed"?cameraBelow?cameraTop+side/2:Math.max(cameraBottom-side/2,cameraTop+side/2):seam)+(cameraBelow?-offset:offset);
   const y=Math.round(centerY-side/2);
   return {x,y,side,fontSize,totalWidth,anchorX,centerY};
 }

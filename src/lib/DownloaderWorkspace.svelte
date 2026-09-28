@@ -7,7 +7,7 @@
   import { reportProblem } from "./toast";
   import { untrack } from "svelte";
 
-  let { language, onbusychange, onopenmedia }: { language: "tr" | "en"; onbusychange?: (value:boolean)=>void; onopenmedia: (path:string)=>Promise<void> } = $props();
+  let { language, hasMedia, onback, onbusychange, onopenmedia }: { language: "tr" | "en"; hasMedia:boolean; onback:()=>void; onbusychange?: (value:boolean)=>void; onopenmedia: (path:string)=>Promise<void> } = $props();
   interface DownloaderStatus { ready:boolean; version:string|null }
   interface DownloaderResult { output_dir:string; output_file:string|null; details:string }
   interface DownloadFormat { id:string; label:string; detail:string; kind:string; codec:string; rank:number; height:number|null }
@@ -135,6 +135,12 @@
         <ul>{#each history as entry (entry.path)}<li><span title={entry.path}>{entry.name}</span><button class="history-show" onclick={()=>revealItemInDir(entry.path).catch(reportProblem)} disabled={!!deletingPath}>{language==="tr"?"GÖSTER":"SHOW"}</button><button class="history-delete" onclick={()=>pendingDelete=entry} disabled={busy||analyzing||!!deletingPath} aria-label={language==="tr"?`${entry.name} dosyasını sil`:`Delete ${entry.name}`} title={language==="tr"?"Geri Dönüşüm Kutusu’na taşı":"Move to Recycle Bin"}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v6m4-6v6"/></svg></button></li>{/each}</ul>
       {:else}<p>{language==="tr"?"Henüz indirilen dosya yok.":"No downloads yet."}</p>{/if}
     </section>
+    <div class="download-back-actions">
+      <button class="downloader-back" class:editor={hasMedia} onclick={onback} disabled={busy||analyzing||!!deletingPath} title={busy||analyzing||!!deletingPath?(language==="tr"?"İşlem tamamlanana veya iptal edilene kadar bekle":"Wait until the operation finishes or is cancelled"):(hasMedia?(language==="tr"?"Açık çalışmaya dön":"Return to current work"):(language==="tr"?"Ana menüye dön":"Back to main menu"))}>
+        <span class="download-back-arrow" aria-hidden="true">←</span>
+        <span class="download-back-label">{hasMedia?(language==="tr"?"ÇALIŞMAYA DÖN":"BACK TO EDITOR"):(language==="tr"?"GERİ":"BACK")}</span>
+      </button>
+    </div>
   </main>
   <footer class="download-note">{language==="tr"?"Doğrudan cihazına kaydedilir · Hesap ve tarayıcı çerezi kullanılmaz":"Saved to your device · No account or browser cookies"}</footer>
 </section>
@@ -194,6 +200,12 @@
   .download-history li .history-delete:hover:not(:disabled){color:var(--red);border-color:var(--red)}
   .download-history li svg{width:16px;height:16px}
   .download-history>p{padding:13px 14px;color:var(--muted);font:11px var(--sans)}
+  .download-back-actions{display:flex;justify-content:center;margin:32px 0 0}
+  .download-back-actions .downloader-back{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:100px;min-height:36px;padding:0 16px;font-size:10px;font-weight:600}
+  .download-back-actions .downloader-back.editor{min-width:166px}
+  .download-back-arrow{font:14px/1 var(--sans)}
+  .download-back-label{white-space:nowrap}
+  .download-back-actions .downloader-back:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   .download-delete-dialog p strong{display:inline-block;max-width:100%;color:var(--text);overflow-wrap:anywhere}
   .download-delete-dialog .download-delete-icon{color:var(--red)}
   .download-delete-dialog .download-delete-icon svg{width:17px;height:17px}

@@ -4020,11 +4020,33 @@ fn transform_region_crop(
     format!("[{input}]crop=trunc(iw*{w}/100/2)*2:trunc(ih*{h}/100/2)*2:trunc(iw*{x}/100/2)*2:trunc(ih*{y}/100/2)*2,scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height}[{output}]")
 }
 
+fn clipper_framing(params: &HashMap<String, String>) -> Result<(f64, f64, f64), String> {
+    let read = |key, default, low, high, label| -> Result<f64, String> {
+        if params.contains_key(key) {
+            check_range(parse_number(params, key)?, low, high, label)
+        } else {
+            Ok(default)
+        }
+    };
+    Ok((
+        read("clipper_zoom", 100.0, 100.0, 300.0, "Clipper zoom")?,
+        read("clipper_x", 50.0, 0.0, 100.0, "Clipper X")?,
+        read("clipper_y", 50.0, 0.0, 100.0, "Clipper Y")?,
+    ))
+}
+
+fn clipper_band_height(width: u64, height: u64, info: &MediaInfo) -> u64 {
+    let source_width = info.width.unwrap_or(16).max(1) as f64;
+    let source_height = info.height.unwrap_or(9) as f64;
+    ((width as f64 * source_height / source_width).floor() as u64 / 2 * 2).clamp(2, height)
+}
+
 fn multi_region_layout_filter(
     params: &HashMap<String, String>,
     layout: &str,
     width: u64,
     height: u64,
+    info: &MediaInfo,
 ) -> Result<String, String> {
     let camera = transform_region(params, "region_a")?;
     let content = transform_region(params, "region_b")?;
@@ -4074,10 +4096,37 @@ fn multi_region_layout_filter(
             let y = check_range(parse_number(params, "freecam_y")?, 0.0, 100.0, "Camera Y")?;
             let camera_width = ((width as f64 * size / 100.0).round() as u64 / 2 * 2).max(2);
             let (cx, cy, cw, ch) = camera;
-            Ok(format!("split=2[ra][rb];{};[ra]crop=trunc(iw*{cw}/100/2)*2:trunc(ih*{ch}/100/2)*2:trunc(iw*{cx}/100/2)*2:trunc(ih*{cy}/100/2)*2,scale={camera_width}:-2:flags=lanczos[camera];[content][camera]overlay=(W-w)*{x}/100:(H-h)*{y}/100,setsar=1", transform_region_crop("rb", "content", content, width, height)))
+            let source_width =
+                ((info.width.unwrap_or(16).max(2) as f64 * cw / 100.0).trunc() as u64 / 2 * 2)
+                    .max(2);
+            let source_height =
+                ((info.height.unwrap_or(9).max(2) as f64 * ch / 100.0).trunc() as u64 / 2 * 2)
+                    .max(2);
+            let camera_height = ((camera_width as f64 * source_height as f64 / source_width as f64)
+                .round() as u64
+                / 2
+                * 2)
+            .max(2);
+            let mask = rounded_camera_mask(camera_width as u32, camera_height as u32)?;
+            Ok(format!("split=2[ra][rb];{};[ra]crop=trunc(iw*{cw}/100/2)*2:trunc(ih*{ch}/100/2)*2:trunc(iw*{cx}/100/2)*2:trunc(ih*{cy}/100/2)*2,scale={camera_width}:{camera_height}:flags=lanczos,format=rgba[camera_raw];movie=filename={}:dec_threads=1,format=gray[round_mask];[camera_raw][round_mask]alphamerge[camera];[content][camera]overlay=(W-w)*{x}/100:(H-h)*{y}/100,setsar=1", transform_region_crop("rb", "content", content, width, height), movie_filter_path(&mask)))
         }
         _ => Err("Invalid multi-region layout.".into()),
     }
+}
+
+fn rounded_camera_mask(width: u32, height: u32) -> Result<PathBuf, String> {
+    use image::ImageEncoder;
+    let radius = (width as f64 * 0.025).round().max(2.0);
+    let mask = image::GrayImage::from_fn(width, height, |x, y| {
+        let dx = (radius - (x.min(width - 1 - x) as f64)).max(0.0);
+        let dy = (radius - (y.min(height - 1 - y) as f64)).max(0.0);
+        image::Luma([((radius + 0.5 - dx.hypot(dy)) * 255.0).clamp(0.0, 255.0) as u8])
+    });
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(mask.as_raw(), width, height, image::ColorType::L8.into())
+        .map_err(|error| error.to_string())?;
+    social_tag_asset_path_in(&app_cache_directory()?.join("camera-masks"), &bytes, "png")
 }
 
 fn clipper_watermark_filter(
@@ -4174,8 +4223,14 @@ fn clipper_watermark_filter(
             let output_y = check_range(parse_number(params, "freecam_y")?, 0.0, 100.0, "Camera Y")?;
             let camera_width =
                 ((width as f64 * size_percent / 100.0).round() as u64 / 2 * 2).max(2);
-            let source_width = info.width.unwrap_or(16) as f64 * camera.2 / 100.0;
-            let source_height = info.height.unwrap_or(9) as f64 * camera.3 / 100.0;
+            let source_width = (info.width.unwrap_or(16) as f64 * camera.2 / 200.0)
+                .floor()
+                .max(1.0)
+                * 2.0;
+            let source_height = (info.height.unwrap_or(9) as f64 * camera.3 / 200.0)
+                .floor()
+                .max(1.0)
+                * 2.0;
             let camera_height =
                 (camera_width as f64 * source_height / source_width.max(1.0)).max(2.0);
             let left = (width as f64 - camera_width as f64).max(0.0) * output_x / 100.0;
@@ -4281,11 +4336,13 @@ fn movie_filter_path(path: &Path) -> String {
 
 struct KickBannerPlacement {
     width: u64,
+    height: u64,
     camera_left: f64,
     camera_width: f64,
     camera_bottom: f64,
     seam: f64,
     camera_below: bool,
+    seam_offset: f64,
 }
 
 fn clipper_kick_banner_filter(
@@ -4313,34 +4370,56 @@ fn clipper_kick_banner_filter(
     } else {
         estimated_units
     };
-    let design_name_end = 516.0 + 147.0 * 1.18 + 32.0 * 1.18 * units;
-    // 54 matches the supplied reference. Scale the logo, wordmark, name and
-    // the gaps about one pivot; long names fit without squeezing only text.
-    let factor = (requested / 54.0)
-        .min(1.0)
-        .min(516.0 / (design_name_end - 540.0).max(1.0))
-        .max(0.25);
+    // Preserve the reference font size for ordinary names. Move a longer
+    // wordmark left before shrinking it against the logo and phone action rail.
+    let factor = (requested / 54.0).min(1.0);
     let base = placement.camera_width / 1080.0;
     let logo_scale = base * factor * 1.035;
-    let text_scale = base * factor * 1.18;
+    let logo_width = (350.0 * logo_scale).round().max(1.0);
+    let logo_x = if placement.camera_width < placement.width as f64 {
+        placement.camera_left.ceil()
+    } else {
+        placement.camera_left - 31.5 * base * factor
+    };
+    let min_prefix_x = logo_x + 350.0 * logo_scale + 18.0 * base * factor;
+    let reference_prefix_x = placement.camera_left + 516.0 * base * factor;
+    let safe_right = placement.camera_left + placement.camera_width * 0.78;
+    let full_text_width = base * factor * 1.18 * (147.0 + 32.0 * units);
+    let text_fit = ((safe_right - min_prefix_x) / full_text_width).clamp(0.1, 1.0);
+    let text_scale = base * factor * 1.18 * text_fit;
+    let prefix_x = (safe_right - full_text_width * text_fit)
+        .min(reference_prefix_x)
+        .max(min_prefix_x);
     let strip_height = 113.0 * logo_scale;
-    let y = if placement.camera_below {
+    let max_offset = (placement.height as f64 * 0.22).min(if placement.camera_below {
         placement.seam
     } else {
-        placement.camera_bottom - strip_height
+        placement.height as f64 - placement.camera_bottom
+    });
+    let offset = max_offset.max(0.0) * placement.seam_offset / 100.0;
+    let y = if placement.camera_below {
+        placement.seam - offset
+    } else {
+        placement.camera_bottom - strip_height + offset
     };
     let bottom = y + strip_height;
-    let bar_y = bottom - 69.0 * text_scale;
-    let logo_width = (350.0 * logo_scale).round().max(1.0);
+    let bar_y = bottom - 69.0 * base * factor * 1.18;
     let logo_height = (101.0 * logo_scale).round().max(1.0);
-    let logo_x = placement.camera_left + base * (540.0 + factor * (-31.5 - 540.0));
     let logo_y = bottom - 113.0 * logo_scale;
     let prefix_width = (147.0 * text_scale).round().max(1.0);
-    let prefix_height = (101.0 * text_scale).round().max(1.0);
-    let prefix_y = bottom - 106.0 * text_scale;
-    let prefix_x = placement.camera_left + base * (540.0 + factor * (516.0 - 540.0));
+    // The supplied prefix tile has black padding below its glyphs. Crop it so
+    // the tile cannot protrude beneath the banner after scaling.
+    let prefix_height = (94.0 * text_scale).round().max(1.0);
     let bar_width = placement.camera_width.round().max(1.0);
-    let bar_height = (69.0 * text_scale).round().max(1.0);
+    let bar_height = (69.0 * base * factor * 1.18).round().max(1.0);
+    let prefix_y = bottom - 106.0 * text_scale;
+    // Clip the prefix tile at the black bar's top edge. Its opaque black
+    // padding can otherwise leave a one-pixel lip above the bar after rounding.
+    let prefix_clip = (bar_y.round() - prefix_y.round())
+        .max(0.0)
+        .min(prefix_height - 1.0);
+    let prefix_visible_height = prefix_height - prefix_clip;
+    let prefix_overlay_y = prefix_y.round() + prefix_clip;
     let art = social_tag_asset_path(
         include_bytes!("../resources/social-tags/kick-banner.png"),
         "png",
@@ -4350,14 +4429,14 @@ fn clipper_kick_banner_filter(
         "otf",
     )?;
     let text_x = prefix_x + 147.0 * text_scale;
-    let text_center_y = bottom - 35.0 * text_scale;
+    let text_center_y = bottom - 35.0 * base * factor * 1.18;
     let text_size = (32.0 * text_scale).round().max(1.0);
     let bar_x = placement
         .camera_left
         .round()
         .clamp(0.0, placement.width as f64);
     Ok(format!(
-        "drawbox=x={bar_x:.0}:y={bar_y:.0}:w={bar_width:.0}:h={bar_height:.0}:color=black:t=fill[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,split=2[social_logo_source][social_prefix_source];[social_logo_source]crop=350:101:0:0,scale={logo_width:.0}:{logo_height:.0}:flags=lanczos,format=rgba[social_logo];[social_prefix_source]crop=147:101:419:0,scale={prefix_width:.0}:{prefix_height:.0}:flags=lanczos,format=rgba[social_prefix];[social_barred][social_logo]overlay=x={logo_x:.0}:y={logo_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_logoed];[social_logoed][social_prefix]overlay=x={prefix_x:.0}:y={prefix_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
+        "drawbox=x={bar_x:.0}:y={bar_y:.0}:w={bar_width:.0}:h={bar_height:.0}:color=black:t=fill[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,format=rgba,premultiply=inplace=1,split=2[social_logo_source][social_prefix_source];[social_logo_source]crop=350:101:0:0,scale={logo_width:.0}:{logo_height:.0}:flags=lanczos,unpremultiply=inplace=1,format=rgba[social_logo];[social_prefix_source]crop=147:94:419:0,scale={prefix_width:.0}:{prefix_height:.0}:flags=lanczos,unpremultiply=inplace=1,format=rgba,crop={prefix_width:.0}:{prefix_visible_height:.0}:0:{prefix_clip:.0}[social_prefix];[social_barred][social_logo]overlay=x={logo_x:.0}:y={logo_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_logoed];[social_logoed][social_prefix]overlay=x={prefix_x:.0}:y={prefix_overlay_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
         movie_filter_path(&art),
         drawtext_escape(&font.to_string_lossy()),
         drawtext_escape(&text),
@@ -4396,10 +4475,12 @@ fn clipper_social_tag_filter(
             "social_tag_plain_position"
         })
         .map(String::as_str)
-        .unwrap_or(if style == "boxed" { "left" } else { "center" });
+        .unwrap_or("center");
     if !matches!(position, "left" | "center" | "right") {
         return Err("Invalid Social Tag position.".into());
     }
+    // Older projects may still contain a side position for boxed badges.
+    let position = if style == "boxed" { "center" } else { position };
     let platform = params
         .get("social_tag_platform")
         .map(String::as_str)
@@ -4472,8 +4553,14 @@ fn clipper_social_tag_filter(
             let x = check_range(parse_number(params, "freecam_x")?, 0.0, 100.0, "Camera X")?;
             let y = check_range(parse_number(params, "freecam_y")?, 0.0, 100.0, "Camera Y")?;
             camera_width = ((width as f64 * percent / 100.0).round() as u64 / 2 * 2) as f64;
-            let source_width = info.width.unwrap_or(16) as f64 * camera.2 / 100.0;
-            let source_height = info.height.unwrap_or(9) as f64 * camera.3 / 100.0;
+            let source_width = (info.width.unwrap_or(16) as f64 * camera.2 / 200.0)
+                .floor()
+                .max(1.0)
+                * 2.0;
+            let source_height = (info.height.unwrap_or(9) as f64 * camera.3 / 200.0)
+                .floor()
+                .max(1.0)
+                * 2.0;
             let camera_height =
                 ((camera_width * source_height / source_width.max(1.0)).round() as u64 / 2 * 2)
                     .max(2) as f64;
@@ -4482,22 +4569,43 @@ fn clipper_social_tag_filter(
             camera_bottom = camera_top + camera_height;
             seam = camera_bottom;
         }
+        "original" | "blur" => {
+            let band_height = clipper_band_height(width, height, info) as f64;
+            camera_bottom = (height as f64 + band_height) / 2.0;
+            seam = camera_bottom;
+        }
+        "fill" => {
+            camera_bottom = height as f64 * 0.55;
+            seam = camera_bottom;
+        }
         _ => {}
     }
     if style == "kick_banner" {
         let camera_below =
             layout == "split" && params.get("region_order").map(String::as_str) == Some("b_first");
+        let seam_offset = if params.contains_key("social_tag_seam_offset") {
+            check_range(
+                parse_number(params, "social_tag_seam_offset")?,
+                0.0,
+                100.0,
+                "Kick banner distance from camera",
+            )?
+        } else {
+            0.0
+        };
         return clipper_kick_banner_filter(
             params,
             username,
             requested,
             KickBannerPlacement {
                 width,
+                height,
                 camera_left,
                 camera_width,
                 camera_bottom,
                 seam,
                 camera_below,
+                seam_offset,
             },
         )
         .map(Some);
@@ -4509,8 +4617,16 @@ fn clipper_social_tag_filter(
     } else {
         0.0
     };
-    let safe_left = inset;
-    let safe_right = width as f64 - inset;
+    let safe_left = if style == "boxed" {
+        inset.max(camera_left)
+    } else {
+        inset
+    };
+    let safe_right = if style == "boxed" {
+        (width as f64 - inset).min(camera_right)
+    } else {
+        width as f64 - inset
+    };
     let target_x = match position {
         "left" => camera_left.max(safe_left),
         "center" => camera_left + camera_width / 2.0,
@@ -4546,11 +4662,34 @@ fn clipper_social_tag_filter(
     let x = raw_x
         .clamp(safe_left, (safe_right - total_width).max(safe_left))
         .round();
-    let center_y = if style == "boxed" {
-        (camera_bottom - side / 2.0).max(camera_top + side / 2.0)
+    let base_center_y = if style == "boxed" {
+        if layout == "split" && params.get("region_order").map(String::as_str) == Some("b_first") {
+            camera_top + side / 2.0
+        } else {
+            (camera_bottom - side / 2.0).max(camera_top + side / 2.0)
+        }
     } else {
         seam
     };
+    let camera_below =
+        layout == "split" && params.get("region_order").map(String::as_str) == Some("b_first");
+    let distance = if params.contains_key("social_tag_seam_offset") {
+        check_range(
+            parse_number(params, "social_tag_seam_offset")?,
+            0.0,
+            100.0,
+            "Social Tag distance from camera",
+        )?
+    } else {
+        0.0
+    };
+    let room = (if camera_below {
+        seam
+    } else {
+        height as f64 - camera_bottom
+    }) - if style == "plain" { side / 2.0 } else { 0.0 };
+    let offset = (height as f64 * 0.22).min(room).max(0.0) * distance / 100.0;
+    let center_y = base_center_y + if camera_below { -offset } else { offset };
     let y = (center_y - side / 2.0).round();
     let font_dir = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
         .join("Fonts");
@@ -4706,6 +4845,15 @@ async fn build_command(
                     "crop=trunc(iw*{w}/100/2)*2:trunc(ih*{h}/100/2)*2:trunc(iw*{x}/100/2)*2:trunc(ih*{y}/100/2)*2"
                 ));
             }
+            if op == "clipper" && vertical_layout_active && vertical_layout == "fill" {
+                let (zoom, pan_x, pan_y) = clipper_framing(p)?;
+                if zoom > 100.0 {
+                    let scale = zoom / 100.0;
+                    filters.push(format!(
+                        "crop=trunc(iw/{scale:.4}/2)*2:trunc(ih/{scale:.4}/2)*2:trunc((iw-ow)*{pan_x:.2}/100/2)*2:trunc((ih-oh)*{pan_y:.2}/100/2)*2"
+                    ));
+                }
+            }
             if info.kind == "image" && fit_mode == "contain" && crop_mode != "off" {
                 let (rw, rh) = match crop_mode {
                     "1:1" => (1.0, 1.0),
@@ -4776,8 +4924,12 @@ async fn build_command(
                             vertical_layout,
                             width,
                             height,
+                            info,
                         )?);
                     } else if vertical_layout_active && vertical_layout == "original" {
+                        let (zoom, pan_x, pan_y) = clipper_framing(p)?;
+                        let scale = zoom / 100.0;
+                        let band_height = clipper_band_height(width, height, info);
                         let background = match p
                             .get("canvas_background")
                             .map(String::as_str)
@@ -4796,11 +4948,24 @@ async fn build_command(
                             _ => return Err("Invalid canvas background.".into()),
                         };
                         filters.push(format!(
-                            "scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background},setsar=1"
+                            "scale=trunc({width}*{scale:.4}/2)*2:-2:flags=lanczos,crop={width}:min(ih\\,{band_height}):trunc((iw-ow)*{pan_x:.2}/100/2)*2:trunc((ih-oh)*{pan_y:.2}/100/2)*2,pad={width}:{height}:0:(oh-ih)/2:color={background},setsar=1"
                         ));
                     } else if vertical_layout_active && vertical_layout == "blur" {
+                        let (zoom, pan_x, pan_y) = clipper_framing(p)?;
+                        let strength = if p.contains_key("blur_strength") {
+                            check_range(
+                                parse_number(p, "blur_strength")?,
+                                0.0,
+                                60.0,
+                                "Blur strength",
+                            )?
+                        } else {
+                            35.0
+                        };
+                        let scale = zoom / 100.0;
+                        let band_height = clipper_band_height(width, height, info);
                         filters.push(format!(
-                            "split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},gblur=sigma=35[bg];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1"
+                            "split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},gblur=sigma={strength:.2}[bg];[fg]scale=trunc({width}*{scale:.4}/2)*2:-2:flags=lanczos,crop={width}:min(ih\\,{band_height}):trunc((iw-ow)*{pan_x:.2}/100/2)*2:trunc((ih-oh)*{pan_y:.2}/100/2)*2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1"
                         ));
                     } else if info.kind == "image" {
                         filters.push(format!(
@@ -8478,6 +8643,30 @@ mod tests {
     }
 
     #[test]
+    fn kick_banner_and_font_regenerate_from_embedded_bytes() {
+        let root = storage_test_root("kick-banner-assets");
+        let cache = root.join("social-tags");
+        for (bytes, extension) in [
+            (
+                include_bytes!("../resources/social-tags/kick-banner.png").as_slice(),
+                "png",
+            ),
+            (
+                include_bytes!("../resources/social-tags/gotham-xnarrow-black.otf").as_slice(),
+                "otf",
+            ),
+        ] {
+            let path = social_tag_asset_path_in(&cache, bytes, extension).unwrap();
+            assert!(path.starts_with(&cache));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            std::fs::write(&path, b"corrupt cache").unwrap();
+            social_tag_asset_path_in(&cache, bytes, extension).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cut_end_accepts_only_the_display_rounding_gap() {
         let duration = 100.05988;
         assert_eq!(check_cut_end(100.060, duration).unwrap(), duration);
@@ -8903,6 +9092,50 @@ mod tests {
         );
     }
 
+    // The browser audit supplies captured run_operation requests and compares
+    // its visible composition against frames from the actual export chain.
+    #[tokio::test]
+    #[ignore = "run via the Clipper real-media Playwright audit"]
+    async fn clipper_preview_export_audit() {
+        let manifest = PathBuf::from(std::env::var("CONTAINER_CLIPPER_AUDIT_MANIFEST").unwrap());
+        let jobs: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        for job in jobs.as_array().unwrap() {
+            let request: OperationRequest = serde_json::from_value(job["request"].clone()).unwrap();
+            let info = probe_media(request.input.clone()).await.unwrap();
+            let (command, _) = build_command(&request, &info).await.unwrap();
+            let filter = &command.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1];
+            let output = manifest
+                .parent()
+                .unwrap()
+                .join(format!("{}-export.png", job["name"].as_str().unwrap()));
+            let result = hidden_command("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    &request.input,
+                    "-vf",
+                    filter,
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                ])
+                .arg(&output)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn vertical_transform_layouts_preserve_aspect_ratio() {
         let info = MediaInfo {
@@ -8971,7 +9204,7 @@ mod tests {
             .find(|pair| pair[0] == "-vf")
             .map(|pair| pair[1].as_str())
             .unwrap();
-        assert!(original_filter.contains("force_original_aspect_ratio=decrease"));
+        assert!(original_filter.contains("scale=trunc(1080*1.0000/2)*2:-2"));
         assert!(original_filter.contains("pad=1080:1920"));
         assert!(!original_filter.contains("crop=trunc"));
 
@@ -8983,7 +9216,66 @@ mod tests {
             .unwrap();
         assert!(blur_filter.contains("split=2[bg][fg]"));
         assert!(blur_filter.contains("gblur=sigma=35"));
-        assert!(blur_filter.contains("force_original_aspect_ratio=decrease"));
+        assert!(blur_filter.contains("scale=trunc(1080*1.0000/2)*2:-2"));
+        let mut reframed = request("blur");
+        reframed.params.insert("clipper_zoom".into(), "175".into());
+        reframed.params.insert("clipper_x".into(), "25".into());
+        reframed.params.insert("clipper_y".into(), "80".into());
+        reframed.params.insert("blur_strength".into(), "12".into());
+        reframed.params.insert("output_width".into(), "360".into());
+        reframed.params.insert("output_height".into(), "640".into());
+        reframed
+            .params
+            .insert("social_tag_enabled".into(), "true".into());
+        reframed
+            .params
+            .insert("social_tag_username".into(), "batuhanfurkan5".into());
+        reframed
+            .params
+            .insert("social_tag_platform".into(), "kick".into());
+        reframed
+            .params
+            .insert("social_tag_style".into(), "kick_banner".into());
+        reframed
+            .params
+            .insert("social_tag_size".into(), "54".into());
+        let (reframed_command, _) = build_command(&reframed, &info).await.unwrap();
+        let reframed_filter = reframed_command
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(reframed_filter.contains("scale=trunc(360*1.7500/2)*2:-2"));
+        assert!(reframed_filter.contains(
+            "crop=360:min(ih\\,202):trunc((iw-ow)*25.00/100/2)*2:trunc((ih-oh)*80.00/100/2)*2"
+        ));
+        assert!(reframed_filter.contains("overlay=(W-w)/2:(H-h)/2"));
+        assert!(reframed_filter.contains("gblur=sigma=12.00"));
+        let rendered = hidden_command("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=640x360:r=30:d=1",
+                "-vf",
+                reframed_filter,
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            rendered.status.success(),
+            "Blur zoom and banner render failed: {}",
+            String::from_utf8_lossy(&rendered.stderr)
+        );
 
         let (fill, _) = build_command(&request("fill"), &info).await.unwrap();
         let fill_filter = fill
@@ -9005,6 +9297,78 @@ mod tests {
         assert!(split_filter.contains("scale=1080:1344"));
         assert!(split_filter.contains("[top][bottom]vstack=inputs=2"));
 
+        // Exercise the whole Clipper export graph, not only the Social Tag
+        // sub-filter. This caught Split preview/export disagreements that a
+        // unit test of clipper_social_tag_filter could not see.
+        for layout in ["split", "squares", "fill"] {
+            let mut tops = Vec::new();
+            for distance in ["0", "15"] {
+                let mut render = request(layout);
+                render.params.insert("output_width".into(), "360".into());
+                render.params.insert("output_height".into(), "640".into());
+                render
+                    .params
+                    .insert("social_tag_enabled".into(), "true".into());
+                render
+                    .params
+                    .insert("social_tag_platform".into(), "kick".into());
+                render
+                    .params
+                    .insert("social_tag_username".into(), "batuhanfurkan5".into());
+                render
+                    .params
+                    .insert("social_tag_style".into(), "kick_banner".into());
+                render.params.insert("social_tag_size".into(), "54".into());
+                render
+                    .params
+                    .insert("social_tag_seam_offset".into(), distance.into());
+                let (command, _) = build_command(&render, &info).await.unwrap();
+                let filter = command.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
+                let output = hidden_command("ffmpeg")
+                    .args([
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "color=c=white:s=640x360:r=1:d=1",
+                        "-vf",
+                        filter,
+                        "-frames:v",
+                        "1",
+                        "-pix_fmt",
+                        "rgb24",
+                        "-f",
+                        "rawvideo",
+                        "-",
+                    ])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{layout} full export failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(output.stdout.len(), 360 * 640 * 3);
+                let top = (100..500)
+                    .find(|&y| {
+                        output.stdout[(y * 360 + 330) * 3..][..3]
+                            .iter()
+                            .all(|&v| v < 40)
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{layout} {distance}% has no banner bar in full output: {filter}")
+                    });
+                tops.push(top);
+            }
+            assert!(
+                tops[1] > tops[0] + 10,
+                "{layout} full export ignored 15% distance: {tops:?}"
+            );
+        }
+
         let (squares, _) = build_command(&request("squares"), &info).await.unwrap();
         let squares_filter = squares.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
         assert!(squares_filter.contains("split=2[ra][rb]"));
@@ -9022,8 +9386,117 @@ mod tests {
 
         let (freecam, _) = build_command(&request("freecam"), &info).await.unwrap();
         let freecam_filter = freecam.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
-        assert!(freecam_filter.contains("scale=832:-2"));
+        assert!(freecam_filter.contains("scale=832:"));
+        assert!(freecam_filter.contains("alphamerge[camera]"));
         assert!(freecam_filter.contains("overlay=(W-w)*50/100:(H-h)*2/100"));
+        let rounded_mask = image::open(rounded_camera_mask(180, 102).unwrap())
+            .unwrap()
+            .to_luma8();
+        assert_eq!(rounded_mask.get_pixel(0, 0).0[0], 0);
+        assert_eq!(rounded_mask.get_pixel(90, 51).0[0], 255);
+        let mut freecam_preview = request("freecam");
+        freecam_preview
+            .params
+            .insert("output_width".into(), "360".into());
+        freecam_preview
+            .params
+            .insert("output_height".into(), "640".into());
+        let (freecam_command, _) = build_command(&freecam_preview, &info).await.unwrap();
+        let freecam_preview_filter = freecam_command
+            .windows(2)
+            .find(|pair| pair[0] == "-vf")
+            .unwrap()[1]
+            .as_str();
+        let freecam_render = hidden_command("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=640x360:r=30:d=2",
+                "-vf",
+                freecam_preview_filter,
+                "-frames:v",
+                "45",
+                "-f",
+                "framemd5",
+                "-",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            freecam_render.status.success(),
+            "Rounded Freecam render failed: {}",
+            String::from_utf8_lossy(&freecam_render.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&freecam_render.stdout)
+                .lines()
+                .filter(|line| !line.starts_with('#'))
+                .count(),
+            45,
+            "Freecam's static rounded mask must remain visible through the video"
+        );
+        for layout in ["split", "squares", "freecam"] {
+            let mut unchanged = request(layout);
+            unchanged.params.insert("clipper_zoom".into(), "250".into());
+            unchanged.params.insert("clipper_x".into(), "0".into());
+            unchanged.params.insert("clipper_y".into(), "100".into());
+            let (command, _) = build_command(&unchanged, &info).await.unwrap();
+            let filter = command.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
+            let baseline = match layout {
+                "split" => split_filter,
+                "squares" => squares_filter,
+                _ => freecam_filter,
+            };
+            assert_eq!(
+                filter, baseline,
+                "{layout} must ignore zoom settings from other layouts"
+            );
+        }
+        for layout in ["original", "fill"] {
+            let mut zoomed = request(layout);
+            zoomed.params.insert("output_width".into(), "360".into());
+            zoomed.params.insert("output_height".into(), "640".into());
+            zoomed.params.insert("clipper_zoom".into(), "150".into());
+            zoomed.params.insert("clipper_x".into(), "25".into());
+            zoomed.params.insert("clipper_y".into(), "75".into());
+            let (command, _) = build_command(&zoomed, &info).await.unwrap();
+            let filter = command.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1].as_str();
+            if layout == "fill" {
+                assert!(filter.contains("crop=trunc(iw/1.5000/2)*2"));
+            } else {
+                assert!(filter.contains("scale=trunc(360*1.5000/2)*2:-2"));
+            }
+            let rendered = hidden_command("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=s=640x360:r=30:d=1",
+                    "-vf",
+                    filter,
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                rendered.status.success(),
+                "{layout} zoom render failed: {}",
+                String::from_utf8_lossy(&rendered.stderr)
+            );
+        }
 
         let mut watermarked = request("split");
         watermarked
@@ -9178,9 +9651,7 @@ mod tests {
             if style == "plain" {
                 assert!(filter.contains("y=192-text_h/2"));
             } else {
-                if position == "left" {
-                    assert!(filter.starts_with("drawbox=x=18:"));
-                }
+                assert!(filter.starts_with("drawbox=x="));
                 let mut segments = filter.split(',');
                 let icon = segments.next().unwrap();
                 let plate = segments.next().unwrap();
@@ -9255,7 +9726,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(freecam.starts_with("drawbox=x=90:"));
+        assert!(freecam.starts_with("drawbox=x=92:"));
     }
 
     #[tokio::test]
@@ -9288,6 +9759,9 @@ mod tests {
             ("split", "b_first", "36"),
             ("squares", "a_first", "36"),
             ("freecam", "a_first", "36"),
+            ("original", "a_first", "36"),
+            ("blur", "a_first", "36"),
+            ("fill", "a_first", "36"),
         ] {
             let params = values(&[
                 ("social_tag_enabled", "true"),
@@ -9336,6 +9810,199 @@ mod tests {
                 "{layout} {order} {size} Kick banner FFmpeg render failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+        }
+        let mut tops = Vec::new();
+        let mut font_sizes = Vec::new();
+        for distance in ["0", "29"] {
+            let params = values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_platform", "kick"),
+                ("social_tag_username", "batuhanfurkan5"),
+                ("social_tag_style", "kick_banner"),
+                ("social_tag_size", "54"),
+                ("social_tag_seam_offset", distance),
+                ("region_a_height", "30"),
+                ("region_order", "a_first"),
+            ]);
+            let filter = clipper_social_tag_filter(&params, "split", 360, 640, &info)
+                .unwrap()
+                .unwrap();
+            if let Some(directory) = std::env::var_os("CONTAINER_KICK_BANNER_SNAPSHOT_DIR") {
+                let image =
+                    PathBuf::from(directory).join(format!("kick-banner-batuhan-{distance}.png"));
+                let snapshot = hidden_command("ffmpeg")
+                    .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+                    .arg("color=c=0x303844:s=360x640:r=1:d=1")
+                    .args(["-vf", &filter, "-frames:v", "1", "-y"])
+                    .arg(image)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(snapshot.status.success());
+            }
+            font_sizes.push(
+                filter
+                    .split("fontsize=")
+                    .nth(1)
+                    .unwrap()
+                    .split(':')
+                    .next()
+                    .unwrap()
+                    .to_string(),
+            );
+            let output = hidden_command("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=0x303844:s=360x640:r=1:d=1",
+                    "-vf",
+                    &filter,
+                    "-frames:v",
+                    "1",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Kick banner {distance}% render failed"
+            );
+            assert_eq!(output.stdout.len(), 360 * 640 * 3);
+            let top = (130..320)
+                .find(|&y| {
+                    let pixel = &output.stdout[(y * 360 + 330) * 3..][..3];
+                    pixel.iter().all(|&value| value < 12)
+                })
+                .unwrap();
+            let white_rows: Vec<_> = (top..top + 28)
+                .filter(|&y| {
+                    (130..290).any(|x| {
+                        output.stdout[(y * 360 + x) * 3..][..3]
+                            .iter()
+                            .all(|&value| value > 190)
+                    })
+                })
+                .collect();
+            assert!(
+                (((white_rows[0] + white_rows[white_rows.len() - 1]) as f64 / 2.0)
+                    - (top as f64 + 13.5))
+                    .abs()
+                    <= 2.0,
+                "Kick lettering must be vertically centered in its strip at {distance}%"
+            );
+            let last_white_x = (130..340)
+                .rev()
+                .find(|&x| {
+                    (top..top + 28).any(|y| {
+                        output.stdout[(y * 360 + x) * 3..][..3]
+                            .iter()
+                            .all(|&value| value > 190)
+                    })
+                })
+                .unwrap();
+            assert!(
+                last_white_x <= 288,
+                "Kick username must stay clear of the right-side phone controls: {last_white_x}"
+            );
+            let below_prefix = &output.stdout[((top + 30) * 360 + 180) * 3..][..3];
+            assert!(
+                below_prefix.iter().any(|&value| value > 25),
+                "Kick prefix must not leave a black tile below the banner at {distance}%"
+            );
+            tops.push(top);
+        }
+        assert!(
+            tops[1] > tops[0] + 30,
+            "29% must visibly move the rendered Kick banner: {tops:?}"
+        );
+        let reference = clipper_social_tag_filter(
+            &values(&[
+                ("social_tag_enabled", "true"),
+                ("social_tag_platform", "kick"),
+                ("social_tag_username", "adinross"),
+                ("social_tag_style", "kick_banner"),
+                ("social_tag_size", "54"),
+                ("region_a_height", "30"),
+                ("region_order", "a_first"),
+            ]),
+            "split",
+            360,
+            640,
+            &info,
+        )
+        .unwrap()
+        .unwrap();
+        let reference_font_size = reference
+            .split("fontsize=")
+            .nth(1)
+            .unwrap()
+            .split(':')
+            .next()
+            .unwrap();
+        assert!(font_sizes.iter().all(|size| size == reference_font_size));
+        for (layout, probe_x) in [
+            ("original", 330),
+            ("blur", 330),
+            ("squares", 330),
+            ("freecam", 260),
+        ] {
+            let mut tops = Vec::new();
+            for distance in ["0", "30"] {
+                let params = values(&[
+                    ("social_tag_enabled", "true"),
+                    ("social_tag_platform", "kick"),
+                    ("social_tag_username", "batuhanfurkan5"),
+                    ("social_tag_style", "kick_banner"),
+                    ("social_tag_size", "54"),
+                    ("social_tag_seam_offset", distance),
+                    ("region_a_x", "0"),
+                    ("region_a_y", "0"),
+                    ("region_a_w", "50"),
+                    ("region_a_h", "50"),
+                    ("freecam_x", "50"),
+                    ("freecam_y", "2"),
+                    ("freecam_size", "50"),
+                ]);
+                let filter = clipper_social_tag_filter(&params, layout, 360, 640, &info)
+                    .unwrap()
+                    .unwrap();
+                let output = hidden_command("ffmpeg")
+                    .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+                    .arg("color=c=0x303844:s=360x640:r=1:d=1")
+                    .args([
+                        "-vf",
+                        &filter,
+                        "-frames:v",
+                        "1",
+                        "-pix_fmt",
+                        "rgb24",
+                        "-f",
+                        "rawvideo",
+                        "-",
+                    ])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(output.status.success());
+                let top = (70..620)
+                    .find(|&y| {
+                        output.stdout[(y * 360 + probe_x) * 3..][..3]
+                            .iter()
+                            .all(|&value| value < 12)
+                    })
+                    .unwrap();
+                tops.push(top);
+            }
+            assert!(tops[1] > tops[0] + 30, "{layout} banner offset: {tops:?}");
         }
     }
 
@@ -9422,6 +10089,66 @@ mod tests {
             (visual_center - 180.0).abs() <= 7.0,
             "plain tag appears off center: {left}..{right}"
         );
+        for style in ["boxed", "plain"] {
+            for (layout, order, direction) in [
+                ("split", "a_first", 1isize),
+                ("split", "b_first", -1isize),
+                ("fill", "a_first", 1isize),
+            ] {
+                let mut green_tops = Vec::new();
+                for distance in ["0", "35"] {
+                    let mut moved = params.clone();
+                    moved.insert("social_tag_style".into(), style.into());
+                    moved.insert("region_order".into(), order.into());
+                    moved.insert("social_tag_seam_offset".into(), distance.into());
+                    let filter = clipper_social_tag_filter(&moved, layout, 360, 640, &info)
+                        .unwrap()
+                        .unwrap();
+                    let output = hidden_command("ffmpeg")
+                        .args([
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-f",
+                            "lavfi",
+                            "-i",
+                            "color=c=0x303844:s=360x640:r=1:d=1",
+                            "-vf",
+                            &filter,
+                            "-frames:v",
+                            "1",
+                            "-pix_fmt",
+                            "rgb24",
+                            "-f",
+                            "rawvideo",
+                            "-",
+                        ])
+                        .output()
+                        .await
+                        .unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{style}/{layout}/{order}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let green_top = output
+                        .stdout
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, rgb)| rgb[0] < 140 && rgb[1] > 180 && rgb[2] < 140)
+                        .map(|(index, _)| index / 360)
+                        .min()
+                        .unwrap();
+                    green_tops.push(green_top as isize);
+                }
+                assert!(
+                    (green_tops[1] - green_tops[0]) * direction > 20,
+                    "{style}/{layout}/{order} export ignored tag distance: {green_tops:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -9637,6 +10364,14 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(output.stdout.len(), 360 * 640 * 3);
+            let icon_x: usize = filter
+                .strip_prefix("drawbox=x=")
+                .unwrap()
+                .split(':')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
             let colored: Vec<(usize, usize)> = output
                 .stdout
                 .as_chunks::<3>()
@@ -9647,16 +10382,16 @@ mod tests {
                     let badge = if platform == "kick" {
                         rgb[0] > 55 && rgb[0] < 115 && rgb[1] > 180 && rgb[2] < 70
                     } else {
-                        (18..72).contains(&(index % 360))
+                        (icon_x..icon_x + 54).contains(&(index % 360))
                             && rgb.iter().all(|channel| *channel > 225)
                     };
                     badge.then_some((index % 360, index / 360))
                 })
                 .collect();
             assert!(!colored.is_empty(), "{platform} badge color is missing");
-            assert_eq!(colored.iter().map(|point| point.0).min(), Some(18));
+            assert_eq!(colored.iter().map(|point| point.0).min(), Some(icon_x));
             assert_eq!(colored.iter().map(|point| point.1).min(), Some(138));
-            assert_eq!(colored.iter().map(|point| point.0).max(), Some(71));
+            assert_eq!(colored.iter().map(|point| point.0).max(), Some(icon_x + 53));
             assert_eq!(colored.iter().map(|point| point.1).max(), Some(191));
             let text_rows: Vec<usize> = output
                 .stdout
@@ -9667,7 +10402,7 @@ mod tests {
                 .filter_map(|(index, rgb)| {
                     let x = index % 360;
                     let y = index / 360;
-                    ((72..222).contains(&x)
+                    ((icon_x + 54..360).contains(&x)
                         && (138..192).contains(&y)
                         && rgb.iter().all(|channel| *channel > 190))
                     .then_some(y)
@@ -10909,6 +11644,65 @@ mod tests {
         );
         assert!(output.is_file());
         output
+    }
+
+    #[tokio::test]
+    async fn batch_fps_lossless_setting_renders_ten_fps_and_preserves_audio() {
+        let root = std::env::temp_dir().join(format!(
+            "container_batch_fps_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("source.mp4");
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=160x90:r=60:d=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=1",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success());
+        let info = probe_media(source.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let output = render_request(
+            &OperationRequest {
+                input: source.to_string_lossy().into_owned(),
+                operation: "fps".into(),
+                params: values(&[("fps", "10"), ("crf", "0")]),
+            },
+            &info,
+        )
+        .await;
+        let result = probe_media(output.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(result.fps, Some(10.0));
+        assert_eq!((result.width, result.height), (info.width, info.height));
+        assert_eq!(copied_audio_hash(&output), copied_audio_hash(&source));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

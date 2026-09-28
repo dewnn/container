@@ -4,7 +4,26 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.18.7] - 2026-09-28
+
+- Opening or dropping multiple videos now enters Batch directly with every file queued; a single file still opens the editor.
+- Added Change FPS to Batch, with lossless encoding of retained frames by default and a clear warning about discarded frames and file size.
+- Batch now shows source metadata, blocks incompatible media before processing, offers a smaller high-quality FPS mode, retries failed rows without resetting successful results, and opens or reveals each completed output.
+- Refined Batch output actions with consistent Play, folder, edit and remove icons across light and dark themes.
+- Batch now starts with Convert Audio for audio files and Image Compressor for images, while preserving Encode as the video default.
+- Batch operation choices now follow the loaded media type, hiding video-only actions for audio and images and image-only actions for video.
+- Aligned Process actions with the status and Play Render line, keeping frame, speed and elapsed metrics centered.
+- Clipper preview/export regression tests now generate their own real video fixture and compare Split, Squares and Freecam at 0% and 16% banner distance.
+- Clipped the Kick.com prefix to the banner bar to remove a one-pixel black edge in preview and export; verified the embedded banner art and font regenerate from the app cache.
+
+- Added an embedded Kick.com banner with reference-matched artwork and typography, proportional sizing, and space for social-platform controls beside long usernames.
+- Added an output-layout preview for Split, Squares and Freecam, with a separate Source Regions view for camera/content selection. Fixed Social Tag preview/export placement differences.
+- Added resettable Social Tag distance controls to every Clipper layout and all three tag styles. Boxed badges now stay centered by default.
+- Added mouse-wheel zoom and drag framing to Original Size, Blur and Fill. Original Size and Blur retain their foreground frame while zooming, with center alignment guides and a zoom reset.
+- Added subtly rounded Freecam camera corners and replaced per-frame corner calculations with a reusable mask. Camera placement controls now have resets.
+- Kept Clipper defaults within the selected layout, moved Split advanced settings below overlays, and improved slider undo behavior.
+- Added Play Render beside the process status to open the last output in the default player.
+- Moved DWLNDR's Back button beneath downloads and balanced its icon/text spacing.
 
 ## [0.18.6] - 2026-09-27
 

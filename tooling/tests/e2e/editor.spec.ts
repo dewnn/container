@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const dialogMessagesAllowed = JSON.parse(readFileSync(new URL("../../../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions.includes("dialog:allow-message");
 
@@ -32,7 +34,7 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
         if (cmd === "plugin:event|unlisten") return null;
         if (cmd === "plugin:dialog|open") {
           fileOpens += 1;
-          if (args.options?.multiple) return ["C:\\fixtures\\second.mp4"];
+          if (args.options?.multiple) return args.options.filters?.[0]?.extensions?.includes("bmp") ? [media.path] : ["C:\\fixtures\\second.mp4"];
           return invalidSecond && fileOpens > 1 ? "C:\\fixtures\\broken.mp4" : media.path;
         }
         if (cmd === "plugin:dialog|save") return "C:\\fixtures\\sample.cproj";
@@ -63,9 +65,9 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
       },
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: mock });
-    (window as any).__TEST_DROP__ = (path: string) => {
+    (window as any).__TEST_DROP__ = (path: string | string[]) => {
       const id = events.get("tauri://drag-drop");
-      if (id) callbacks.get(id)?.({ event: "tauri://drag-drop", payload: { paths: [path], position: { x: 0, y: 0 } } });
+      if (id) callbacks.get(id)?.({ event: "tauri://drag-drop", payload: { paths: Array.isArray(path) ? path : [path], position: { x: 0, y: 0 } } });
     };
     (window as any).__TEST_EVENT__ = (name: string, payload: unknown = null) => {
       const id = events.get(name);
@@ -240,11 +242,39 @@ test("downloader back returns to an existing media workspace without losing it",
   await page.locator(".downloader-quick-trigger").click();
   await page.evaluate(()=>(window as any).__TEST_DROP__("C:\\fixtures\\sample.mp4"));
   await expect(page.locator(".downloader-workspace")).toBeVisible();
-  await expect(page.getByRole("button",{name:"BACK TO EDITOR"})).toBeVisible();
-  await page.getByRole("button",{name:"BACK TO EDITOR"}).click();
+  await expect(page.locator(".topbar .downloader-back")).toHaveCount(0);
+  const back=page.locator(".download-back-actions .downloader-back");
+  await expect(back).toHaveText("← BACK TO EDITOR");
+  await back.click();
   await expect(page.locator(".downloader-workspace")).toHaveCount(0);
   await expect(page.locator(".filename")).toHaveText("sample.mp4");
   await expect(page.locator(".settings")).toBeVisible();
+});
+
+test("DWLNDR back sits below downloads and returns to the landing page",async({page})=>{
+  await mockDesktop(page);
+  await page.setViewportSize({width:880,height:700});
+  await page.locator(".downloader-quick-trigger").click();
+  await expect(page.locator(".topbar .downloader-back")).toHaveCount(0);
+  const back=page.locator(".download-back-actions .downloader-back");
+  await expect(back).toHaveText("← BACK");
+  const history=await page.locator(".download-history").boundingBox();
+  const backBox=await back.boundingBox();
+  const arrow=await back.locator(".download-back-arrow").boundingBox();
+  const label=await back.locator(".download-back-label").boundingBox();
+  const note=await page.locator(".download-note").boundingBox();
+  expect(history&&backBox&&arrow&&label&&note).toBeTruthy();
+  expect(backBox!.y).toBeGreaterThanOrEqual(history!.y+history!.height);
+  expect(note!.y).toBeGreaterThanOrEqual(backBox!.y+backBox!.height);
+  expect(Math.abs(backBox!.x+backBox!.width/2-(history!.x+history!.width/2))).toBeLessThan(2);
+  expect(Math.abs((arrow!.x-backBox!.x)-(backBox!.x+backBox!.width-label!.x-label!.width))).toBeLessThan(1);
+  if(process.env.UI_AUDIT_SCREENSHOTS){
+    await page.getByRole("button",{name:"Dark theme"}).click();
+    await page.screenshot({path:"test-results/downloader-back.png"});
+  }
+  await back.click();
+  await expect(page.locator(".downloader-workspace")).toHaveCount(0);
+  await expect(page.locator(".dropzone")).toBeVisible();
 });
 
 test("only DEV shows its runtime version in the landing header",async({page})=>{
@@ -754,7 +784,8 @@ test("Turkish tool descriptions and editing controls stay localized",async({page
   await page.locator(".search").fill("Clipper");
   await page.locator(".tool-row").click();
   await expect(page.locator(".selected-title p")).toHaveText("Yatay videoyu paylaşmaya hazır 9:16 düzene dönüştürür.");
-  await expect(page.locator(".transform-options button").first()).toHaveText("ORİJİNAL BOYUT");
+  await expect(page.locator(".transform-options button").first()).toHaveText("BÖL");
+  await expect(page.locator(".transform-options button").nth(3)).toHaveText("ORİJİNAL BOYUT");
   await expect(page.locator(".auto-camera em")).toHaveText("DENEYSEL");
   await page.locator(".search").fill("Upscale");
   await page.locator(".tool-row").click();
@@ -778,6 +809,7 @@ for(const language of ["en","tr"]){
       for(const size of [{width:1440,height:900},{width:1280,height:720},{width:1024,height:768},{width:900,height:600}]){
         await page.setViewportSize(size);
         await expect(page.locator(".tool-row small").first()).toBeVisible();
+        await expect.poll(()=>page.locator(".tool-group").count()).toBeGreaterThan(4);
         const categoryColors=await page.locator(".tool-group").evaluateAll(groups=>groups.map(group=>({
           category:group.getAttribute("data-category"),
           colors:Array.from(group.querySelectorAll(".tool-row>i")).map(el=>getComputedStyle(el).backgroundColor)
@@ -1080,13 +1112,15 @@ for(const outcome of ["Render failed","cancelled"]){
       const a=await buttons.nth(0).boundingBox(),b=await buttons.nth(1).boundingBox();
       expect(Math.abs(a!.y-b!.y)).toBeLessThan(1);
       expect(a!.x+a!.width).toBeLessThanOrEqual(b!.x);
+      const actions=await page.locator(".batch-row-actions").boundingBox(),panel=await page.locator(".batch-list").boundingBox();
+      expect(actions!.x+actions!.width).toBeLessThanOrEqual(panel!.x+panel!.width);
     }
     await page.screenshot({path:`test-results/batch-actions-${outcome.replaceAll(" ","-")}.png`});
     await page.evaluate(message=>{(window as any).__TEST_HANDLER__=(cmd:string)=>{if(cmd==="run_operation")throw new Error(message)}},outcome);
     await start.click();
     await expect(page.locator(".batch-items article strong")).toHaveText(outcome==="cancelled"?"cancelled":"failed");
     await expect(page.getByRole("button",{name:"continue editing",exact:true})).toHaveCount(0);
-    await expect(page.locator(".batch-items article small")).not.toContainText("output-1.mp4");
+    await expect(page.locator(".batch-items article small[title]")).not.toContainText("output-1.mp4");
   });
 }
 test("Continue editing alone creates stages; earlier settings and forward outputs survive",async({page})=>{
@@ -1363,11 +1397,12 @@ test("text undo stays in the Social Tag input", async ({ page }) => {
   await expect(username).toHaveValue("");
 });
 
-test("Social Tag positions move across the camera and retain per-style choices", async ({ page }) => {
+test("Boxed Social Tag stays centered while plain positions move across the camera", async ({ page }) => {
   await mockDesktop(page);
   await openFixture(page);
   await page.getByPlaceholder("search tools...").fill("Clipper");
   await page.getByText("Clipper", { exact: true }).last().click();
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
   await page.getByText("Social Tag", { exact: true }).click();
   await page.getByPlaceholder("kanaladi").fill("Example");
   const style = page.getByRole("combobox", { name: "Style" });
@@ -1375,27 +1410,15 @@ test("Social Tag positions move across the camera and retain per-style choices",
   const tag = page.locator(".clipper-social-tag");
   const x = async () => (await tag.boundingBox())?.x ?? -1;
 
-  await expect(position).toHaveValue("center");
+  await expect(position).toHaveCount(0);
   await expect(tag).toBeVisible();
-  await position.selectOption("left");
-  const boxedLeft = await x();
-  const camera = await page.locator(".region-a").boundingBox();
-  const boxedBounds = await tag.boundingBox();
+  const outputBox = await page.locator(".clipper-output-canvas").boundingBox();
+  const camera = outputBox&&{...outputBox,height:outputBox.height*.3};
   expect(camera).not.toBeNull();
-  expect(boxedBounds).not.toBeNull();
-  expect(Math.abs(boxedBounds!.x - (camera!.x + camera!.width * .05))).toBeLessThan(3);
-  expect(Math.abs(boxedBounds!.y + boxedBounds!.height - camera!.y - camera!.height)).toBeLessThan(3);
-  await position.selectOption("center");
-  const boxedCenter = await x();
   const centeredBounds = await tag.boundingBox();
+  expect(centeredBounds).not.toBeNull();
   expect(Math.abs(centeredBounds!.x + centeredBounds!.width / 2 - camera!.x - camera!.width / 2)).toBeLessThan(3);
-  await position.selectOption("right");
-  const boxedRight = await x();
-  const rightBounds = await tag.boundingBox();
-  expect(Math.abs(rightBounds!.x + rightBounds!.width - camera!.x - camera!.width * .95)).toBeLessThan(3);
-  expect(boxedLeft).toBeLessThan(boxedCenter);
-  expect(boxedCenter).toBeLessThan(boxedRight);
-  if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-boxed-right.png" });
+  expect(Math.abs(centeredBounds!.y + centeredBounds!.height - camera!.y - camera!.height)).toBeLessThan(3);
 
   await style.selectOption("plain");
   await expect(position).toHaveValue("center");
@@ -1414,7 +1437,9 @@ test("Social Tag positions move across the camera and retain per-style choices",
   expect(plainCenter).toBeLessThan(plainRight);
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/social-tag-plain-right.png" });
   await style.selectOption("boxed");
-  await expect(position).toHaveValue("right");
+  await expect(position).toHaveCount(0);
+  const boxedAgain = await tag.boundingBox();
+  expect(Math.abs(boxedAgain!.x + boxedAgain!.width / 2 - camera!.x - camera!.width / 2)).toBeLessThan(3);
 });
 
 test("Kick.com banner uses the supplied art and Gotham font at the camera seam",async({page})=>{
@@ -1422,6 +1447,7 @@ test("Kick.com banner uses the supplied art and Gotham font at the camera seam",
   await openFixture(page);
   await page.getByPlaceholder("search tools...").fill("Clipper");
   await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
   await page.getByText("Social Tag",{exact:true}).click();
   await page.getByPlaceholder("kanaladi").fill("adinross");
   const style=page.getByRole("combobox",{name:"Style"});
@@ -1430,7 +1456,7 @@ test("Kick.com banner uses the supplied art and Gotham font at the camera seam",
   await style.selectOption("kick_banner");
   await expect(platform).toHaveValue("kick");
   await expect(page.getByRole("combobox",{name:"Position"})).toHaveCount(0);
-  const size=page.locator(".clipper-watermark-controls input[type=range]");
+  const size=page.locator(".clipper-watermark-controls input[type=range]").first();
   await expect(size).toHaveValue("54");
   await size.fill("36");
   const banner=page.locator(".clipper-social-banner");
@@ -1438,7 +1464,8 @@ test("Kick.com banner uses the supplied art and Gotham font at the camera seam",
   await expect(banner.locator(".clipper-social-banner-name")).toHaveText("ADINROSS");
   await expect.poll(()=>banner.locator("img").evaluateAll(images=>images.map(image=>(image as HTMLImageElement).naturalWidth))).toEqual([1080,1080]);
   await expect.poll(()=>page.evaluate(()=>document.fonts.check('32px "Gotham XNarrow Black"'))).toBe(true);
-  const camera=await page.locator(".region-a").boundingBox();
+  const outputBox=await page.locator(".clipper-output-canvas").boundingBox();
+  const camera=outputBox&&{...outputBox,height:outputBox.height*.3};
   const small=await banner.boundingBox();
   expect(camera).not.toBeNull();expect(small).not.toBeNull();
   expect(Math.abs(small!.x-camera!.x)).toBeLessThan(3);
@@ -1458,6 +1485,15 @@ test("Kick.com banner uses the supplied art and Gotham font at the camera seam",
   const largeName=await banner.locator(".clipper-social-banner-name").boundingBox();
   expect(largeName).not.toBeNull();
   expect(Math.abs(largeName!.y+largeName!.height/2-large!.y-large!.height*(1-35*1.18/(113*1.035)))).toBeLessThan(2);
+  const referenceFontSize=await banner.locator(".clipper-social-banner-name").evaluate(el=>getComputedStyle(el).fontSize);
+  const referencePrefix=await banner.locator(".clipper-social-banner-prefix").boundingBox();
+  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await expect(banner.locator(".clipper-social-banner-name")).toHaveCSS("font-size",referenceFontSize);
+  const shiftedPrefix=await banner.locator(".clipper-social-banner-prefix").boundingBox();
+  expect(shiftedPrefix!.x).toBeLessThan(referencePrefix!.x-5);
+  const safeName=await banner.locator(".clipper-social-banner-name").boundingBox();
+  expect(safeName!.x+safeName!.width).toBeLessThanOrEqual(large!.x+large!.width*.8+1);
+  await page.getByPlaceholder("kanaladi").fill("adinross");
   const art=await banner.locator(".clipper-social-banner-logo-art").boundingBox();
   const prefix=await banner.locator(".clipper-social-banner-prefix-art").boundingBox();
   const background=await banner.locator(".clipper-social-banner-bg").boundingBox();
@@ -1474,7 +1510,320 @@ test("Kick.com banner uses the supplied art and Gotham font at the camera seam",
   const longBanner=await banner.boundingBox();
   const longName=await banner.locator(".clipper-social-banner-name").boundingBox();
   expect(longBanner).not.toBeNull();expect(longName).not.toBeNull();
-  expect(longName!.x+longName!.width).toBeLessThanOrEqual(longBanner!.x+longBanner!.width+1);
+  expect(longName!.x+longName!.width).toBeLessThanOrEqual(longBanner!.x+longBanner!.width*.8+1);
+  const bannerDistance=page.getByRole("slider",{name:/Move banner away from camera/i});
+  const defaultPosition=await banner.boundingBox();
+  await bannerDistance.fill("100");
+  const movedPosition=await banner.boundingBox();
+  expect(movedPosition!.y-defaultPosition!.y).toBeGreaterThan(defaultPosition!.height*.9);
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/kick-banner-long-safe.png"});
+  await page.getByPlaceholder("kanaladi").fill("adinross");
+  for(const layout of ["SQUARES","FREECAM"]){
+    await page.getByRole("button",{name:layout,exact:true}).click();
+    const distance=page.getByRole("slider",{name:/Move banner away from camera/i});
+    await expect(distance).toBeVisible();
+    await distance.fill("0");
+    const atCamera=await banner.boundingBox();
+    await distance.fill("50");
+    const awayFromCamera=await banner.boundingBox();
+    expect(awayFromCamera!.y-atCamera!.y,layout).toBeGreaterThan(5);
+  }
+});
+
+test("Blur foreground framing and Social Tags work in Original, Blur and Fill",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByText("Social Tag",{exact:true}).click();
+  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByRole("combobox",{name:"Style"}).selectOption("kick_banner");
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/kick-banner-batuhan-safe.png"});
+  for(const layout of ["ORIGINAL SIZE","BLUR","FILL"]){
+    await page.getByRole("button",{name:layout,exact:true}).click();
+    const banner=page.locator(".clipper-social-banner");
+    await expect(banner).toBeVisible();
+    const bounds=await banner.boundingBox();
+    const name=await banner.locator(".clipper-social-banner-name").boundingBox();
+    expect(bounds).not.toBeNull();expect(name).not.toBeNull();
+    expect(name!.x+name!.width).toBeLessThanOrEqual(bounds!.x+bounds!.width*.8+1);
+    expect(bounds!.y).toBeGreaterThan(0);
+    const zoom=page.getByRole("slider",{name:/Video zoom/i});
+    if(layout==="FILL")await expect(zoom).toBeVisible();else await expect(zoom).toHaveCount(0);
+    await expect(page.getByRole("slider",{name:/Horizontal framing|Vertical framing/i})).toHaveCount(0);
+    await expect(page.getByRole("button",{name:"RESET ZOOM"})).toBeVisible();
+    const distance=page.getByRole("slider",{name:/Move banner away from camera/i});
+    await expect(distance).toBeVisible();
+    await distance.fill("0");
+    const initialBanner=await banner.boundingBox();
+    await distance.fill("30");
+    await expect(distance).toHaveValue("30");
+    const movedBanner=await banner.boundingBox();
+    expect(movedBanner!.y).toBeGreaterThan(initialBanner!.y+3);
+    await page.getByRole("button",{name:"Reset tag distance"}).click();
+    await expect(distance).toHaveValue("0");
+    if(layout==="BLUR"){
+      const backgroundBlur=page.getByRole("slider",{name:/Background blur/i});
+      await backgroundBlur.fill("12");
+      await expect(backgroundBlur).toHaveValue("12");
+      const before=await page.locator(".video-canvas video").last().locator("xpath=..").boundingBox();
+      await expect(page.locator(".fill-pan-layer")).toBeVisible();
+      await page.locator(".fill-pan-layer").hover();
+      for(let i=0;i<8;i++)await page.mouse.wheel(0,-100);
+      const after=await page.locator(".video-canvas video").last().locator("xpath=..").boundingBox();
+      expect(Math.abs(after!.height-before!.height)).toBeLessThan(1);
+      await page.getByRole("button",{name:"RESET ZOOM"}).click();
+    }else{
+      if(layout==="FILL")await zoom.fill("225");
+      else{await page.locator(".fill-pan-layer").hover();for(let i=0;i<13;i++)await page.mouse.wheel(0,-100)}
+      const foreground=await page.locator(".video-canvas video").last().boundingBox();
+      const frame=await page.locator(".video-canvas video").last().locator("xpath=..").boundingBox();
+      expect(foreground!.width).toBeGreaterThan(frame!.width*2.2);
+      expect(foreground!.x).toBeLessThanOrEqual(frame!.x+1);
+      expect(foreground!.x+foreground!.width).toBeGreaterThanOrEqual(frame!.x+frame!.width-1);
+      const pan=await page.locator(".fill-pan-layer").boundingBox();
+      await page.mouse.move(pan!.x+pan!.width/2,pan!.y+pan!.height/2);
+      await page.mouse.down();
+      await expect(page.locator(".clipper-center-guides .vertical")).toBeVisible();
+      await expect(page.locator(".clipper-center-guides .horizontal")).toBeVisible();
+      await page.mouse.move(pan!.x+pan!.width/2+35,pan!.y+pan!.height/2,{steps:4});
+      await expect(page.locator(".clipper-center-guides .vertical")).toHaveCount(0);
+      await page.mouse.move(pan!.x+pan!.width/2,pan!.y+pan!.height/2,{steps:4});
+      await expect(page.locator(".clipper-center-guides .vertical")).toBeVisible();
+      await page.mouse.up();
+      await expect(page.locator(".clipper-center-guides")).toHaveCount(0);
+      if(layout==="FILL"){
+        await expect(page.getByRole("slider",{name:/Horizontal framing/i})).toHaveCount(0);
+        await expect(page.getByRole("slider",{name:/Vertical framing/i})).toHaveCount(0);
+      }
+      await page.getByRole("button",{name:"RESET ZOOM"}).click();
+    }
+  }
+  await page.getByRole("button",{name:"FREECAM",exact:true}).click();
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+  await expect(page.getByRole("slider",{name:/Video zoom/i})).toHaveCount(0);
+  await page.getByRole("slider",{name:"Camera position X"}).fill("80");
+  await page.getByRole("slider",{name:"Camera position X"}).press("Control+z");
+  await expect(page.getByRole("slider",{name:"Camera position X"})).toHaveValue("50");
+  await page.getByRole("slider",{name:"Camera position X"}).fill("80");
+  await page.getByRole("slider",{name:"Camera position Y"}).fill("60");
+  await page.getByRole("slider",{name:"Camera size"}).fill("30");
+  await page.getByRole("button",{name:"Reset camera X"}).click();
+  await expect(page.getByRole("slider",{name:"Camera position X"})).toHaveValue("50");
+  await expect(page.getByRole("slider",{name:"Camera position Y"})).toHaveValue("60");
+  await page.getByRole("button",{name:"RESET CAMERA",exact:true}).click();
+  await expect(page.getByRole("slider",{name:"Camera position X"})).toHaveValue("50");
+  await expect(page.getByRole("slider",{name:"Camera position Y"})).toHaveValue("2");
+  await expect(page.getByRole("slider",{name:"Camera size"})).toHaveValue("77");
+  const freecamBanner=page.locator(".clipper-social-banner");
+  const freecamLogo=freecamBanner.locator(".clipper-social-banner-logo");
+  const freecamBounds=await freecamBanner.boundingBox();
+  const logoBounds=await freecamLogo.boundingBox();
+  expect(logoBounds!.x).toBeGreaterThanOrEqual(freecamBounds!.x-.5);
+  await page.getByRole("button",{name:"SPLIT",exact:true}).click();
+  await expect(page.getByRole("slider",{name:/Video zoom/i})).toHaveCount(0);
+  await page.getByRole("button",{name:"SQUARES",exact:true}).click();
+  await expect(page.getByRole("slider",{name:/Video zoom/i})).toHaveCount(0);
+  await page.getByRole("button",{name:"BLUR",exact:true}).click();
+  await page.locator(".fill-pan-layer").hover();
+  await page.mouse.wheel(0,-100);
+  await page.getByRole("button",{name:"defaults"}).click();
+  await expect(page.getByRole("button",{name:"BLUR",exact:true})).toHaveClass(/active/);
+  await expect(page.getByRole("slider",{name:/Video zoom/i})).toHaveCount(0);
+});
+
+test("all Social Tag styles move in every Clipper layout, reset, and send Split distance to export",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByText("Social Tag",{exact:true}).click();
+  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  const style=page.getByRole("combobox",{name:"Style"});
+  for(const tagStyle of ["boxed","plain"]){
+    await style.selectOption(tagStyle);
+    for(const layout of ["SPLIT","SQUARES","FREECAM","ORIGINAL SIZE","BLUR","FILL"]){
+      await page.getByRole("button",{name:layout,exact:true}).click();
+      if(["SPLIT","SQUARES","FREECAM"].includes(layout))await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+      const distance=page.getByRole("slider",{name:"Move tag away from camera"});
+      await distance.fill("0");
+      const tag=page.locator(".clipper-social-tag");
+      const before=await tag.boundingBox();
+      await distance.fill("50");
+      const after=await tag.boundingBox();
+      expect(after!.y-before!.y,`${tagStyle}/${layout}`).toBeGreaterThan(2);
+      await page.getByRole("button",{name:"Reset tag distance"}).click();
+      await expect(distance).toHaveValue("0");
+    }
+  }
+  await style.selectOption("kick_banner");
+  await page.getByRole("button",{name:"SQUARES",exact:true}).click();
+  const distance=page.getByRole("slider",{name:"Move banner away from camera"});
+  await distance.fill("35");
+  await page.getByRole("button",{name:"SPLIT",exact:true}).click();
+  await expect(distance).toHaveValue("35");
+  const advanced=page.locator(".clipper-advanced").first();
+  const social=page.locator(".clipper-watermark-controls").last();
+  const advancedBox=await advanced.boundingBox(),socialBox=await social.boundingBox();
+  expect(advancedBox!.y).toBeGreaterThanOrEqual(socialBox!.y+socialBox!.height);
+  await stageMocks(page);
+  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+  await expect(page.locator(".job-head p")).toHaveText("complete");
+  const request=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="run_operation").at(-1).args.request);
+  expect(request.params.vertical_layout).toBe("split");
+  expect(request.params.social_tag_seam_offset).toBe("35");
+});
+
+test("Clipper layout order and source view reset when opening a project or new video",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  const layouts=await page.locator(".transform-options.three button").allTextContents();
+  expect(layouts.map(label=>label.trim())).toEqual(["SPLIT","SQUARES","FREECAM","ORIGINAL SIZE","BLUR","FILL"]);
+  const source=page.getByRole("button",{name:"SOURCE REGIONS",exact:true});
+  await expect(source).toHaveAttribute("aria-pressed","true");
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+  await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+    if(cmd==="write_project"){(window as any).__SAVED_PROJECT__=args.contents;return null}
+    if(cmd==="plugin:dialog|open")return "C:\\fixtures\\sample.cproj";
+    if(cmd==="read_project")return (window as any).__SAVED_PROJECT__;
+    return undefined;
+  }});
+  await page.getByRole("button",{name:"SAVE PROJECT"}).click();
+  await expect.poll(()=>page.evaluate(()=>Boolean((window as any).__SAVED_PROJECT__))).toBe(true);
+  await page.getByRole("button",{name:"close",exact:true}).click();
+  await page.getByRole("button",{name:"OPEN PROJECT"}).click();
+  await expect(source).toHaveAttribute("aria-pressed","true");
+  await expect(page.locator(".region-a")).toBeVisible();
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+  await page.evaluate(()=>{(window as any).__TEST_HANDLER__=null;(window as any).__TEST_DROP__("C:\\fixtures\\second.mp4")});
+  await expect(page.locator(".selected-title h2")).toHaveText("Transform");
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await expect(source).toHaveAttribute("aria-pressed","true");
+});
+
+test("Clipper output preview separates source editing and opens the last render in the default player",async({page})=>{
+  await mockDesktop(page);await openFixture(page);await stageMocks(page);
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await expect(page.getByRole("button",{name:"SOURCE REGIONS",exact:true})).toHaveAttribute("aria-pressed","true");
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+  await expect(page.locator(".clipper-output-canvas")).toBeVisible();
+  await expect(page.locator(".transform-source-box")).toHaveCount(0);
+  await page.getByText("Social Tag",{exact:true}).click();
+  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByRole("combobox",{name:"Style"}).selectOption("kick_banner");
+  const banner=page.locator(".clipper-social-banner"),distance=page.getByRole("slider",{name:"Move banner away from camera"});
+  const box=(await page.locator(".clipper-output-canvas").boundingBox())!;
+  const before=(await banner.boundingBox())!;
+  await distance.fill("16");
+  const after=(await banner.boundingBox())!;
+  expect(after.y-before.y).toBeCloseTo(box.height*.22*.16,0);
+  await page.getByRole("button",{name:"SOURCE REGIONS",exact:true}).click();
+  await expect(page.locator(".region-a")).toBeVisible();
+  await expect(banner).toHaveCount(0);
+  const region=(await page.locator(".region-a").boundingBox())!;
+  await page.mouse.move(region.x+region.width/2,region.y+region.height/2);
+  await page.mouse.down();await page.mouse.move(region.x+region.width/2-15,region.y+region.height/2+20);await page.mouse.up();
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+  await expect(banner).toBeVisible();await expect(distance).toHaveValue("16");
+  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+  const play=page.getByRole("button",{name:"▶ play render",exact:true});
+  await expect(play).toBeVisible();await play.click();
+  const opened=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="plugin:opener|open_path").at(-1));
+  expect(opened.args.path).toContain("output-1.mp4");
+  await distance.fill("0");await play.click();
+  await expect(page.getByText("Playing the last render; the new settings have not been rendered yet.",{exact:true})).toBeVisible();
+});
+
+test("Process actions align with status while frame metrics remain centered",async({page})=>{
+  await page.setViewportSize({width:1600,height:900});
+  await mockDesktop(page);await openFixture(page);await stageMocks(page);
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await page.evaluate(()=>{
+    const previous=(window as any).__TEST_HANDLER__;
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="run_operation"?new Promise(resolve=>{(window as any).__FINISH_TEST_JOB__=()=>resolve({output:"C:\\fixtures\\aligned-output.mp4",elapsed:.1})}):previous?.(cmd,args);
+  });
+  const checkAlignment=async(buttonName:string)=>{
+    const head=(await page.locator(".job-head").boundingBox())!;
+    const status=(await page.locator(".job-status-line").boundingBox())!;
+    const stats=(await page.locator(".job-stats").boundingBox())!;
+    const action=(await page.getByRole("button",{name:buttonName,exact:true}).boundingBox())!;
+    expect(Math.abs(stats.x+stats.width/2-head.x-head.width/2)).toBeLessThan(24);
+    expect(Math.abs(action.y+action.height/2-status.y-status.height/2)).toBeLessThan(14);
+  };
+  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+  await expect(page.getByRole("button",{name:"cancel job",exact:true})).toBeVisible();
+  await checkAlignment("cancel job");
+  await page.evaluate(()=>(window as any).__FINISH_TEST_JOB__());
+  await expect(page.locator(".job-head p")).toHaveText("complete");
+  await checkAlignment("continue editing");
+  await checkAlignment("show output");
+});
+
+test("Clipper real-media preview matches exported pixels at zero and sixteen percent",async({page},testInfo)=>{
+  test.skip(process.platform!=="win32","Real Clipper export audit runs in the Windows CI and release jobs.");
+  test.setTimeout(900_000);
+  const audit=resolve(testInfo.outputDir,"clipper-parity");mkdirSync(audit,{recursive:true});
+  const source=process.env.CONTAINER_CLIPPER_AUDIT_MEDIA??resolve(audit,"synthetic-source.mp4");
+  if(!process.env.CONTAINER_CLIPPER_AUDIT_MEDIA){
+    const generated=spawnSync("ffmpeg",["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=1920x1080:rate=30:duration=1","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-movflags","+faststart",source],{encoding:"utf8",timeout:120_000});
+    expect(generated.status,generated.stdout+generated.stderr).toBe(0);
+  }
+  await page.setViewportSize({width:1600,height:1000});
+  const mediaBytes=readFileSync(source);
+  await page.route("http://asset.localhost/**",route=>route.fulfill({body:mediaBytes,contentType:"video/mp4",headers:{"Access-Control-Allow-Origin":"*"}}));
+  await mockDesktop(page,{fixture:{...sample,path:source}});await openFixture(page);await stageMocks(page);
+  await page.evaluate(()=>{
+    const previous=(window as any).__TEST_HANDLER__;
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="detect_camera_region"?{x:78,y:75,width:22,height:25,confidence:1,samples:1,matched_samples:1}:previous?.(cmd,args);
+  });
+  await page.getByPlaceholder("search tools...").fill("Clipper");
+  await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByRole("button",{name:/AUTO-DETECT CAMERA/}).click();
+  await expect.poll(()=>page.locator(".video-canvas video").first().evaluate((v:any)=>v.readyState)).toBeGreaterThanOrEqual(2);
+  await page.getByText("Social Tag",{exact:true}).click();
+  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByRole("combobox",{name:"Style"}).selectOption("kick_banner");
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
+  await expect(page.locator(".clipper-output-canvas")).toBeVisible();
+  await page.evaluate(()=>document.fonts.ready);
+  const jobs:{name:string;request:unknown;preview:string;bannerTop:number;bannerBottom:number}[]=[];
+  for(const layout of ["SPLIT","SQUARES","FREECAM"]){
+    await page.getByRole("button",{name:layout,exact:true}).click();
+    for(const distance of ["0","16"]){
+      await page.getByRole("slider",{name:"Move banner away from camera"}).fill(distance);
+      await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+      await expect(page.locator(".job-head p")).toHaveText("complete");
+      const request=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="run_operation").at(-1).args.request);
+      const name=`${layout.toLowerCase()}-${distance}`;
+      const box=(await page.locator(".clipper-output-canvas").boundingBox())!;
+      const banner=(await page.locator(".clipper-social-banner").boundingBox())!;
+      const prefix=(await page.locator(".clipper-social-banner-prefix").boundingBox())!;
+      const bar=(await page.locator(".clipper-social-banner-bg").boundingBox())!;
+      expect(prefix.y,`${name}: prefix must stay inside the black bar`).toBeGreaterThanOrEqual(bar.y-.5);
+      const preview=await page.screenshot({clip:box,path:resolve(audit,`${name}-preview.png`),timeout:15_000});
+      jobs.push({name,request,preview:preview.toString("base64"),bannerTop:Math.floor((banner.y-box.y)/box.height*640),bannerBottom:Math.ceil((banner.y+banner.height-box.y)/box.height*640)});
+    }
+  }
+  const manifest=resolve(audit,"requests.json");writeFileSync(manifest,JSON.stringify(jobs.map(({name,request})=>({name,request}))));
+  const rendered=spawnSync("cargo",["test","--manifest-path","src-tauri/Cargo.toml","--lib","clipper_preview_export_audit","--","--ignored"],{cwd:resolve("."),env:{...process.env,CONTAINER_CLIPPER_AUDIT_MANIFEST:manifest},encoding:"utf8",timeout:600_000});
+  expect(rendered.status,rendered.stdout+rendered.stderr).toBe(0);
+  for(const job of jobs){
+    const exported=readFileSync(resolve(audit,`${job.name}-export.png`)).toString("base64");
+    const difference=await page.evaluate(async({preview,exported,bannerTop,bannerBottom})=>{
+      const pixels=async(base64:string)=>{const img=new Image();img.src=`data:image/png;base64,${base64}`;await img.decode();const c=document.createElement("canvas");c.width=360;c.height=640;const ctx=c.getContext("2d")!;ctx.drawImage(img,0,0,360,640);return ctx.getImageData(0,0,360,640).data};
+      const a=await pixels(preview),b=await pixels(exported);let sum=0;
+      const greenBounds=(data:Uint8ClampedArray)=>{let top=640,bottom=0,left=360,right=0;for(let y=Math.max(0,bannerTop);y<Math.min(640,bannerBottom);y++)for(let x=0;x<140;x++){const i=(y*360+x)*4;if(data[i]>30&&data[i]<130&&data[i+1]>220&&data[i+2]<100){top=Math.min(top,y);bottom=Math.max(bottom,y);left=Math.min(left,x);right=Math.max(right,x)}}return {top,bottom,left,right}};
+      for(let i=0;i<a.length;i+=4)for(let channel=0;channel<3;channel++)sum+=Math.abs(a[i+channel]-b[i+channel]);
+      return {mean:sum/(360*640*3),previewLogo:greenBounds(a),exportLogo:greenBounds(b)};
+    },{preview:job.preview,exported,bannerTop:job.bannerTop,bannerBottom:job.bannerBottom});
+    await testInfo.attach(job.name,{body:JSON.stringify(difference),contentType:"application/json"});
+    expect(difference.mean,`${job.name}: composition pixel error`).toBeLessThan(12);
+    for(const edge of ["top","bottom","left","right"] as const)expect(Math.abs(difference.previewLogo[edge]-difference.exportLogo[edge]),`${job.name}: logo ${edge}`).toBeLessThanOrEqual(2);
+  }
 });
 
 test("Social Tag preview keeps text and icon aligned at small sizes",async({page})=>{
@@ -1483,11 +1832,12 @@ test("Social Tag preview keeps text and icon aligned at small sizes",async({page
   await page.setViewportSize({width:1920,height:1080});
   await page.getByPlaceholder("search tools...").fill("Clipper");
   await page.getByText("Clipper",{exact:true}).last().click();
+  await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
   await page.getByText("Social Tag",{exact:true}).click();
   await page.getByPlaceholder("kanaladi").fill("eray");
   const style=page.getByRole("combobox",{name:"Style"});
   const platform=page.getByRole("combobox",{name:"Platform"});
-  const size=page.locator(".clipper-watermark-controls input[type=range]");
+  const size=page.locator(".clipper-watermark-controls input[type=range]").first();
   const tag=page.locator(".clipper-social-tag");
   for(const platformValue of ["kick","twitch"]){
     await platform.selectOption(platformValue);
@@ -1517,7 +1867,20 @@ test("Social Tag preview keeps text and icon aligned at small sizes",async({page
   await expect(page.getByRole("button",{name:"show output",exact:true})).toBeVisible();
   await page.getByRole("combobox",{name:"Position"}).selectOption("left");
   await expect(page.locator(".job-head p")).toHaveText("settings changed · render again");
-  await expect(page.getByRole("button",{name:"previous output",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"old output · not updated",exact:true})).toBeVisible();
+  for(const width of [1440,1100,900]){
+    await page.setViewportSize({width,height:900});
+    if(width===1440&&process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/clipper-process-actions-1440.png"});
+    const processBounds=(await page.locator(".job").boundingBox())!;
+    const settings=(await page.locator(".settings").boundingBox())!;
+    for(const action of await page.locator(".job .job-action").all()){
+      const bounds=(await action.boundingBox())!;
+      expect(bounds.x).toBeGreaterThanOrEqual(processBounds.x-1);
+      expect(bounds.x+bounds.width).toBeLessThanOrEqual(processBounds.x+processBounds.width+1);
+      expect(bounds.x+bounds.width).toBeLessThan(settings.x);
+      expect(bounds.y+bounds.height).toBeLessThanOrEqual(processBounds.y+processBounds.height+1);
+    }
+  }
 });
 
 test("GIF IN and OUT respond to the player position", async ({ page }) => {
@@ -1579,6 +1942,152 @@ test("Toolbox and Batch keep the quick interface without saved presets", async (
   await page.getByRole("button", { name: "BATCH" }).click();
   await expect(page.locator(".batch-workspace")).toBeVisible();
   await expect(page.locator(".tool-presets")).toHaveCount(0);
+});
+
+for (const [kind, path, operation, expectedOptions] of [["audio", "C:\\fixtures\\sample.mp3", "audio_convert", ["audio_convert", "fix_timestamps"]], ["image", "C:\\fixtures\\sample.jpg", "image_compressor", ["image_compressor", "metadata_cleaner"]]] as const) {
+  test(`Batch opens ${kind} sources with a matching operation`, async ({ page }) => {
+    await mockDesktop(page, { fixture: { ...sample, path, name: path.split("\\").at(-1)!, kind, duration: kind === "image" ? 0.04 : 60, width: kind === "image" ? 640 : 0, height: kind === "image" ? 360 : 0, fps: kind === "image" ? 25 : 0, codec: kind === "image" ? "mjpeg" : "mp3", audio_codec: kind === "audio" ? "mp3" : null } });
+    await openFixture(page);
+    await page.getByRole("button", { name: "BATCH", exact: true }).click();
+    await expect(page.locator(".batch-control select").first()).toHaveValue(operation);
+    expect(await page.locator(".batch-control select").first().locator("option").evaluateAll(options => options.map(option => (option as HTMLOptionElement).value))).toEqual(expectedOptions);
+    await expect(page.getByRole("button", { name: /START QUEUE/ })).toBeEnabled();
+    await page.evaluate(() => { (window as any).__TEST_HANDLER__ = (cmd: string) => cmd === "run_operation" ? { output: "C:\\fixtures\\converted.out", elapsed: 0.1 } : undefined; });
+    await page.getByRole("button", { name: /START QUEUE/ }).click();
+    await expect(page.locator(".batch-items article > strong")).toHaveText("complete");
+    expect(await page.evaluate(() => (window as any).__TEST_CALLS__.filter((call: any) => call.cmd === "run_operation").at(-1).args.request.operation)).toBe(operation);
+  });
+}
+
+test("Batch video operations exclude audio-only and image-only tools", async ({ page }) => {
+  await mockDesktop(page); await openFixture(page);
+  await page.getByRole("button", { name: "BATCH", exact: true }).click();
+  const options = await page.locator(".batch-control select").first().locator("option").evaluateAll(nodes => nodes.map(node => (node as HTMLOptionElement).value));
+  expect(options).toContain("fps");
+  expect(options).toContain("extract_audio");
+  expect(options).not.toContain("audio_convert");
+  expect(options).not.toContain("image_compressor");
+  expect(options).not.toContain("metadata_cleaner");
+});
+
+test("landing multi-video selection opens Batch and converts every video to the chosen FPS", async ({ page }) => {
+  await mockDesktop(page);
+  await page.evaluate(() => {
+    (window as any).__TEST_HANDLER__ = (cmd: string, args: any) => {
+      if (cmd === "plugin:dialog|open" && args.options?.filters?.[0]?.extensions?.includes("bmp")) return ["C:\\fixtures\\sample.mp4", "C:\\fixtures\\second.mp4"];
+      if (cmd === "run_operation") return { output: `${args.request.input}.out.mp4`, elapsed: 0.1 };
+    };
+  });
+  await page.locator(".dropzone").click();
+  await expect(page.locator(".batch-workspace")).toBeVisible();
+  await expect(page.locator(".batch-items article")).toHaveCount(2);
+  await expect(page.locator(".settings")).toHaveCount(0);
+  await expect(page.locator(".file-summary")).toContainText("2");
+  await expect(page.locator(".file-summary")).not.toContainText("sample.mp4");
+  await page.locator(".batch-control select").first().selectOption("fps");
+  await page.getByRole("spinbutton", { name: "Target FPS" }).fill("10");
+  await expect(page.getByRole("combobox", { name: "Quality" })).toHaveValue("0");
+  await page.getByRole("button", { name: /START QUEUE/ }).click();
+  await expect(page.locator(".batch-items article > strong")).toHaveText(["complete", "complete"]);
+  const requests = await page.evaluate(() => (window as any).__TEST_CALLS__.filter((call: any) => call.cmd === "run_operation").map((call: any) => call.args.request));
+  expect(requests.map((request: any) => request.input)).toEqual(["C:\\fixtures\\sample.mp4", "C:\\fixtures\\second.mp4"]);
+  expect(requests.map((request: any) => [request.operation, request.params.fps, request.params.crf])).toEqual([["fps", "10", "0"], ["fps", "10", "0"]]);
+  await page.getByRole("button", { name: "SAVE PROJECT" }).click();
+  const saved = await page.evaluate(() => JSON.parse((window as any).__TEST_CALLS__.find((call: any) => call.cmd === "write_project").args.contents));
+  expect(saved.workspaceMode).toBe("batch");
+  expect(saved.batch.items.map((item: any) => item.path)).toEqual(["C:\\fixtures\\sample.mp4", "C:\\fixtures\\second.mp4"]);
+  expect(saved.batch.selected.id).toBe("fps");
+  expect(saved.resources.map((resource: any) => resource.path)).toContain("C:\\fixtures\\second.mp4");
+});
+
+test("dropping multiple videos routes to Batch and further drops extend the queue", async ({ page }) => {
+  await mockDesktop(page);
+  await page.evaluate(() => (window as any).__TEST_DROP__(["C:\\fixtures\\sample.mp4", "C:\\fixtures\\second.mp4"]));
+  await expect(page.locator(".batch-items article")).toHaveCount(2);
+  await page.evaluate(() => (window as any).__TEST_DROP__("C:\\fixtures\\third.mp4"));
+  await expect(page.locator(".batch-items article")).toHaveCount(3);
+  await expect(page.locator(".file-summary")).toContainText("3");
+});
+
+test("Batch retries only failed rows and keeps completed output actions", async ({ page }) => {
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.getByRole("button", { name: "BATCH", exact: true }).click();
+  await page.getByRole("button", { name: "+ FILES", exact: true }).click();
+  await expect(page.locator(".batch-items article")).toHaveCount(2);
+  await page.evaluate(() => {
+    (window as any).__TEST_HANDLER__ = (cmd: string, args: any) => {
+      if (cmd === "run_operation" && args.request.input.includes("second")) return Promise.reject(new Error("second failed"));
+      if (cmd === "run_operation") return { output: "C:\\fixtures\\first-output.mp4", elapsed: 0.1 };
+    };
+  });
+  await page.getByRole("button", { name: /START QUEUE/ }).click();
+  await expect(page.locator(".batch-items article > strong")).toHaveText(["complete", "failed"]);
+  await expect(page.getByRole("button", { name: "Play output for sample.mp4" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show output for sample.mp4" })).toBeVisible();
+  if (process.env.UI_AUDIT_SCREENSHOTS) {
+    await page.screenshot({ path: "test-results/batch-retry-output-actions-light.png" });
+    await page.evaluate(() => document.documentElement.dataset.theme = "dark");
+    await page.screenshot({ path: "test-results/batch-retry-output-actions-dark.png" });
+  }
+  await page.getByRole("button", { name: "Play output for sample.mp4" }).click();
+  await page.getByRole("button", { name: "Show output for sample.mp4" }).click();
+  const openerCalls = await page.evaluate(() => (window as any).__TEST_CALLS__.filter((call: any) => call.cmd.startsWith("plugin:opener|")));
+  expect(openerCalls.map((call: any) => call.cmd)).toEqual(expect.arrayContaining(["plugin:opener|open_path", "plugin:opener|reveal_item_in_dir"]));
+  await page.evaluate(() => {
+    (window as any).__TEST_HANDLER__ = (cmd: string) => cmd === "run_operation" ? { output: "C:\\fixtures\\second-output.mp4", elapsed: 0.1 } : undefined;
+  });
+  await page.getByRole("button", { name: /RETRY FAILED ONLY \(1\)/ }).click();
+  await expect(page.locator(".batch-items article > strong")).toHaveText(["complete", "complete"]);
+  const requests = await page.evaluate(() => (window as any).__TEST_CALLS__.filter((call: any) => call.cmd === "run_operation").map((call: any) => call.args.request.input));
+  expect(requests).toEqual(["C:\\fixtures\\sample.mp4", "C:\\fixtures\\second.mp4", "C:\\fixtures\\second.mp4"]);
+  await expect(page.locator(".batch-items article").first()).toContainText("first-output.mp4");
+});
+
+test("Batch shows source metadata and blocks an incompatible file before render", async ({ page }) => {
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.getByRole("button", { name: "BATCH", exact: true }).click();
+  await page.evaluate(() => {
+    (window as any).__TEST_HANDLER__ = (cmd: string, args: any) => {
+      if (cmd === "plugin:dialog|open" && args.options?.multiple) return ["C:\\fixtures\\sound.mp3"];
+      if (cmd === "probe_media" && args.path.endsWith("sound.mp3")) return { ...((window as any).__TEST_AUDIO__ ?? {}), path: args.path, kind: "audio", fps: null, duration: 12, width: null, height: null };
+    };
+  });
+  await page.getByRole("button", { name: "+ FILES", exact: true }).click();
+  await expect(page.locator(".batch-source-meta").first()).toContainText("1920×1080 · 30 FPS · 1:00");
+  await expect(page.locator(".batch-source-meta").last()).toContainText("AUDIO · 0:12");
+  await expect(page.locator(".batch-item-warning")).toContainText("does not support this file type");
+  await expect(page.getByRole("button", { name: /START QUEUE/ })).toBeDisabled();
+  expect(await page.evaluate(() => (window as any).__TEST_CALLS__.filter((call: any) => call.cmd === "run_operation").length)).toBe(0);
+});
+
+test("Batch warns when target FPS exceeds a source and offers a smaller high-quality output", async ({ page }) => {
+  await mockDesktop(page);
+  await page.evaluate(() => {
+    (window as any).__TEST_HANDLER__ = (cmd: string, args: any) => {
+      if (cmd === "plugin:dialog|open" && args.options?.filters?.[0]?.extensions?.includes("bmp")) return ["C:\\fixtures\\sample.mp4", "C:\\fixtures\\slow.mp4"];
+      if (cmd === "probe_media" && args.path.endsWith("slow.mp4")) return { path: args.path, kind: "video", fps: 5, duration: 12, width: 640, height: 360 };
+      if (cmd === "run_operation") return { output: `${args.request.input}.out.mp4`, elapsed: 0.1 };
+    };
+  });
+  await page.locator(".dropzone").click();
+  await page.locator(".batch-control select").first().selectOption("fps");
+  await page.getByRole("spinbutton", { name: "Target FPS" }).fill("10");
+  await expect(page.locator(".batch-warning")).toContainText("frames will be duplicated");
+  await page.getByRole("combobox", { name: "Quality" }).selectOption("16");
+  await page.getByRole("button", { name: /START QUEUE/ }).click();
+  await expect(page.locator(".batch-items article > strong")).toHaveText(["complete", "complete"]);
+  const requests = await page.evaluate(() => (window as any).__TEST_CALLS__.filter((call: any) => call.cmd === "run_operation").map((call: any) => call.args.request));
+  expect(requests.map((request: any) => request.params.crf)).toEqual(["16", "16"]);
+});
+
+test("mixed multi-selection does not silently drop files", async ({ page }) => {
+  await mockDesktop(page);
+  await page.evaluate(() => (window as any).__TEST_DROP__(["C:\\fixtures\\sample.mp4", "C:\\fixtures\\still.jpg"]));
+  await expect(page.locator(".dropzone")).toBeVisible();
+  await expect(page.locator(".batch-workspace")).toHaveCount(0);
+  await expect(page.locator(".app-toast")).toContainText("Multi-import accepts videos only");
 });
 
 test("workspace roundtrips preserve Clipper edits, SmartCut cuts and Batch inputs", async ({ page }) => {

@@ -2,26 +2,33 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { onMount, type Snippet } from "svelte";
-  import { localizedTool, tools, type Field, type Tool } from "./tools";
+  import { localizedTool, tools, type Field, type MediaKind, type Tool } from "./tools";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
 
-  interface HistorySnapshot{selected:Tool;items:{path:string;status:string;progress:number;output?:string;error?:string}[];recursive:boolean}
-  let { initialPath, language, availableEncoders, historyControl, oncontinue, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{initialPath:string;language:"tr"|"en";availableEncoders:string[]|null;historyControl?:Snippet;oncontinue?:(path:string)=>Promise<void>;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void;onbusychange?:(value:boolean)=>void}=$props();
-  const supported=["encode","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","gif"];
-  const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)).map(tool=>{
+  interface BatchItem{path:string;status:string;progress:number;output?:string;error?:string;kind?:MediaKind;fps?:number|null;duration?:number|null;width?:number|null;height?:number|null;inspecting?:boolean;probeError?:string}
+  interface HistorySnapshot{selected:Tool;items:BatchItem[];recursive:boolean}
+  let { initialPaths, initialKind, language, availableEncoders, historyControl, oncontinue, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{}, onqueuechange=()=>{} }:{initialPaths:string[];initialKind:MediaKind;language:"tr"|"en";availableEncoders:string[]|null;historyControl?:Snippet;oncontinue?:(path:string)=>Promise<void>;onhistorychange?:(undo:boolean,redo:boolean)=>void;onsessionchange?:(value:HistorySnapshot)=>void;onbusychange?:(value:boolean)=>void;onqueuechange?:(count:number)=>void}=$props();
+  const supported=["encode","fps","proxy","remux","audio_convert","extract_audio","remove_audio","fix_timestamps","gif","image_compressor","metadata_cleaner"];
+  const batchTools=()=>tools.filter(tool=>supported.includes(tool.id)&&tool.kind.includes(initialKind)).sort((left,right)=>supported.indexOf(left.id)-supported.indexOf(right.id)).map(tool=>{
     const copy=localizedTool(tool,language);
     if(copy.id==="encode"){
       const field=copy.fields.find(item=>item.key==="encoder");
       if(field)field.options=(field.options??[]).filter(option=>(availableEncoders??["libx264"]).includes(option.value));
     }
+    if(copy.id==="fps"){
+      const quality=copy.fields.find(item=>item.key==="crf");
+      if(quality){quality.value="0";quality.type="select";quality.label=language==="tr"?"Kalite":"Quality";quality.options=[{value:"0",label:language==="tr"?"Kayıpsız · büyük dosya":"Lossless · larger file"},{value:"16",label:language==="tr"?"Yüksek kalite · daha küçük dosya":"High quality · smaller file"}]}
+    }
     const audioMode=copy.fields.find(item=>item.key==="audio_mode");
     if(audioMode)audioMode.options=(audioMode.options??[]).filter(option=>option.value!=="selected");
     return copy;
   });
-  let selected:Tool=$state(batchTools()[0]);
-  let items:{path:string;status:string;progress:number;output?:string;error?:string}[]=$state([]);
+  const initialTool=()=>batchTools().find(tool=>tool.id===(initialKind==="audio"?"audio_convert":initialKind==="image"?"image_compressor":"encode"))??batchTools()[0];
+  let selected:Tool=$state(initialTool());
+  let items:BatchItem[]=$state([]);
   let running=$state(false),cancelAll=$state(false),recursive=$state(false),aggregate=$state(0);
   let currentIndex=$state(-1);
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
@@ -29,6 +36,9 @@
   let panelWorkspace:HTMLElement|null=$state(null);
   let panelWorkspaceWidth=$state(0);
   let controlPanelWidth=$state<number|null>(null);
+  let activeProbes=0;
+  const pendingProbes:string[]=[];
+  const queuedProbes=new Set<string>();
   const panelStorageKey="container-batch-panel-widths";
   function panelSizes(){
     const compact=panelWorkspaceWidth<=950,padding=compact?7:12;
@@ -73,13 +83,23 @@
   }
   export function resetPanelWidths(){controlPanelWidth=null;savePanelWidth()}
   $effect(()=>onbusychange(running));
+  $effect(()=>onqueuechange(items.length));
   const name=(path:string)=>path.split(/[\\/]/).pop()??path;
   const statusLabel=(status:string)=>language==="tr"?({waiting:"Bekliyor",running:"İşleniyor",complete:"Tamamlandı",cancelled:"İptal edildi",failed:"Başarısız"}[status]??status):status;
+  const durationLabel=(seconds:number)=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,"0")}`;
+  const sourceLabel=(item:BatchItem)=>[item.kind==="video"?"VIDEO":item.kind==="audio"?"AUDIO":item.kind==="image"?"IMAGE":"",item.width&&item.height?`${item.width}×${item.height}`:"",item.fps&&item.kind==="video"?`${item.fps.toFixed(2).replace(/\.00$/,"")} FPS`:"",item.duration?durationLabel(item.duration):""].filter(Boolean).join(" · ");
+  const allowed=(item:BatchItem)=>!!item.kind&&selected.kind.includes(item.kind);
+  const incompatibleCount=$derived(items.filter(item=>!item.inspecting&&!!item.kind&&!allowed(item)).length);
+  const failedCount=$derived(items.filter(item=>item.status==="failed").length);
+  const queueReady=$derived(items.length>0&&items.every(item=>!item.inspecting&&!item.probeError&&allowed(item)));
+  const targetFps=$derived(Number(selected.fields.find(field=>field.key==="fps")?.value??0));
+  const fpsTargetValid=$derived(selected.id!=="fps"||(Number.isFinite(targetFps)&&targetFps>=1&&targetFps<=2400));
+  const fpsUpscaleCount=$derived(selected.id==="fps"&&fpsTargetValid?items.filter(item=>item.kind==="video"&&item.fps&&targetFps>item.fps+0.01).length:0);
   const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
   const snapshot=():HistorySnapshot=>clone({selected,items,recursive});
   const signature=(value:HistorySnapshot)=>JSON.stringify(value);
   function commit(value:HistorySnapshot){if(historyApplying||running)return;if(historyIndex>=0&&signature(history[historyIndex])===signature(value))return;history=[...history.slice(0,historyIndex+1),value].slice(-80);historyIndex=history.length-1}
-  function applyHistory(value:HistorySnapshot){historyApplying=true;const restored=clone(value);selected=batchTools().some(tool=>tool.id===restored.selected?.id)?restored.selected:batchTools()[0];items=restored.items;recursive=restored.recursive;aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;currentIndex=-1;requestAnimationFrame(()=>historyApplying=false)}
+  function applyHistory(value:HistorySnapshot){historyApplying=true;const restored=clone(value);const template=batchTools().find(tool=>tool.id===restored.selected?.id);selected=template?{...template,fields:template.fields.map(field=>{const value=restored.selected.fields.find(saved=>saved.key===field.key)?.value??field.value;return {...field,value:field.type==="select"?String(value):value}})}:initialTool();items=restored.items;recursive=restored.recursive;aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;currentIndex=-1;for(const item of items)if(!item.kind)queueInspect(item.path);requestAnimationFrame(()=>historyApplying=false)}
   export function undo(){if(running)return;commit(snapshot());if(historyIndex<=0)return;historyIndex--;applyHistory(history[historyIndex])}
   export function redo(){if(running||historyIndex>=history.length-1)return;historyIndex++;applyHistory(history[historyIndex])}
   export function exportSession(){return snapshot()}
@@ -89,25 +109,44 @@
   $effect(()=>{const value=snapshot();if(historyApplying||running)return;const timer=window.setTimeout(()=>onsessionchange(value),350);return()=>window.clearTimeout(timer)});
   onMount(()=>{
     try{const saved=JSON.parse(localStorage.getItem(panelStorageKey)??"null");if(saved&&typeof saved==="object"&&Number.isFinite(saved.left)&&saved.left>=235&&saved.left<=600)controlPanelWidth=saved.left}catch{}
-    if(initialPath)addPaths([initialPath]);history=[snapshot()];historyIndex=0;
+    addPaths(initialPaths);history=[snapshot()];historyIndex=0;
   });
   const params=()=>Object.fromEntries(selected.fields.filter(field=>field.key!=="audio_track").map(field=>[field.key,String(field.value)]));
-  function addPaths(paths:string[]){if(running)return;const known=new Set(items.map(item=>item.path.toLowerCase()));for(const path of paths)if(!known.has(path.toLowerCase())){items=[...items,{path,status:"waiting",progress:0}];known.add(path.toLowerCase())}}
+  async function inspectPath(path:string){
+    items=items.map(item=>item.path===path?{...item,inspecting:true,probeError:undefined}:item);
+    try{
+      const info=await invoke<{kind:MediaKind;fps:number|null;duration:number|null;width:number|null;height:number|null}>("probe_media",{path});
+      items=items.map(item=>item.path===path?{...item,kind:info.kind,fps:info.fps,duration:info.duration,width:info.width,height:info.height,inspecting:false}:item);
+    }catch(reason){items=items.map(item=>item.path===path?{...item,inspecting:false,probeError:String(reason)}:item)}
+  }
+  function drainProbes(){
+    while(activeProbes<3&&pendingProbes.length){
+      const next=pendingProbes.shift()!;activeProbes++;
+      void inspectPath(next).finally(()=>{activeProbes--;queuedProbes.delete(next);drainProbes()});
+    }
+  }
+  function queueInspect(path:string){if(queuedProbes.has(path))return;queuedProbes.add(path);pendingProbes.push(path);drainProbes()}
+  export function addPaths(paths:string[]){if(running)return;const known=new Set(items.map(item=>item.path.toLowerCase()));const added:string[]=[];for(const path of paths)if(!known.has(path.toLowerCase())){known.add(path.toLowerCase());added.push(path)}if(added.length)items=[...items,...added.map(path=>({path,status:"waiting",progress:0,inspecting:true}))];for(const path of added)queueInspect(path)}
   async function addFiles(){const result=await open({multiple:true,filters:[{name:"Media",extensions:["mp4","mkv","mov","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","ogg","jpg","jpeg","png","webp"]}]});if(Array.isArray(result))addPaths(result)}
   async function addFolder(){const folder=await open({directory:true,multiple:false});if(typeof folder==="string")addPaths(await invoke<string[]>("list_media_files",{folder,recursive}))}
-  function chooseTool(event:Event){if(running)return;const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??batchTools()[0]}
+  function chooseTool(event:Event){if(running)return;const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??initialTool()}
   function visible(field:Field){return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&["lossless","smart"].includes(String(selected.fields.find(item=>item.key==="cut_mode")?.value)))}
-  async function start(){
-    if(running||!items.length)return;armCompletionSound();running=true;cancelAll=false;aggregate=0;let completed=0;
+  async function start(mode:"all"|"failed"="all"){
+    if(running||!queueReady||!fpsTargetValid)return;
+    const targets=items.map((item,index)=>mode==="all"||item.status==="failed"?index:-1).filter(index=>index>=0);
+    if(!targets.length)return;
+    armCompletionSound();running=true;cancelAll=false;let completed=0;
     const operation=selected.id,operationParams=params();
-    items=items.map(item=>({...item,status:"waiting",progress:0,output:undefined,error:undefined}));
+    const targetSet=new Set(targets);
+    items=items.map((item,index)=>targetSet.has(index)?{...item,status:"waiting",progress:0,output:undefined,error:undefined}:item);
+    aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;
     let unlisten:UnlistenFn|null=null;
-    try{unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=(currentIndex+event.payload.percent/100)/items.length*100;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
-    for(let index=0;index<items.length;index++){
+    try{unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=items.reduce((sum,item)=>sum+item.progress,0)/items.length;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
+    for(const index of targets){
       if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,output:undefined,error:undefined};items=[...items];
       try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation,params:operationParams}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
       catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)};reportProblem(reason)}
-      aggregate=(index+1)/items.length*100;items=[...items];
+      aggregate=items.reduce((sum,item)=>sum+(item.status==="failed"?100:item.progress),0)/items.length;items=[...items];
     }
     unlisten?.();running=false;currentIndex=-1;if(!cancelAll&&completed>0)await playCompletionSound();
   }
@@ -122,15 +161,40 @@
     {#each selected.fields as field}
       {#if visible(field)}<label class="field"><span>{field.label}</span>{#if field.type==="select"}<select bind:value={field.value} disabled={running}>{#each field.options??[] as option}<option value={option.value}>{option.label}</option>{/each}</select>{:else}<input type={field.type==="text"?"text":"number"} bind:value={field.value} min={field.min} max={field.max} step={field.step} disabled={running}>{/if}</label>{/if}
     {/each}
+    {#if selected.id==="fps"}<small>{language==="tr"?"FPS düşürmek aradaki kareleri atar. Kayıpsız seçenek kalan kareleri korur ama dosya boyutu ve işlem süresi artabilir.":"Lowering FPS discards intermediate frames. Lossless keeps the remaining frames but may increase file size and processing time."}</small>{/if}
     <div class="batch-add"><button class="ghost" onclick={addFiles} disabled={running}>+ {language==="tr"?"DOSYA":"FILES"}</button><button class="ghost" onclick={addFolder} disabled={running}>+ {language==="tr"?"KLASÖR":"FOLDER"}</button></div>
     <label class="batch-check"><input type="checkbox" bind:checked={recursive} disabled={running}> {language==="tr"?"alt klasörleri de tara":"include subfolders"}</label>
     <small>{language==="tr"?"Alt klasörleri istersen dahil et. Bir dosyada hata olursa diğerleri işlenmeye devam eder.":"Subfolders are scanned only when explicitly enabled. A failed file does not stop the queue."}</small>
-    {#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={start} disabled={!items.length}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{/if}
+    {#if incompatibleCount}<small class="batch-warning">{language==="tr"?`${incompatibleCount} dosya seçilen işlemle uyumsuz. Kuyruğu başlatmadan önce kaldır ya da işlemi değiştir.`:`${incompatibleCount} file(s) cannot use this operation. Remove them or choose another operation.`}</small>{/if}
+    {#if fpsUpscaleCount}<small class="batch-warning">{language==="tr"?`${fpsUpscaleCount} videonun kaynak FPS’i hedefin altında; yeni hareket oluşmaz, kareler tekrarlanır.`:`${fpsUpscaleCount} video(s) have lower source FPS than the target; frames will be duplicated, not interpolated.`}</small>{/if}
+    <div class="batch-run-actions">{#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={()=>start()} disabled={!queueReady||!fpsTargetValid}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{#if failedCount}<button class="run batch-retry" onclick={()=>start("failed")} disabled={!queueReady||!fpsTargetValid}>↻ {language==="tr"?`BAŞARISIZLARI TEKRAR DENE (${failedCount})`:`RETRY FAILED ONLY (${failedCount})`}</button>{/if}{/if}</div>
   </aside>
   <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Batch kontrol paneli genişliği":"Batch controls panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(600,sizes.available-sizes.minRight)} aria-valuenow={Math.round(sizes.left)} onpointerdown={startPanelResize} onkeydown={panelKey} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
   <section class="batch-list panel">
     <div class="pane-head"><div><h3>{language==="tr"?"KUYRUK":"QUEUE"}</h3><p>{items.length} {language==="tr"?"dosya":"files"}</p></div><b>{aggregate.toFixed(0)}%</b></div>
     <div class="batch-total"><i style={`width:${aggregate}%`}></i></div>
-    <div class="batch-items">{#each items as item,index}<article><span class="batch-index">{String(index+1).padStart(2,"0")}</span><div><b>{name(item.path)}</b><small>{item.error??item.output??statusLabel(item.status)}</small><i><em style={`width:${item.progress}%`}></em></i></div><strong class:failed={item.status==="failed"}>{statusLabel(item.status)}</strong><div class="batch-row-actions">{#if item.status==="complete" && item.output && oncontinue}<button disabled={running} title={language==="tr"?"çıktıyı düzenle":"continue editing"} aria-label={language==="tr"?"çıktıyı düzenle":"continue editing"} onclick={()=>oncontinue?.(item.output!)}>↗</button>{/if}<button onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} aria-label={language==="tr"?"Kuyruktan kaldır":"Remove from queue"}>×</button></div></article>{/each}</div>
+    <div class="batch-items">
+      {#each items as item,index}
+        <article>
+          <span class="batch-index">{String(index+1).padStart(2,"0")}</span>
+          <div>
+            <b title={item.path}>{name(item.path)}</b>
+            <small class="batch-source-meta">{item.inspecting?(language==="tr"?"Bilgiler okunuyor…":"Reading media…"):item.probeError??sourceLabel(item)}</small>
+            {#if item.kind&&!allowed(item)}<small class="batch-item-warning">{language==="tr"?"Bu işlem bu dosya türünü desteklemiyor.":"This operation does not support this file type."}</small>{/if}
+            <small title={item.error??item.output??statusLabel(item.status)}>{item.error??item.output??statusLabel(item.status)}</small>
+            <i><em style={`width:${item.progress}%`}></em></i>
+          </div>
+          <strong class:failed={item.status==="failed"}>{statusLabel(item.status)}</strong>
+          <div class="batch-row-actions">
+            {#if item.status==="complete" && item.output}
+              <button class="batch-output-action batch-play-action" disabled={running} title={language==="tr"?"Çıktıyı oynat / aç":"Play / open output"} aria-label={language==="tr"?`${name(item.path)} çıktısını oynat`:`Play output for ${name(item.path)}`} onclick={()=>openPath(item.output!).catch(reportProblem)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.7 4.7a.8.8 0 0 1 1.2-.68l8 5.3a.8.8 0 0 1 0 1.36l-8 5.3a.8.8 0 0 1-1.2-.68z"/></svg></button>
+              <button class="batch-output-action batch-show-action" disabled={running} title={language==="tr"?"Çıktıyı klasörde göster":"Show output in folder"} aria-label={language==="tr"?`${name(item.path)} çıktısını göster`:`Show output for ${name(item.path)}`} onclick={()=>revealItemInDir(item.output!).catch(reportProblem)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.5 7V5.75A1.75 1.75 0 0 1 4.25 4h3.1l1.8 2h6.6A1.75 1.75 0 0 1 17.5 7.75V9"/><path d="M3.8 8.5h13.4a.8.8 0 0 1 .78.98l-1.25 5.7a1.75 1.75 0 0 1-1.71 1.37H4.75a1.75 1.75 0 0 1-1.71-1.37L1.8 9.48a.8.8 0 0 1 .78-.98z"/></svg></button>
+              {#if oncontinue}<button class="batch-tertiary-action" disabled={running} title={language==="tr"?"çıktıyı düzenle":"continue editing"} aria-label={language==="tr"?"çıktıyı düzenle":"continue editing"} onclick={()=>oncontinue?.(item.output!)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 13.9 13.6 4.3a1.8 1.8 0 0 1 2.55 2.55L6.55 16.45 3.5 17z"/><path d="m11.8 6.1 2.55 2.55"/></svg></button>{/if}
+            {/if}
+            <button class="batch-tertiary-action" onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} aria-label={language==="tr"?"Kuyruktan kaldır":"Remove from queue"}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15"/></svg></button>
+          </div>
+        </article>
+      {/each}
+    </div>
   </section>
 </section>

@@ -584,7 +584,7 @@ fn boundary_strength(
     };
     let mut frame_scores = Vec::with_capacity(frames.len());
     for frame in frames {
-        let mut sum = 0.0;
+        let mut contrasts = Vec::with_capacity(24);
         for sample in 0..24 {
             let along = line_start + (line_end - line_start) * (sample as f32 + 0.5) / 24.0;
             let delta = 1.5 / resolution;
@@ -599,14 +599,20 @@ fn boundary_strength(
                     geometry.color(frame, position + delta, along),
                 )
             };
-            sum += before
-                .iter()
-                .zip(after)
-                .map(|(a, b)| a.abs_diff(b) as f32)
-                .sum::<f32>()
-                / 3.0;
+            contrasts.push(
+                before
+                    .iter()
+                    .zip(after)
+                    .map(|(a, b)| a.abs_diff(b) as f32)
+                    .sum::<f32>()
+                    / 3.0,
+            );
         }
-        frame_scores.push(sum / 24.0);
+        // A webcam border continues along the line. Averaging alone lets a
+        // bright curved game/UI edge win even when most of the line is not a
+        // boundary. Require support across the line, not just a few pixels.
+        contrasts.sort_by(f32::total_cmp);
+        frame_scores.push(contrasts[6] * 0.5 + median(contrasts.into_iter()) * 0.5);
     }
     median(frame_scores.into_iter())
 }
@@ -781,6 +787,33 @@ mod tests {
                 "bottom: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn partial_bright_content_edge_does_not_beat_a_continuous_camera_border() {
+        let mut frame = synthetic_camera_frame((0.81, 0.75, 1.0, 1.0), 0);
+        // A bright content strip crosses only the bottom part of the search
+        // line, to the left of the actual webcam. Its average contrast is
+        // stronger than the webcam edge, but it is not a panel boundary.
+        for y in 470..500 {
+            for x in 454..462 {
+                let offset = (y * INPUT_SIZE + x) * 3;
+                frame[offset..offset + 3].fill(255);
+            }
+        }
+        let frames = vec![frame.as_slice()];
+        let boundary = find_boundary(
+            &frames,
+            SampleGeometry::new(1920, 1080),
+            false,
+            0.65,
+            0.87,
+            0.77,
+            0.98,
+            0.70,
+        )
+        .unwrap();
+        assert!((boundary - 0.81).abs() < 0.012, "{boundary}");
     }
 
     #[test]

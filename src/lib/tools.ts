@@ -62,6 +62,10 @@ export const tools: Tool[] = [
     fields: [
       select("crop_mode", "Crop", "9:16", [["9:16","9:16"]]),
       select("vertical_layout", "Vertical layout", "split", [["original","Original Size"],["blur","Blur"],["fill","Fill"],["split","Split"],["squares","Squares"],["freecam","Freecam"]]),
+      number("clipper_zoom", "Clipper zoom", 100, 100, 300, 1, "%"),
+      number("clipper_x", "Clipper framing X", 50, 0, 100, 1, "%"),
+      number("clipper_y", "Clipper framing Y", 50, 0, 100, 1, "%"),
+      number("blur_strength", "Blur background strength", 35, 0, 60, 1, "px"),
       number("region_a_x", "Camera X", 72, 0, 99, 0.01, "%"), number("region_a_y", "Camera Y", 2, 0, 99, 0.01, "%"),
       number("region_a_w", "Camera width", 26, 1, 100, 0.01, "%"), number("region_a_h", "Camera height", 30, 1, 100, 0.01, "%"),
       number("region_b_x", "Content X", 0, 0, 99, 0.01, "%"), number("region_b_y", "Content Y", 0, 0, 99, 0.01, "%"),
@@ -79,7 +83,8 @@ export const tools: Tool[] = [
       select("social_tag_platform", "Social Tag platform", "kick", [["kick","Kick"],["twitch","Twitch"]]),
       {key:"social_tag_username",label:"Social Tag username",type:"text",value:""},
       select("social_tag_style", "Social Tag style", "boxed", [["boxed","Kick badge"],["plain","Kick wordmark"],["kick_banner","Kick.com banner"]]),
-      select("social_tag_boxed_position", "Boxed Social Tag position", "center", [["left","Left"],["center","Center"],["right","Right"]]),
+      number("social_tag_seam_offset", "Social Tag distance from camera", 0, 0, 100, 1, "%"),
+      select("social_tag_boxed_position", "Boxed Social Tag position", "center", [["center","Center"]]),
       select("social_tag_plain_position", "Plain Social Tag position", "center", [["left","Left"],["center","Center"],["right","Right"]]),
       number("social_tag_size", "Social Tag size", 36, 20, 96, 1, "px"),
       select("fit_mode", "Fit mode", "crop", [["crop","Crop / fill"]]),
@@ -344,8 +349,8 @@ export function preserveToolValues(fresh: Tool, previous: Tool): Tool {
   const values = new Map(previous.fields.map(field => [field.key, field.value]));
   const copy = cloneTool(fresh);
   for (const field of copy.fields) {
-    if (values.has(field.key)) field.value = values.get(field.key)!;
-    else if (previous.id === "clipper" && field.key === "social_tag_boxed_position") field.value = "left";
+    if (field.key === "social_tag_boxed_position" && fresh.id === "clipper") field.value = "center";
+    else if (values.has(field.key)) field.value = values.get(field.key)!;
   }
   return copy;
 }
