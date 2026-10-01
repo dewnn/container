@@ -121,9 +121,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test:ui
+      - name: Build frontend and native test harness before media E2E
+        run: pnpm build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: pnpm exec playwright install chromium
       - run: pnpm test:e2e
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build application and full Windows setup
         run: pnpm tauri build
         env:

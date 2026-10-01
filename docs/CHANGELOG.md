@@ -6,7 +6,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.19.0] - 2026-10-02
+## [0.19.1] - 2026-10-02
+
+- Hardened release validation by compiling the native harness before real-media browser tests; made font fixtures portable across Windows and Linux. The v0.19.0 build attempt was not published.
 
 - Added Processing Stack with editable, reorderable steps and combined rendering. Compatible SmartCut/Clipper chains use a fused FFmpeg graph to reduce intermediate encoding; source-time cuts and overlay geometry are preserved.
 - Improved automatic AMD, NVIDIA, Intel and CPU encoder profiling and fallback contracts. NVIDIA and Intel profiles remain unverified on physical hardware in this development cycle; performance depends on the workload and device.
