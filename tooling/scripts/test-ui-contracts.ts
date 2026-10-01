@@ -1,5 +1,14 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { tools as toolDefinitions, localizedTool } from "../../src/lib/tools.ts";
+
+for (const tool of toolDefinitions) {
+  const localized=localizedTool(tool,"en");
+  const texts=[localized.title,localized.category,localized.description,localized.detail,...localized.fields.flatMap(field=>[field.label,field.hint??"",...(field.options??[]).map(option=>option.label)])];
+  if(texts.some(text=>/[ğüşİıĞÜŞ]/u.test(text)))throw new Error(`Turkish text leaked into English tool: ${tool.id}`);
+}
+const interpolation=toolDefinitions.find(tool=>tool.id==="interpolation")!;
+if(!localizedTool(interpolation,"tr").fields[0].hint?.includes("Dosya açıldığında"))throw new Error("Interpolation Turkish hint missing");
 
 const app = readFileSync(new URL("../../src/App.svelte", import.meta.url), "utf8");
 const css = readFileSync(new URL("../../src/styles.css", import.meta.url), "utf8");
@@ -95,7 +104,8 @@ const contracts: Array<[string, boolean]> = [
   ["CI runs UI regression contracts", ciWorkflow.includes("pnpm test:ui")],
   ["Windows CI and release gate on real Clipper preview/export parity", ciWorkflow.includes('Compare real Clipper preview with Windows export') && ciWorkflow.includes('-g "Clipper real-media preview matches exported pixels"') && releaseWorkflow.includes('pnpm test:e2e')],
   ["release runs UI regression contracts", releaseWorkflow.includes("pnpm test:ui")],
-  ["portable and installer share all six license resources", Object.keys(stableConfig.bundle.resources).length === 6 && Object.values(stableConfig.bundle.resources).every(path => typeof path === "string" && /^licenses\/[^/]+$/.test(path)) && releaseWorkflow.includes('$resources.PSObject.Properties')],
+  ["portable and installer share all seven license resources", Object.keys(stableConfig.bundle.resources).length === 7 && Object.values(stableConfig.bundle.resources).every(path => typeof path === "string" && /^licenses\/[^/]+$/.test(path)) && releaseWorkflow.includes('$resources.PSObject.Properties')],
+  ["packages include the bundled Montserrat license", stableConfig.bundle.resources['resources/fonts/OFL.txt'] === 'licenses/Montserrat-OFL.txt'],
   ["packages include FFmpeg and face model licenses", stableConfig.bundle.resources['resources/FFmpeg-GPLv3.txt'] === 'licenses/FFmpeg-GPLv3.txt' && stableConfig.bundle.resources['resources/face_detection_yunet-LICENSE.txt'] === 'licenses/face_detection_yunet-LICENSE.txt'],
 ];
 

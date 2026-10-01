@@ -1,6 +1,6 @@
 export interface ToastDetail {
   message: string;
-  kind?: "error" | "info";
+  kind?: "error" | "info" | "success";
 }
 
 export function reportProblem(reason: unknown): void {

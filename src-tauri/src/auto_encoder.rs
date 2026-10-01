@@ -11,6 +11,66 @@ use std::{
 static AVAILABLE_ENCODERS: OnceLock<Vec<String>> = OnceLock::new();
 static ENCODER_ENVIRONMENT_FINGERPRINT: OnceLock<String> = OnceLock::new();
 
+async fn bounded_encoder_status(command: &mut tokio::process::Command, timeout: Duration) -> bool {
+    command.kill_on_drop(true);
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    bounded_child_status(&mut child, timeout).await
+}
+
+async fn bounded_child_status(child: &mut tokio::process::Child, timeout: Duration) -> bool {
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status.success(),
+        _ => {
+            // Reap the timed-out probe before starting another benchmark or
+            // removing its temporary directory. Dropping a future alone does
+            // not stop a child process.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            false
+        }
+    }
+}
+
+pub(crate) fn cpu_retry_args(args: &[String], error: &str) -> Option<Vec<String>> {
+    let error = error.to_ascii_lowercase();
+    // Do not retry filesystem, decoder, filter or cancellation failures.
+    if ![
+        "error while opening encoder",
+        "cannot load nvcuda",
+        "cannot load libcuda",
+        "no capable devices found",
+        "no nvenc capable devices",
+        "failed to initialise vaapi",
+        "failed to create amf",
+        "error initializing an internal mfx session",
+        "error creating a mfx session",
+        "initializeencoder failed",
+    ]
+    .iter()
+    .any(|message| error.contains(message))
+    {
+        return None;
+    }
+    let candidates =
+        h264_encoder_candidates(&["h264_nvenc".into(), "h264_qsv".into(), "h264_amf".into()]);
+    let cpu = &candidates[0];
+    for hardware in candidates.iter().skip(1) {
+        // Replace only our known automatic profile, never reinterpret a
+        // user-selected codec/bitrate or alter input/filter/audio arguments.
+        if let Some(start) = args
+            .windows(hardware.args.len())
+            .position(|window| window == hardware.args)
+        {
+            let mut retry = args.to_vec();
+            retry.splice(start..start + hardware.args.len(), cpu.args.clone());
+            return Some(retry);
+        }
+    }
+    None
+}
+
 async fn detect_available_encoders() -> Vec<String> {
     if let Some(encoders) = AVAILABLE_ENCODERS.get() {
         return encoders.clone();
@@ -60,11 +120,7 @@ async fn detect_available_encoders() -> Vec<String> {
             command.stdout(Stdio::null()).stderr(Stdio::null());
             #[cfg(target_os = "windows")]
             command.creation_flags(0x08000000);
-            let works = tokio::time::timeout(std::time::Duration::from_secs(8), command.status())
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .is_some_and(|status| status.success());
+            let works = bounded_encoder_status(&mut command, Duration::from_secs(8)).await;
             (encoder.to_string(), works)
         });
     }
@@ -342,11 +398,7 @@ async fn benchmark_h264_encoder(
     command.arg(output);
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let started = Instant::now();
-    let works = tokio::time::timeout(Duration::from_secs(15), command.status())
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .is_some_and(|status| status.success());
+    let works = bounded_encoder_status(&mut command, Duration::from_secs(15)).await;
     if !works {
         return None;
     }
@@ -354,6 +406,7 @@ async fn benchmark_h264_encoder(
     let comparison = tokio::time::timeout(
         Duration::from_secs(15),
         hidden_command("ffmpeg")
+            .kill_on_drop(true)
             .args(["-hide_banner", "-i"])
             .arg(output)
             .arg("-i")
@@ -445,6 +498,69 @@ pub async fn warm_up_auto_encoder() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_retry_replaces_only_known_hardware_profile() {
+        let candidates =
+            h264_encoder_candidates(&["h264_nvenc".into(), "h264_qsv".into(), "h264_amf".into()]);
+        for hardware in candidates.iter().skip(1) {
+            let mut args = vec![
+                "-i".into(),
+                "Türkçe & input.mp4".into(),
+                "-vf".into(),
+                "scale=1080:1920".into(),
+            ];
+            args.extend(hardware.args.clone());
+            args.extend(["-c:a".into(), "copy".into(), "output.mp4".into()]);
+            let retry = cpu_retry_args(&args, "Error while opening encoder").unwrap();
+            assert_eq!(&retry[..4], &args[..4]);
+            assert_eq!(&retry[retry.len() - 3..], &args[args.len() - 3..]);
+            assert!(retry.windows(2).any(|pair| pair == ["-crf", "14"]));
+            assert!(cpu_retry_args(&retry, "Error while opening encoder").is_none());
+            assert!(cpu_retry_args(&args, "No space left on device").is_none());
+            assert!(cpu_retry_args(&args, "Job cancelled.").is_none());
+        }
+        assert!(cpu_retry_args(
+            &[
+                "-c:v".into(),
+                "h264_nvenc".into(),
+                "-b:v".into(),
+                "20M".into()
+            ],
+            "Error while opening encoder"
+        )
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn encoder_probe_timeout_stops_and_reaps_its_worker() {
+        let mut command = hidden_command("ffmpeg");
+        command
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=s=64x64:r=10:d=60",
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let started = Instant::now();
+        command.kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        assert!(!bounded_child_status(&mut child, Duration::from_millis(100)).await);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "Timed-out worker must already be reaped"
+        );
+    }
 
     fn profile(key: &'static str) -> AutoH264Encoder {
         AutoH264Encoder {

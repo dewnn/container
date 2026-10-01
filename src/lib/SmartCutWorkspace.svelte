@@ -2,22 +2,26 @@
   import { onMount, tick, type Snippet } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import OutputActions from "./OutputActions.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
+  import ProblemDetails from "./ProblemDetails.svelte";
+  import RenderFeedback from "./RenderFeedback.svelte";
+  import {completionAlert} from "./completionAlert";
   import { reportProblem } from "./toast";
 
   interface MediaInfo { path:string; name:string; duration:number|null; fps:number|null; audio_codec:string|null; start_timecode:string|null; kind?:string }
   interface Cut { start:number; end:number; enabled:boolean }
   interface Analysis { cuts:Cut[]; waveform:number[]; duration:number; boundary_refinement:boolean; overlaps_before_normalization:number }
   interface Result { output:string; elapsed:number }
-  interface Progress { percent:number; status:string }
+  interface Progress { job_id?:string; percent:number; status:string }
+  let activeJobToken="";
   interface Recommendation { threshold:number; min_silence:number; min_speech:number; minimum_pause:number; keep_before_speech:number; keep_after_speech:number; noise_floor_db:number; speech_level_db:number }
   interface Preset { id:"natural"|"balanced"|"tight"; minimum_pause:number; keep_before_speech:number; keep_after_speech:number }
   interface LinkedTrack { path:string; offset:number; timecode:boolean }
   interface HistorySnapshot { threshold:number;minSilence:number;minSpeech:number;minimumPause:number;keepBeforeSpeech:number;keepAfterSpeech:number;preset:string;cuts:Cut[];autoSummary:string;skipRemoved:boolean;output:string;exportFormat:string;quality:string;resolution:string;analysisInput:string;linkedTracks:LinkedTrack[];hasAnalyzed:boolean;lastAnalyzedKey:string }
 
-  let { media, mediaUrl, language, historyControl, oncontinue, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; historyControl?:Snippet; oncontinue?:(path:string)=>Promise<void>; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void; onbusychange?:(value:boolean)=>void } = $props();
+  let { media, mediaUrl, language, historyControl, oncontinue, onaddstack, stackHasCuts=false, stackCount=0, onhistorychange=()=>{}, onsessionchange=()=>{}, onbusychange=()=>{} }:{ media:MediaInfo; mediaUrl:string; language:"tr"|"en"; historyControl?:Snippet; oncontinue?:(path:string)=>Promise<void>; onaddstack?:(value:HistorySnapshot)=>Promise<void>; stackHasCuts?:boolean; stackCount?:number; onhistorychange?:(undo:boolean,redo:boolean)=>void; onsessionchange?:(value:HistorySnapshot)=>void; onbusychange?:(value:boolean)=>void } = $props();
   const words:Record<"tr"|"en",Record<string,string>>={
     tr:{detection:"SESSİZLİK ALGILAMA",silenceParams:"Konuşma aralarını bul",threshold:"EŞİK",minSilence:"EN KISA SESSİZLİK",minSpeech:"EN KISA KONUŞMA",padding:"KENAR PAYI",help:"Eşik, Silero’nun bir bölümü konuşma kabul etmesi için gereken güven düzeyidir. Yükseltirsen daha fazla bölüm kesilebilir. Kenar payı, kelimelerin başını ve sonunu korur.",listen:"BAŞKA KAYDI DİNLE",camera:"kamera sesini kullan",analyzing:"ANALİZ EDİLİYOR…",detect:"SESSİZLİKLERİ BUL",redetect:"YENİDEN ALGILA",fine:"İnce ayar için Shift tuşunu basılı tut",details:"DİĞER AYARLAR",pause:"EN KISA DURAKLAMA",before:"ÖNCE",after:"SONRA",padHint:"Konuşmanın önüne ve arkasına ayrı pay bırakılır",export:"DIŞA AKTAR",kept:"korundu",removed:"çıkarıldı",format:"BİÇİM",quality:"KALİTE",resolution:"ÇÖZÜNÜRLÜK",high:"Yüksek",medium:"Orta",small:"Küçük",source:"Kaynak",linked:"EK KAYITLAR",add:"+ EKLE",exporting:"AKTARILIYOR",cancelExport:"AKTARMAYI İPTAL ET",showOutput:"ÇIKTIYI GÖSTER",timeline:"ZAMAN ÇİZELGESİ",waveform:"ses dalgası hazırlanıyor…",skipping:"kesilen bölümler atlanıyor",playingAll:"video baştan sona oynatılıyor",cuts:"KESİMLER",editable:"korunan bölümleri düzenle",regions:"bölge",output:"çıktı",keep:"KORU",off:"KAPALI",empty:"Kesimleri görmek için sessizlikleri algıla.",noise:"gürültü",voice:"konuşma"},
     en:{detection:"DETECTION",silenceParams:"automatic silence detection",threshold:"THRESHOLD",minSilence:"MIN SILENCE",minSpeech:"MIN SPEECH",padding:"PAD",help:"Threshold is the confidence Silero needs to count a segment as speech. Raising it cuts more. Padding protects word beginnings and endings.",listen:"LISTEN TO ANOTHER TRACK",camera:"use camera audio",analyzing:"ANALYZING…",detect:"DETECT SILENCES",redetect:"RE-DETECT",fine:"Hold Shift for fine adjustment",details:"OTHER SETTINGS",pause:"MINIMUM PAUSE",before:"BEFORE",after:"AFTER",padHint:"Separate padding before and after speech is preserved",export:"EXPORT",kept:"kept",removed:"removed",format:"FORMAT",quality:"QUALITY",resolution:"RESOLUTION",high:"High",medium:"Medium",small:"Small",source:"Source",linked:"LINKED TRACKS",add:"+ ADD",exporting:"EXPORTING",cancelExport:"CANCEL EXPORT",showOutput:"SHOW OUTPUT",timeline:"TIMELINE",waveform:"building waveform…",skipping:"skipping cuts",playingAll:"playing all",cuts:"CUTS",editable:"editable keep regions",regions:"regions",output:"output",keep:"KEEP",off:"OFF",empty:"Run detection to build a cut list.",noise:"noise",voice:"voice"}
@@ -53,7 +57,8 @@
   let error = $state("");
   let output = $state("");
   let exportFormat = $state("mp4");
-  let quality = $state("medium");
+  let quality = $state("preserve");
+  $effect(()=>{if(quality==="source")quality="preserve"});
   let resolution = $state("source");
   let analysisInput = $state("");
   let linkedTracks:LinkedTrack[] = $state([]);
@@ -233,7 +238,7 @@
   }
   function onTime(){
     if(!video)return; current=video.currentTime;
-    if(skipRemoved && !video.paused){ const target=findGap(current); if(target!==null && Math.abs(target-current)>.03) seek(target); }
+    if(skipRemoved && !video.paused){ const last=cuts.filter(c=>c.enabled).at(-1);if(!last||current>=last.end){video.pause();if(last)seek(last.end)}else{const target=findGap(current); if(target!==null && Math.abs(target-current)>.03) seek(target);} }
     if(!video.paused&&viewSpan<duration-.001&&(current>viewEnd-viewSpan*.06||current<viewStart)){[viewStart,viewEnd]=clampWindow(current-viewSpan*.12,current+viewSpan*.88)}
   }
   function scrub(event:MouseEvent){ const el=event.currentTarget as HTMLElement; const rect=el.getBoundingClientRect(); seek((event.clientX-rect.left)/rect.width*duration); }
@@ -257,6 +262,7 @@
 
   async function analyze(fromAutoTune=false){
     if(analyzing||exporting||(autoTuning&&!fromAutoTune))return;
+    if(!analysisInput&&!media.audio_codec){error=language==="tr"?"Bu videoda ses yok. Ses içeren bir video açın veya Kaynak geçmişinden önceki videoya dönün.":"This video has no audio. Open a video with audio or return to the previous video in Source history.";return;}
     analyzing=true;error="";output="";
     try{
       // Controls remain responsive, but only a result for the current settings
@@ -273,6 +279,7 @@
   }
   async function autoTune(){
     if(autoTuning||analyzing||exporting)return;
+    if(!analysisInput&&!media.audio_codec){error=language==="tr"?"Bu videoda ses yok. Ses içeren bir video açın veya Kaynak geçmişinden önceki videoya dönün.":"This video has no audio. Open a video with audio or return to the previous video in Source history.";return;}
     autoTuning=true;error="";autoSummary="";
     try{
       const result=await invoke<Recommendation>("recommend_autocut_settings",{path:analysisInput||media.path});
@@ -285,10 +292,11 @@
     if(exporting||analyzing||autoTuning||analysisStale||!cuts.length)return;
     armCompletionSound();
     exporting=true;progress=0;error="";output="";
-    try{const result=await invoke<Result>("export_autocut",{request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;await playCompletionSound();}
+    activeJobToken=crypto.randomUUID();
+    try{const result=await invoke<Result>("export_autocut",{jobId:activeJobToken,request:{input:media.path,cuts,format:exportFormat,quality,resolution,linked_tracks:linkedTracks}});output=result.output;progress=100;void completionAlert(language==="tr"?"SmartCut çıktısı hazır.":"SmartCut output is ready.");await playCompletionSound();}
     catch(reason){error=String(reason);reportProblem(reason)}finally{exporting=false}
   }
-  async function cancel(){await invoke("cancel_job")}
+  async function cancel(){await invoke("cancel_job",{jobId:activeJobToken})}
   async function fullscreen(){ if(!stage)return; if(document.fullscreenElement)await document.exitFullscreen();else await stage.requestFullscreen(); }
   async function chooseAnalysis(){const path=await open({multiple:false,filters:[{name:"Audio or video",extensions:["wav","mp3","m4a","aac","flac","opus","mp4","mov","mkv","webm"]}]});if(typeof path==="string")analysisInput=path}
   function tcSeconds(value:string|null,fps:number){if(!value)return 0;const parts=value.replace(";",":").split(":").map(Number);return parts.length===4?parts[0]*3600+parts[1]*60+parts[2]+parts[3]/fps:0}
@@ -340,7 +348,7 @@
       }
     }catch{}
     let disposed=false;
-    listen<Progress>("container-progress",e=>{if(exporting)progress=e.payload.percent}).then(fn=>{if(disposed)fn();else unlisten=fn});
+    listen<Progress>("container-progress",e=>{if(exporting&&(!e.payload.job_id||e.payload.job_id===activeJobToken))progress=e.payload.percent}).then(fn=>{if(disposed)fn();else unlisten=fn});
     const key=(e:KeyboardEvent)=>{if(e.defaultPrevented||document.querySelector("dialog[open]"))return;const tag=(document.activeElement as HTMLElement)?.tagName;if(["INPUT","SELECT","TEXTAREA"].includes(tag))return;if(e.code==="Space"){e.preventDefault();togglePlay()}else if(e.key==="ArrowLeft")seek(current-5);else if(e.key==="ArrowRight")seek(current+5)};
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
@@ -353,6 +361,7 @@
 
 <section class="ac-layout resizable" bind:this={panelWorkspace} style={`--ac-left:${sizes.left}px;--ac-right:${sizes.right}px;--ac-timeline:${timelineSize}px`}>
   <aside class="ac-side ac-left">
+    <div class="ac-left-scroll">
     <div class="ac-card ac-detect-panel">
       <header><div><h3>{t("detection")}</h3><p>{language==="tr"?"Konuşma aralarını bul":"silence parameters"}</p></div></header>
       <div class="ac-fields ac-detect-fields">
@@ -375,22 +384,32 @@
     <div class="ac-card ac-export">
       <header><div><h3>{t("export")}</h3><p>{time(kept)} {t("kept")} · {time(removed)} {t("removed")}</p></div>{@render historyControl?.()}</header>
       <div class="ac-fields">
+        {#if onaddstack}
+          <div class="processing-stack">
+            <header><b>{language==="tr"?"İŞLEM LİSTESİ":"PROCESSING STACK"}</b><small>{stackCount}</small></header>
+            <small>{language==="tr"?"Kesimler kaynak videoya uygulanır, ardından Clipper ve diğer adımlar işlenir. Listeye ekleyince Toolbox'a dönersin.":"Cuts apply to the source before Clipper and other steps. Adding them returns you to Toolbox."}</small>
+          </div>
+        {/if}
         <label><span>{t("format")}</span><select bind:value={exportFormat}><option value="mp4">MP4 Video</option><option value="fcpxml">Final Cut Pro XML</option></select></label>
         {#if exportFormat==="mp4"}
-          <label><span>{t("quality")}</span><select bind:value={quality}><option value="high">{t("high")} · CRF 18</option><option value="medium">{t("medium")} · CRF 22</option><option value="small">{t("small")} · CRF 26</option></select></label>
+          <label><span>{t("quality")}</span><select bind:value={quality}><option value="lossless">{language==="tr"?"Kayıpsız":"Lossless"}</option><option value="preserve">{language==="tr"?"Çok yüksek":"Very high"}</option><option value="high">{t("high")} · CRF 18</option><option value="medium">{t("medium")} · CRF 22</option><option value="small">{t("small")} · CRF 26</option></select></label>
           <label><span>{t("resolution")}</span><select bind:value={resolution}><option value="source">{t("source")}</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select></label>
         {/if}
         <div class="linked-head"><span>{t("linked")}</span><button onclick={addTrack}>{t("add")}</button></div>
         {#each linkedTracks as track,index}
-          <div class="linked-row"><span title={track.path}><b>{track.timecode?"tc":"≈"}</b> {base(track.path)}</span><input aria-label="Track offset" type="number" step="0.01" bind:value={track.offset}><button onclick={()=>linkedTracks=linkedTracks.filter((_,i)=>i!==index)}>×</button></div>
+          <div class="linked-row"><span title={track.path}><b>{track.timecode?"tc":"≈"}</b> {base(track.path)}</span><input aria-label={language==="tr"?"Kayıt zaman farkı":"Track offset"} type="number" step="0.01" bind:value={track.offset}><button aria-label={language==="tr"?"Kaydı kaldır":"Remove track"} onclick={()=>linkedTracks=linkedTracks.filter((_,i)=>i!==index)}>×</button></div>
         {/each}
         {#if output}
-          {#if oncontinue && /\.(mp4|mov|mkv|webm)$/i.test(output)}<button class="ac-secondary" disabled={analyzing||autoTuning||exporting} onclick={()=>oncontinue?.(output)}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button>{/if}
-          <button class="ac-secondary" onclick={()=>revealItemInDir(output)}>{t("showOutput")}</button>
+          <OutputActions path={output} {language} onedit={oncontinue&&/\.(mp4|mov|mkv|webm)$/i.test(output)?oncontinue:undefined} editDisabled={analyzing||autoTuning||exporting}/>
         {/if}
-        <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.length}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
-        {#if exporting}<button class="ac-secondary danger" onclick={cancel}>{t("cancelExport")}</button>{/if}
+        <RenderFeedback running={exporting} {progress} {language} scope="smartcut"/>
       </div>
+    </div>
+    </div>
+    <div class="ac-export-actions">
+      {#if onaddstack}<button class="processing-stack-add" onclick={()=>onaddstack?.(snapshot())} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.some(cut=>cut.enabled)}>{stackHasCuts?(language==="tr"?"Listedeki kesimleri güncelle":"Update cuts in stack"):(language==="tr"?"+ Kesimleri listeye ekle":"+ Add cuts to stack")}</button>{/if}
+      <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.some(cut=>cut.enabled)}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
+      {#if exporting}<button class="ac-secondary danger" onclick={cancel}>{t("cancelExport")}</button>{/if}
     </div>
   </aside>
 
@@ -401,13 +420,13 @@
       <!-- svelte-ignore a11y_media_has_caption -->
       <video bind:this={video} src={mediaUrl} preload="metadata" ontimeupdate={onTime} onplay={()=>playing=true} onpause={()=>playing=false} onended={()=>playing=false}></video>
       <div class="ac-controls">
-        <input class="player-seek" style={`--seek-pct:${duration ? Math.min(100,current/duration*100) : 0}%`} aria-label="Video position" type="range" min="0" max={duration} step="0.01" value={current} oninput={event=>seek(Number(event.currentTarget.value))}>
-        <button onclick={()=>seek(current-15)} title="15 seconds back">−15</button>
-        <button class="play" onclick={togglePlay} title="Play / Pause">{playing?"Ⅱ":"▶"}</button>
-        <button onclick={()=>seek(current+15)} title="15 seconds forward">+15</button>
+        <input class="player-seek" style={`--seek-pct:${duration ? Math.min(100,current/duration*100) : 0}%`} aria-label={language==="tr"?"Video konumu":"Video position"} type="range" min="0" max={duration} step="0.01" value={current} oninput={event=>seek(Number(event.currentTarget.value))}>
+        <button onclick={()=>seek(current-15)} title={language==="tr"?"15 saniye geri":"15 seconds back"}>−15</button>
+        <button class="play" onclick={togglePlay} title={language==="tr"?"Oynat / Duraklat":"Play / Pause"}>{playing?"Ⅱ":"▶"}</button>
+        <button onclick={()=>seek(current+15)} title={language==="tr"?"15 saniye ileri":"15 seconds forward"}>+15</button>
         <span class="ac-time mono">{time(current)} <i>/</i> {time(duration)}</span>
-        <input class="volume" aria-label="Volume" type="range" min="0" max="1" step="0.05" bind:value={volume} oninput={()=>{if(video)video.volume=volume}}>
-        <button onclick={fullscreen} title="Fullscreen">⛶</button>
+        <input class="volume" aria-label={language==="tr"?"Ses düzeyi":"Volume"} type="range" min="0" max="1" step="0.05" bind:value={volume} oninput={()=>{if(video)video.volume=volume}}>
+        <button onclick={fullscreen} title={language==="tr"?"Tam ekran":"Fullscreen"}>⛶</button>
       </div>
     </div>
     <div class="ac-timeline ac-card">
@@ -436,7 +455,7 @@
         <b style:left={pct(current)}></b>
       </div>
     </div>
-    {#if error}<div class="ac-error">{error}</div>{/if}
+    {#if error}<div class="ac-error"><ProblemDetails reason={error} {language}/></div>{/if}
   </div>
 
   <div class="workspace-resizer ac-right-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"SmartCut sağ panel genişliği":"SmartCut right panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minRight} aria-valuemax={Math.min(620,sizes.available-sizes.left-sizes.minCenter)} aria-valuenow={Math.round(sizes.right)} onpointerdown={(event)=>startPanelResize(event,"right")} onkeydown={(event)=>panelKey(event,"right")} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>

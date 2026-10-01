@@ -9,6 +9,13 @@ export function projectResources(session: unknown, includeHistory=false): Projec
   };
   add("Source media", value.mediaPath);
   for (const field of value.toolbox?.selected?.fields ?? []) if (field?.type === "file") add(String(field.label ?? field.key), field.value);
+  for (const step of value.toolbox?.processingStack ?? []) {
+    for (const field of step?.tool?.fields ?? []) if (field?.type === "file") add(String(field.label ?? field.key), step?.params?.[field.key] ?? field.value);
+    if(step?.tool?.id==="smartcut"){
+      add("SmartCut analysis track",step.smartcutSession?.analysisInput);
+      for(const track of step.smartcutSession?.linkedTracks??[])add("SmartCut linked track",track?.path);
+    }
+  }
   for (const path of value.toolbox?.mergeInputs ?? []) add("Merge video", path);
   for (const track of value.autocut?.linkedTracks ?? []) add("SmartCut linked track", track?.path);
   add("SmartCut analysis track", value.autocut?.analysisInput);

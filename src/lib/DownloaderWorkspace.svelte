@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import OutputActions from "./OutputActions.svelte";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
   import { untrack } from "svelte";
@@ -12,7 +13,7 @@
   interface DownloaderResult { output_dir:string; output_file:string|null; details:string }
   interface DownloadFormat { id:string; label:string; detail:string; kind:string; codec:string; rank:number; height:number|null }
   interface DownloadAnalysis { title:string; uploader:string|null; duration:number|null; thumbnail_path:string|null; formats:DownloadFormat[] }
-  interface DownloadProgress { percent:number; downloaded:string; speed:string }
+  interface DownloadProgress { job_id?:string; percent:number; downloaded:string; speed:string }
   interface DownloadHistoryEntry { path:string; name:string }
   let status:DownloaderStatus|null=$state(null);
   let url=$state("");
@@ -20,6 +21,8 @@
   let analysis:DownloadAnalysis|null=$state(null);
   let analyzing=$state(false);
   let busy=$state(false);
+  let downloadJobId=0;
+  let activeJobToken="";
   let message=$state("");
   let outputFile=$state("");
   let history=$state<DownloadHistoryEntry[]>([]);
@@ -77,9 +80,18 @@
   }
   async function download(){
     if(busy)return;armCompletionSound();busy=true;message="";outputFile="";downloadProgress={percent:0,downloaded:language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…",speed:""};
-    try{const result=await invoke<DownloaderResult>("download_media",{url,format});outputFile=result.output_file??"";message=language==="tr"?"İndirme tamamlandı.":"Download finished.";await refreshHistory();await playCompletionSound()}catch(error){message="";reportProblem(error)}finally{busy=false;downloadProgress=null}
+    ++downloadJobId;
+    activeJobToken=crypto.randomUUID();
+    try{const result=await invoke<DownloaderResult>("download_media",{url,format,jobId:activeJobToken});outputFile=result.output_file??"";message=language==="tr"?"İndirme tamamlandı.":"Download finished.";await refreshHistory();await playCompletionSound()}catch(error){message="";reportProblem(error)}finally{busy=false;downloadProgress=null}
   }
-  async function cancelDownload(){if(!busy)return;await invoke("cancel_job").catch(()=>{});message=language==="tr"?"İndirme iptal ediliyor…":"Cancelling download…"}
+  async function cancelDownload(){
+    if(!busy)return;
+    const jobId=downloadJobId;
+    try{
+      await invoke("cancel_job",{jobId:activeJobToken});
+      if(busy&&jobId===downloadJobId)message=language==="tr"?"İndirme iptal ediliyor…":"Cancelling download…";
+    }catch(error){reportProblem(error)}
+  }
   async function analyze(){
     if(!url.trim()||busy||analyzing)return;
     releaseThumbnail(analysis?.thumbnail_path);analyzing=true;message="";outputFile="";analysis=null;
@@ -97,7 +109,7 @@
   function videoHeights(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="video"&&item.height).map((item:DownloadFormat)=>item.height as number))].sort((a,b)=>b-a).slice(0,6):[]}
   function videoCodecs(){const data=analysis as DownloadAnalysis|null;return data?[...new Set(data.formats.filter((item:DownloadFormat)=>item.kind==="video").map((item:DownloadFormat)=>codecName(item.codec)))].slice(0,4):[]}
   function chooseVideo(){const data=analysis as DownloadAnalysis|null;if(!data)return;if(!videoHeights().length){format="best";return}const matches=data.formats.filter((item:DownloadFormat)=>item.kind==="video"&&(!preferredHeight||item.height===preferredHeight)&&(preferredCodec==="auto"||codecName(item.codec)===preferredCodec));const fallback=data.formats.find((item:DownloadFormat)=>item.kind==="video");format=(matches[0]??fallback)?.id??"best"}
-  $effect(()=>{let disposed=false;untrack(()=>{void refresh();void refreshHistory()});const onFocus=()=>{if(!disposed)void refreshHistory()};window.addEventListener("focus",onFocus);listen<DownloadProgress>("downloader-progress",event=>downloadProgress=event.payload).then(value=>{if(disposed)value();else unlisten=value});return()=>{disposed=true;historyRequest++;window.removeEventListener("focus",onFocus);unlisten?.();releaseThumbnail(temporaryThumbnail)}});
+  $effect(()=>{let disposed=false;untrack(()=>{void refresh();void refreshHistory()});const onFocus=()=>{if(!disposed)void refreshHistory()};window.addEventListener("focus",onFocus);listen<DownloadProgress>("downloader-progress",event=>{if(busy&&(!event.payload.job_id||event.payload.job_id===activeJobToken))downloadProgress=event.payload}).then(value=>{if(disposed)value();else unlisten=value});return()=>{disposed=true;historyRequest++;window.removeEventListener("focus",onFocus);unlisten?.();releaseThumbnail(temporaryThumbnail)}});
 </script>
 
 <section class="downloader-workspace compact-downloader">
@@ -113,7 +125,7 @@
   </details>
   <main class="downloader-main">
     <header class="download-intro">
-      <span class="brand-logo-stack download-mark" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt=""><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt=""></span>
+      <span class="brand-logo-stack download-mark" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt="" draggable="false"><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt="" draggable="false"></span>
       <h2>DWLNDR</h2>
       <p>{language==="tr"?"Bağlantıyı yapıştır, ne indireceğini seç.":"Paste a link. Make it yours."}</p>
     </header>
@@ -128,7 +140,7 @@
     {#if analysis}<button class="downloader-run" onclick={download} disabled={!status?.ready||busy}>{busy?(language==="tr"?"İNDİRİLİYOR…":"DOWNLOADING…"):(language==="tr"?"↓ İNDİR":"↓ DOWNLOAD")}</button>{/if}
     {#if busy}<div class="downloader-live" class:pending={!downloadProgress||downloadProgress.percent===0}><i style:width={`${downloadProgress?.percent??0}%`}></i><span>{`${(downloadProgress?.percent??0).toFixed(1)}%`}</span><small class="download-transfer"><em>{downloadProgress?.downloaded??(language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…")}</em>{#if downloadProgress?.speed}<b>·</b><strong>{downloadProgress.speed}</strong>{/if}</small><button onclick={cancelDownload}>{language==="tr"?"İPTAL":"CANCEL"}</button></div>{/if}
     {#if message}<div class:failure={message.toLowerCase().includes("failed")||message.toLowerCase().includes("valid")||message.toLowerCase().includes("gerekli")} class="downloader-message">{message}</div>{/if}
-    {#if outputFile}<div class="download-complete-actions"><button class="download-open-editor" onclick={()=>onopenmedia(outputFile)}>{formatKind==="video"?(language==="tr"?"ZAMAN ÇİZELGESİNDE AÇ →":"OPEN IN TIMELINE →"):(language==="tr"?"DÜZENLEMEK İÇİN AÇ →":"OPEN IN EDITOR →")}</button><button class="downloader-output" onclick={()=>revealItemInDir(outputFile).catch(reportProblem)}>{language==="tr"?"DOSYAYI GÖSTER":"SHOW FILE"}</button></div>{/if}
+    {#if outputFile}<OutputActions path={outputFile} {language} onedit={path=>void onopenmedia(path)} editDisabled={busy}/>{/if}
     <section class="download-history" aria-label={language==="tr"?"İndirilenler":"Downloads"}>
       <header><h3>{language==="tr"?"İNDİRİLENLER":"DOWNLOADS"}</h3><button onclick={refreshHistory} disabled={historyBusy||busy} aria-label={language==="tr"?"İndirilenleri yenile":"Refresh downloads"}>↻</button></header>
       {#if history.length}
@@ -158,6 +170,8 @@
   .engine-details{width:min(100%,680px);flex:none;color:var(--muted);font:10px var(--mono)}
   .engine-details summary{display:flex;align-items:center;justify-content:center;gap:9px;cursor:pointer;padding:8px;list-style:none}
   .engine-details summary::-webkit-details-marker{display:none}
+  .engine-details .status-dot{background:var(--green);box-shadow:0 0 12px color-mix(in srgb,var(--green) 65%,transparent)}
+  .engine-details .status-dot.missing{background:var(--red);box-shadow:0 0 12px color-mix(in srgb,var(--red) 65%,transparent)}
   .engine-details summary::after{content:"+";font-size:14px}
   .engine-details[open] summary::after{content:"−"}
   .engine-details .downloader-engine{display:flex;flex-wrap:wrap;gap:12px;padding:16px;margin-top:8px;border:1px solid var(--border);border-radius:10px;background:var(--panel)}
@@ -180,10 +194,6 @@
   .compact-downloader .downloader-run{margin:14px 0 0;background:var(--text);color:var(--panel);padding:14px}
   .compact-downloader .downloader-live{margin:12px 0 0}
   .compact-downloader .downloader-message{margin:12px 0 0}
-  .download-complete-actions{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;margin:12px 0 0}
-  .download-open-editor{min-height:34px;padding:8px 14px;border:1px solid var(--border);border-radius:6px;background:var(--text);color:var(--panel);font:700 10px var(--mono);cursor:pointer}
-  .download-open-editor:hover{filter:brightness(.88)}
-  .compact-downloader .downloader-output{margin:0;align-self:center;padding:8px}
   .download-note{flex:none;text-align:center;color:var(--muted-2);font:10px var(--mono);line-height:1.7;padding-top:16px}
   .download-history{margin:28px 0 0;border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow:hidden}
   .download-history header{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border)}

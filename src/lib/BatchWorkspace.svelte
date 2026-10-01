@@ -7,6 +7,10 @@
   import { localizedTool, tools, type Field, type MediaKind, type Tool } from "./tools";
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
+  import ProblemDetails from "./ProblemDetails.svelte";
+  import RenderFeedback from "./RenderFeedback.svelte";
+  import {completionAlert} from "./completionAlert";
+  import {imageOutputFormat,imageQualityAdjustable,imageTargetSupported} from "./imageCompressionUi";
 
   interface BatchItem{path:string;status:string;progress:number;output?:string;error?:string;kind?:MediaKind;fps?:number|null;duration?:number|null;width?:number|null;height?:number|null;inspecting?:boolean;probeError?:string}
   interface HistorySnapshot{selected:Tool;items:BatchItem[];recursive:boolean}
@@ -31,6 +35,8 @@
   let items:BatchItem[]=$state([]);
   let running=$state(false),cancelAll=$state(false),recursive=$state(false),aggregate=$state(0);
   let currentIndex=$state(-1);
+  let activeJobToken="";
+  let currentProgress=$state(0),batchSummary=$state("");
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
   let historyApplying=false;
   let panelWorkspace:HTMLElement|null=$state(null);
@@ -92,6 +98,7 @@
   const incompatibleCount=$derived(items.filter(item=>!item.inspecting&&!!item.kind&&!allowed(item)).length);
   const failedCount=$derived(items.filter(item=>item.status==="failed").length);
   const queueReady=$derived(items.length>0&&items.every(item=>!item.inspecting&&!item.probeError&&allowed(item)));
+  const imageTargetInvalid=$derived(selected.id==="image_compressor"&&String(selected.fields.find(field=>field.key==="mode")?.value)==="target"&&items.some(item=>!imageTargetSupported(imageOutputFormat(item.path,String(selected.fields.find(field=>field.key==="format")?.value)))));
   const targetFps=$derived(Number(selected.fields.find(field=>field.key==="fps")?.value??0));
   const fpsTargetValid=$derived(selected.id!=="fps"||(Number.isFinite(targetFps)&&targetFps>=1&&targetFps<=2400));
   const fpsUpscaleCount=$derived(selected.id==="fps"&&fpsTargetValid?items.filter(item=>item.kind==="video"&&item.fps&&targetFps>item.fps+0.01).length:0);
@@ -130,28 +137,34 @@
   async function addFiles(){const result=await open({multiple:true,filters:[{name:"Media",extensions:["mp4","mkv","mov","avi","webm","m4v","mp3","wav","m4a","aac","flac","opus","ogg","jpg","jpeg","png","webp"]}]});if(Array.isArray(result))addPaths(result)}
   async function addFolder(){const folder=await open({directory:true,multiple:false});if(typeof folder==="string")addPaths(await invoke<string[]>("list_media_files",{folder,recursive}))}
   function chooseTool(event:Event){if(running)return;const id=(event.currentTarget as HTMLSelectElement).value;selected=batchTools().find(tool=>tool.id===id)??initialTool()}
-  function visible(field:Field){return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&["lossless","smart"].includes(String(selected.fields.find(item=>item.key==="cut_mode")?.value)))}
+  function visible(field:Field){if(selected.id==="image_compressor"){const mode=String(selected.fields.find(item=>item.key==="mode")?.value),format=String(selected.fields.find(item=>item.key==="format")?.value);if(field.key==="target_kb")return mode==="target";if(field.key==="png_mode")return items.some(item=>imageOutputFormat(item.path,format)==="png");if(field.key==="quality")return mode==="quality"&&items.some(item=>imageQualityAdjustable(imageOutputFormat(item.path,format)));if(field.key==="jpeg_background")return items.some(item=>imageOutputFormat(item.path,format)==="jpg")}return field.key!=="audio_track"&&!(selected.id==="cut"&&field.key==="crf"&&["lossless","smart"].includes(String(selected.fields.find(item=>item.key==="cut_mode")?.value)))}
   async function start(mode:"all"|"failed"="all"){
-    if(running||!queueReady||!fpsTargetValid)return;
-    const targets=items.map((item,index)=>mode==="all"||item.status==="failed"?index:-1).filter(index=>index>=0);
+    if(running||!queueReady||!fpsTargetValid||imageTargetInvalid)return;
+    const targets=items.filter(item=>mode==="all"||item.status==="failed").map(item=>item.path);
     if(!targets.length)return;
-    armCompletionSound();running=true;cancelAll=false;let completed=0;
+    armCompletionSound();running=true;cancelAll=false;batchSummary="";currentProgress=0;let completed=0;
     const operation=selected.id,operationParams=params();
     const targetSet=new Set(targets);
-    items=items.map((item,index)=>targetSet.has(index)?{...item,status:"waiting",progress:0,output:undefined,error:undefined}:item);
+    items=items.map(item=>targetSet.has(item.path)?{...item,status:"waiting",progress:0,output:undefined,error:undefined}:item);
     aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;
     let unlisten:UnlistenFn|null=null;
-    try{unlisten=await listen<{percent:number}>("container-progress",event=>{if(currentIndex>=0){items[currentIndex].progress=event.payload.percent;aggregate=items.reduce((sum,item)=>sum+item.progress,0)/items.length;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
-    for(const index of targets){
-      if(cancelAll)break;currentIndex=index;items[index]={...items[index],status:"running",progress:0,output:undefined,error:undefined};items=[...items];
-      try{const result=await invoke<{output:string}>("run_operation",{request:{input:items[index].path,operation,params:operationParams}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
+    try{unlisten=await listen<{job_id?:string;percent:number}>("container-progress",event=>{if(currentIndex>=0&&(!event.payload.job_id||event.payload.job_id===activeJobToken)){currentProgress=Math.max(0,Math.min(100,event.payload.percent));items[currentIndex].progress=currentProgress;aggregate=items.reduce((sum,item)=>sum+item.progress,0)/items.length;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
+    for(const path of targets){
+      const index=items.findIndex(item=>item.path===path);if(index<0)continue;
+      if(cancelAll)break;currentIndex=index;currentProgress=0;items[index]={...items[index],status:"running",progress:0,output:undefined,error:undefined};items=[...items];
+      activeJobToken=crypto.randomUUID();
+      try{const result=await invoke<{output:string}>("run_operation",{jobId:activeJobToken,request:{input:items[index].path,operation,params:operationParams}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
       catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)};reportProblem(reason)}
       aggregate=items.reduce((sum,item)=>sum+(item.status==="failed"?100:item.progress),0)/items.length;items=[...items];
     }
     unlisten?.();running=false;currentIndex=-1;if(!cancelAll&&completed>0)await playCompletionSound();
+    const failed=items.filter(item=>targetSet.has(item.path)&&item.status==="failed").length;
+    const cancelled=targets.filter(path=>{const item=items.find(item=>item.path===path);return !item||item.status==="cancelled"||item.status==="waiting"}).length;
+    batchSummary=language==="tr"?`${completed} tamamlandı · ${failed} başarısız · ${cancelled} iptal/işlenmedi`:`${completed} completed · ${failed} failed · ${cancelled} cancelled/not processed`;
+    if(!cancelAll)void completionAlert(`Batch: ${batchSummary}`);
   }
-  async function cancel(){cancelAll=true;await invoke("cancel_job")}
-  async function removeOrCancel(index:number){if(running&&index===currentIndex){await invoke("cancel_job");return}if(!running||items[index].status==="waiting")items=items.filter((_,position)=>position!==index)}
+  async function cancel(){cancelAll=true;await invoke("cancel_job",{jobId:activeJobToken})}
+  async function removeOrCancel(index:number){if(running&&index===currentIndex){await invoke("cancel_job",{jobId:activeJobToken});return}if(!running||items[index].status==="waiting")items=items.filter((_,position)=>position!==index)}
 </script>
 
 <section class="batch-workspace resizable" bind:this={panelWorkspace} style={`--batch-left:${sizes.left}px`}>
@@ -161,19 +174,23 @@
     {#each selected.fields as field}
       {#if visible(field)}<label class="field"><span>{field.label}</span>{#if field.type==="select"}<select bind:value={field.value} disabled={running}>{#each field.options??[] as option}<option value={option.value}>{option.label}</option>{/each}</select>{:else}<input type={field.type==="text"?"text":"number"} bind:value={field.value} min={field.min} max={field.max} step={field.step} disabled={running}>{/if}</label>{/if}
     {/each}
+    {#if selected.id==="image_compressor"&&items.some(item=>imageOutputFormat(item.path,String(selected.fields.find(field=>field.key==="format")?.value))==="png")}<small>{language==="tr"?"PNG kayıpsız optimize edilir. Palet modu renkleri azaltabilir; tamamen kayıpsız değildir. Ulaşılamayan boyut hedeflerinde kalite sınırları korunarak en küçük sonuç kaydedilir.":"PNG is optimized losslessly. Palette mode may reduce colours and is not fully lossless. Unreachable size targets save the smallest result within the quality limits."}</small>{/if}
     {#if selected.id==="fps"}<small>{language==="tr"?"FPS düşürmek aradaki kareleri atar. Kayıpsız seçenek kalan kareleri korur ama dosya boyutu ve işlem süresi artabilir.":"Lowering FPS discards intermediate frames. Lossless keeps the remaining frames but may increase file size and processing time."}</small>{/if}
     <div class="batch-add"><button class="ghost" onclick={addFiles} disabled={running}>+ {language==="tr"?"DOSYA":"FILES"}</button><button class="ghost" onclick={addFolder} disabled={running}>+ {language==="tr"?"KLASÖR":"FOLDER"}</button></div>
     <label class="batch-check"><input type="checkbox" bind:checked={recursive} disabled={running}> {language==="tr"?"alt klasörleri de tara":"include subfolders"}</label>
     <small>{language==="tr"?"Alt klasörleri istersen dahil et. Bir dosyada hata olursa diğerleri işlenmeye devam eder.":"Subfolders are scanned only when explicitly enabled. A failed file does not stop the queue."}</small>
     {#if incompatibleCount}<small class="batch-warning">{language==="tr"?`${incompatibleCount} dosya seçilen işlemle uyumsuz. Kuyruğu başlatmadan önce kaldır ya da işlemi değiştir.`:`${incompatibleCount} file(s) cannot use this operation. Remove them or choose another operation.`}</small>{/if}
     {#if fpsUpscaleCount}<small class="batch-warning">{language==="tr"?`${fpsUpscaleCount} videonun kaynak FPS’i hedefin altında; yeni hareket oluşmaz, kareler tekrarlanır.`:`${fpsUpscaleCount} video(s) have lower source FPS than the target; frames will be duplicated, not interpolated.`}</small>{/if}
-    <div class="batch-run-actions">{#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={()=>start()} disabled={!queueReady||!fpsTargetValid}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{#if failedCount}<button class="run batch-retry" onclick={()=>start("failed")} disabled={!queueReady||!fpsTargetValid}>↻ {language==="tr"?`BAŞARISIZLARI TEKRAR DENE (${failedCount})`:`RETRY FAILED ONLY (${failedCount})`}</button>{/if}{/if}</div>
+    {#if imageTargetInvalid}<small class="batch-warning">{language==="tr"?"Hedef boyut bu dosyaların mevcut biçimiyle desteklenmiyor. WebP veya JPEG seç.":"Target size is unsupported for the current file formats. Choose WebP or JPEG."}</small>{/if}
+    <div class="batch-run-actions">{#if running}<button class="run danger" onclick={cancel}>{language==="tr"?"TÜMÜNÜ İPTAL ET":"CANCEL ALL"}</button>{:else}<button class="run" onclick={()=>start()} disabled={!queueReady||!fpsTargetValid||imageTargetInvalid}>▶ {language==="tr"?"KUYRUĞU BAŞLAT":"START QUEUE"}</button>{#if failedCount}<button class="run batch-retry" onclick={()=>start("failed")} disabled={!queueReady||!fpsTargetValid||imageTargetInvalid}>↻ {language==="tr"?`BAŞARISIZLARI TEKRAR DENE (${failedCount})`:`RETRY FAILED ONLY (${failedCount})`}</button>{/if}{/if}</div>
   </aside>
   <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Batch kontrol paneli genişliği":"Batch controls panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(600,sizes.available-sizes.minRight)} aria-valuenow={Math.round(sizes.left)} onpointerdown={startPanelResize} onkeydown={panelKey} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
   <section class="batch-list panel">
+    <div class="batch-feedback">{#key currentIndex}<RenderFeedback running={running&&currentIndex>=0} progress={currentProgress} {language} scope="batch"/>{/key}{#if running}<small>{language==="tr"?"Süre tahmini işlenen dosya içindir.":"Time estimate is for the current file."}</small>{/if}{#if batchSummary}<p role="status">{batchSummary}</p>{/if}</div>
     <div class="pane-head"><div><h3>{language==="tr"?"KUYRUK":"QUEUE"}</h3><p>{items.length} {language==="tr"?"dosya":"files"}</p></div><b>{aggregate.toFixed(0)}%</b></div>
     <div class="batch-total"><i style={`width:${aggregate}%`}></i></div>
     <div class="batch-items">
+      {#if !items.length}<div class="batch-empty"><h3>{language==="tr"?"Kuyruk boş":"Your queue is empty"}</h3><p>{language==="tr"?"Başlamak için dosya veya klasör ekle.":"Add files or a folder to get started."}</p><button class="ghost" onclick={addFiles}>+ {language==="tr"?"Dosya ekle":"Add files"}</button></div>{/if}
       {#each items as item,index}
         <article>
           <span class="batch-index">{String(index+1).padStart(2,"0")}</span>
@@ -181,17 +198,17 @@
             <b title={item.path}>{name(item.path)}</b>
             <small class="batch-source-meta">{item.inspecting?(language==="tr"?"Bilgiler okunuyor…":"Reading media…"):item.probeError??sourceLabel(item)}</small>
             {#if item.kind&&!allowed(item)}<small class="batch-item-warning">{language==="tr"?"Bu işlem bu dosya türünü desteklemiyor.":"This operation does not support this file type."}</small>{/if}
-            <small title={item.error??item.output??statusLabel(item.status)}>{item.error??item.output??statusLabel(item.status)}</small>
+            {#if item.error}<ProblemDetails reason={item.error} {language}/>{:else}<small title={item.output?name(item.output):statusLabel(item.status)}>{item.output?name(item.output):statusLabel(item.status)}</small>{/if}
             <i><em style={`width:${item.progress}%`}></em></i>
           </div>
           <strong class:failed={item.status==="failed"}>{statusLabel(item.status)}</strong>
           <div class="batch-row-actions">
             {#if item.status==="complete" && item.output}
-              <button class="batch-output-action batch-play-action" disabled={running} title={language==="tr"?"Çıktıyı oynat / aç":"Play / open output"} aria-label={language==="tr"?`${name(item.path)} çıktısını oynat`:`Play output for ${name(item.path)}`} onclick={()=>openPath(item.output!).catch(reportProblem)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.7 4.7a.8.8 0 0 1 1.2-.68l8 5.3a.8.8 0 0 1 0 1.36l-8 5.3a.8.8 0 0 1-1.2-.68z"/></svg></button>
-              <button class="batch-output-action batch-show-action" disabled={running} title={language==="tr"?"Çıktıyı klasörde göster":"Show output in folder"} aria-label={language==="tr"?`${name(item.path)} çıktısını göster`:`Show output for ${name(item.path)}`} onclick={()=>revealItemInDir(item.output!).catch(reportProblem)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.5 7V5.75A1.75 1.75 0 0 1 4.25 4h3.1l1.8 2h6.6A1.75 1.75 0 0 1 17.5 7.75V9"/><path d="M3.8 8.5h13.4a.8.8 0 0 1 .78.98l-1.25 5.7a1.75 1.75 0 0 1-1.71 1.37H4.75a1.75 1.75 0 0 1-1.71-1.37L1.8 9.48a.8.8 0 0 1 .78-.98z"/></svg></button>
-              {#if oncontinue}<button class="batch-tertiary-action" disabled={running} title={language==="tr"?"çıktıyı düzenle":"continue editing"} aria-label={language==="tr"?"çıktıyı düzenle":"continue editing"} onclick={()=>oncontinue?.(item.output!)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 13.9 13.6 4.3a1.8 1.8 0 0 1 2.55 2.55L6.55 16.45 3.5 17z"/><path d="m11.8 6.1 2.55 2.55"/></svg></button>{/if}
+              <button class="batch-output-action batch-play-action" title={language==="tr"?"Çıktıyı oynat / aç":"Play / open output"} aria-label={language==="tr"?`${name(item.path)} çıktısını oynat`:`Play output for ${name(item.path)}`} onclick={()=>openPath(item.output!).catch(reportProblem)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.7 4.7a.8.8 0 0 1 1.2-.68l8 5.3a.8.8 0 0 1 0 1.36l-8 5.3a.8.8 0 0 1-1.2-.68z"/></svg></button>
+              <button class="batch-output-action batch-show-action" title={language==="tr"?"Çıktıyı klasörde göster":"Show output in folder"} aria-label={language==="tr"?`${name(item.path)} çıktısını göster`:`Show output for ${name(item.path)}`} onclick={()=>revealItemInDir(item.output!).catch(reportProblem)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.5 7V5.75A1.75 1.75 0 0 1 4.25 4h3.1l1.8 2h6.6A1.75 1.75 0 0 1 17.5 7.75V9"/><path d="M3.8 8.5h13.4a.8.8 0 0 1 .78.98l-1.25 5.7a1.75 1.75 0 0 1-1.71 1.37H4.75a1.75 1.75 0 0 1-1.71-1.37L1.8 9.48a.8.8 0 0 1 .78-.98z"/></svg></button>
+              {#if oncontinue}<button class="batch-tertiary-action" disabled={running} title={language==="tr"?"Toolbox'ta aç":"Open in Toolbox"} aria-label={language==="tr"?"Toolbox'ta aç":"Open in Toolbox"} onclick={()=>oncontinue?.(item.output!)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 13.9 13.6 4.3a1.8 1.8 0 0 1 2.55 2.55L6.55 16.45 3.5 17z"/><path d="m11.8 6.1 2.55 2.55"/></svg></button>{/if}
             {/if}
-            <button class="batch-tertiary-action" onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} aria-label={language==="tr"?"Kuyruktan kaldır":"Remove from queue"}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15"/></svg></button>
+            <button class="batch-tertiary-action" onclick={()=>removeOrCancel(index)} disabled={running&&index!==currentIndex&&item.status!=="waiting"} title={running&&index===currentIndex?(language==="tr"?"Bu işlemi iptal et":"Cancel this job"):(language==="tr"?"Kuyruktan kaldır":"Remove from queue")} aria-label={running&&index===currentIndex?(language==="tr"?"Bu işlemi iptal et":"Cancel this job"):(language==="tr"?"Kuyruktan kaldır":"Remove from queue")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true">{#if running&&index===currentIndex}<rect x="5" y="5" width="10" height="10" rx="1"/>{:else}<path d="M5 5l10 10M15 5 5 15"/>{/if}</svg></button>
           </div>
         </article>
       {/each}

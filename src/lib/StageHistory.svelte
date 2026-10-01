@@ -62,12 +62,17 @@
   function branched(parent: number | null) {
     return parent !== null && (history?.entries.filter(entry => entry.parent === parent).length ?? 0) > 1;
   }
+  function savedLabel(session:unknown,fallback:string){
+    const stack=(session as {toolbox?:{processingStack?:{enabled:boolean}[]};workspaceMode?:string})?.toolbox?.processingStack;
+    return (session as {workspaceMode?:string})?.workspaceMode==="toolbox"&&stack?.length
+      ?`${tr?"İşlem listesi":"Processing Stack"} · ${stack.filter(step=>step.enabled).length} ${tr?"adım":"steps"}`:fallback;
+  }
 </script>
 
 <svelte:window onresize={() => close()} onclick={(event) => {
   if (event.target instanceof Node && !root?.contains(event.target)) close();
 }} />
-{#if history && history.entries.length > 1}
+{#if history && history.entries.length > 0}
   <div class="stage-history" bind:this={root} onfocusout={(event) => {
     if (event.relatedTarget instanceof Node && !root?.contains(event.relatedTarget)) close();
   }}>
@@ -78,13 +83,13 @@
         if (["ArrowDown", "ArrowUp", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
         if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); void open(); }
         if (event.key === "Escape") { event.preventDefault(); close(true); }
-      }}>{tr ? "GERİ DÖN" : "GO BACK"} ▾</button>
+      }}>{tr ? "KAYNAK GEÇMİŞİ" : "SOURCE HISTORY"} ▾</button>
     {#if expanded}
       <div bind:this={menu} id={uid} class="stage-menu" style:left={position.left + "px"}
         style:top={position.top + "px"} style:max-height={position.height + "px"}
         role="dialog" tabindex="-1" aria-labelledby={uid + "-title"} aria-describedby={uid + "-help"} onkeydown={menuKey}>
         <div class="stage-heading">
-          <strong id={uid + "-title"}>{tr ? "İşlem geçmişi" : "History"}</strong>
+          <strong id={uid + "-title"}>{tr ? "Kaynak geçmişi" : "Source history"}</strong>
           <span>{history.entries.length} {tr ? "adım" : "steps"}</span>
           <button class="stage-close" aria-label={tr ? "Kapat" : "Close history"} onclick={() => close(true)}>×</button>
         </div>
@@ -96,7 +101,7 @@
               title={file.path} onclick={() => choose(entry.id)}>
               <b>{entry.id}</b>
               <span class="stage-details">
-                <span class="stage-label">{current ? currentLabel || entry.label : entry.label}</span>
+                <span class="stage-label">{current ? currentLabel || savedLabel(entry.session,entry.label) : savedLabel(entry.session,entry.label)}</span>
                 <small>{file.name || (tr ? "Medya" : "Media")}</small>
               </span>
               {#if branched(entry.parent)}<span class="stage-branch" title={tr ? entry.parent + ". adımdan devam edildi" : "Continued from step " + entry.parent}>↳ {entry.parent}</span>{/if}
@@ -104,7 +109,9 @@
             </button>
           {/each}
         </div>
-        <p id={uid + "-help"}>{tr ? "Geri dönmek çıktılarını silmez." : "Going back keeps your output files."}
+        <p id={uid + "-help"}>{history.entries.length === 1
+          ? (tr ? "Henüz başka kaynak yok. Render sonucunu ‘Kaynak olarak aç’ ile açtığında buradan önceki kaynağa dönebilirsin. Stack adımları ayrı kaynak oluşturmaz." : "No other sources yet. Use ‘Open as source’ on a rendered output to return to the previous source here. Stack steps do not create separate sources.")
+          : (tr ? "Geri dönmek çıktılarını silmez." : "Going back keeps your output files.")}
           {#if history.trimmed}<span>{tr ? "Yalnızca son adımlar tutuluyor." : "Only recent steps are retained."}</span>{/if}
         </p>
       </div>

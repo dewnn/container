@@ -4,6 +4,46 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.19.0] - 2026-10-02
+
+- Added Processing Stack with editable, reorderable steps and combined rendering. Compatible SmartCut/Clipper chains use a fused FFmpeg graph to reduce intermediate encoding; source-time cuts and overlay geometry are preserved.
+- Improved automatic AMD, NVIDIA, Intel and CPU encoder profiling and fallback contracts. NVIDIA and Intel profiles remain unverified on physical hardware in this development cycle; performance depends on the workload and device.
+- Made Source history available for the current source and restored selected Stack steps, source settings and Cut Video filmstrip resources when returning to earlier sources.
+- Improved Blur playback with a single-decoder backdrop and clarified Stack result versus tool preview playback.
+- Simplified Frame Extractor around the current player position, frame count and spacing, with examples and guidance.
+- Added live global accent colors, refined light-theme contrast and interface typography, and kept engine availability indicators independent of the selected accent.
+- Moved Reset panel layout into General settings, compacted SmartCut controls, aligned landing status in the bottom action row and centered media metadata on wide screens.
+- Bundled Montserrat ExtraBold Italic (800) for Text preview and export without installing a Windows font.
+- Corrected Remove Audio output categorization, improved no-audio guidance, and fixed English tool hints and language switching.
+- Hardened job cancellation, stale responses and atomic project saves, with expanded source-history, geometry, media and responsive-interface regression coverage.
+
+- PNG compression now embeds a local lossless optimizer and an optional quality-guarded palette encoder. PNG target sizes are no longer blocked in Toolbox or Batch; unreachable targets save the best result without resizing or forcing severe degradation. Colour profiles, alpha endpoints, 16-bit samples and APNG frames are covered by regression tests.
+
+- Fixed Image Compressor size-summary layout, explained lossless formats, blocked unsupported target sizes before rendering, and added retryable/stale-safe trial-encode estimates. All still-image output formats now share the `image` output folder across tools.
+- Color sliders now work directly without enable checkboxes, with neutral displays, individual resets and undo; refined the link-download button to a balanced rectangular control.
+
+- Added global language/theme/completion-alert preferences without closing the current media; compacted tool headings and clarified multi-video import, link downloads, empty searches and empty queues.
+- Unified output action wording, added Play/Open to SmartCut and Downloader, and kept completed Batch outputs playable/revealable while later jobs run. Active-row cancellation now has its own label and stop icon.
+- Renamed SmartCut's default quality to Very high / Çok yüksek and ordered quality choices without changing encoding settings; clarified Text's Add from preset action and improved keyboard focus and Turkish player labels.
+
+- Clipper Watermark now accepts Text presets, provides compact font/size/color/opacity controls, and supports dragging/resizing in output preview. Advanced preset styling is preserved and composited in the same Clipper render.
+
+- Added Text preset update/rename actions without expanding the default compact controls; duplicate names no longer create extra presets.
+- Added estimated remaining time to Toolbox, SmartCut and the current Batch file, plus opt-in completion messages/taskbar alerts and Batch outcome counts.
+- Render failures now show actionable disk-space, file-lock, missing-file and permission guidance with expandable technical details.
+- Expanded font pixel checks to Impact, Arial and Georgia in portrait/landscape media, and Clipper encoded-output comparisons to 31% banner distance.
+
+- Isolated Text preview typography from UI OpenType alternates, fixing changed letter shapes and widths in fonts such as Impact.
+
+- Text presets now remember source width and scale font, outline, shadow and padding for different video resolutions. Legacy presets retain their saved pixel size and explain how to enable scaling.
+
+- Added persistent Text presets that save the selected layer's text, position, font and appearance, and apply it as a new editable layer.
+
+- Fixed gray Kick banner backgrounds on full-range video by converting the pixel range before drawing; preview/export tests now include the encoded MP4.
+- Text and Image / Logo Overlay now encode video losslessly to avoid accumulating compression loss while editing. Intermediate files may be larger.
+
 ## [0.18.7] - 2026-09-28
 
 - Opening or dropping multiple videos now enters Batch directly with every file queued; a single file still opens the editor.

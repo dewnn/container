@@ -1,7 +1,7 @@
 <script lang="ts">
   import "@fontsource-variable/geist";
   import "@fontsource-variable/geist-mono";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { invoke, convertFileSrc, isTauri } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -30,6 +30,18 @@
   import { updatesAllowedForVersion } from "./lib/releaseChannel";
   import { moveTimelineBoundary, type TimelineBoundary } from "./lib/timelineRange";
   import { reportProblem, type ToastDetail } from "./lib/toast";
+  import {renderProblem} from "./lib/renderFeedback";
+  import ProblemDetails from "./lib/ProblemDetails.svelte";
+  import RenderFeedback from "./lib/RenderFeedback.svelte";
+  import GeneralSettings from "./lib/GeneralSettings.svelte";
+  import {containDialog} from "./lib/dialogFocus";
+  import {imageOutputFormat,imageQualityAdjustable,imageTargetSupported} from "./lib/imageCompressionUi";
+  import {completionAlert} from "./lib/completionAlert";
+  import WatermarkControls from "./lib/WatermarkControls.svelte";
+  import WatermarkPreview from "./lib/WatermarkPreview.svelte";
+  import {rasterText,type TextAppearance} from "./lib/textRaster";
+  import {stackOutputDimensions,scaleStackText} from "./lib/stackGeometry";
+  import BlurBackdropPreview from "./lib/BlurBackdropPreview.svelte";
   import kickMark from "./assets/kick-mark.svg";
   import twitchMark from "./assets/twitch-mark.svg";
   import kickBanner from "../src-tauri/resources/social-tags/kick-banner.png";
@@ -54,7 +66,7 @@
     size: number;
     start_timecode: string | null;
   }
-  interface ProgressEvent { percent: number; time: number; speed: string; frame: string; status: string }
+  interface ProgressEvent { job_id?: string; percent: number; time: number; speed: string; frame: string; status: string }
   interface JobResult { output: string; elapsed: number }
   interface QualityCandidate { crf: number; vmaf: number; estimated_size_mb: number; rating: string }
   interface QualityAnalysis { recommended_crf: number; target_vmaf: number; candidates: QualityCandidate[]; sample_count: number; sampled_seconds: number; elapsed: number }
@@ -66,7 +78,8 @@
   interface OutputCleanupResult { cleaned:boolean; path:string }
   interface FontOption { name:string; path:string }
   interface TextLayer { id:number; text:string; x:number; y:number; size:number; wrap_width?:number; color:string; opacity:number; align:"left"|"center"|"right"; fontName:string; font_path:string; outline:number; outline_color:string; shadow:number; shadow_color:string; background:boolean; background_color:string; background_opacity:number; background_padding:number }
-  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; outputSettingsKey?:string; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean>; mergeInputs?:string[] }
+  interface StackStep { id:number; tool:Tool; params:Record<string,string>; textLayers:TextLayer[]; colorEnabled:Record<string,boolean>; enabled:boolean; smartcutSession?:unknown; sourceWidth?:number }
+  interface EditorSnapshot { media:MediaInfo; mediaUrl:string; selected:Tool|null; activeKind:MediaKind; output:string; outputSettingsKey?:string; outputMode?:"tool"|"stack"; renderedImageUrl:string; colorEnabled:Record<string,boolean>; colorPreviewVisible:boolean; textLayers:TextLayer[]; activeTextId:number|null; qualityAnalysis:QualityAnalysis|null; customNumberFields:Record<string,boolean>; mergeInputs?:string[]; processingStack?:StackStep[]; stackQuality?:string; editingStackStepId?:number|null }
   interface RecoverySession { version:1; savedAt:number; mediaPath:string; workspaceMode:"toolbox"|"autocut"|"batch"; toolbox:EditorSnapshot|null; autocut:unknown; batch:unknown; resources?:ProjectResource[]; stageHistory?:StageHistory<RecoverySession> }
   let stageHistory:StageHistory<RecoverySession>|null=$state(null);
   let stageNavigating=$state(false);
@@ -77,14 +90,26 @@
   let media: MediaInfo | null = $state(null);
   let mediaUrl = $state("");
   let selected: Tool | null = $state(null);
+  let processingStack:StackStep[]=$state([]);
+  let editingStackStepId:number|null=$state(null);
+  let stackQuality=$state("high");
+  let stackResultPreview=$state(false);
+  let stackResultDuration=$state(0);
+  const playbackDuration=$derived.by(()=>stackResultPreview?stackResultDuration:(media?.duration??0));
   let activeKind: MediaKind = $state("video");
+  let frameAdvanced=$state(false);
   let busy = $state(false);
+  let stackPreparing = false;
+  let renderJobId = 0;
+  let activeJobToken = "";
   let dragActive = $state(false);
   let error = $state("");
   let output = $state("");
   let outputSettingsKey=$state("");
-  const outputStale=$derived(!!output&&outputSettingsKey!==renderSettingsKey());
-  function renderSettingsKey(){return media&&selected?JSON.stringify({source:media.path,operation:selected.id,params:paramsFrom(selected)}):""}
+  let outputMode:"tool"|"stack"=$state("tool");
+  const outputStale=$derived(!!output&&outputSettingsKey!==renderSettingsKey(outputMode));
+  $effect(()=>{if(!output||outputMode!=="stack"||outputStale)stackResultPreview=false});
+  function renderSettingsKey(mode:"tool"|"stack"="tool"){return media&&mode==="stack"?JSON.stringify({source:media.path,steps:processingStack,quality:stackQuality}):media&&selected?JSON.stringify({source:media.path,operation:selected.id,params:paramsFrom(selected)}):""}
   let progress = $state(0);
   let jobStatus = $state("ready");
   let speed = $state("—");
@@ -115,7 +140,6 @@
   let toolboxLeftWidth = $state<number|null>(null);
   let toolboxRightWidth = $state<number|null>(null);
   let panelResetDialogOpen = $state(false);
-  let transformBackdropVideo: HTMLVideoElement | null = $state(null);
   let toolboxStage: HTMLElement | null = $state(null);
   let toolboxCanvas: HTMLElement | null = $state(null);
   let textPreviewCanvas: HTMLCanvasElement | null = $state(null);
@@ -136,6 +160,8 @@
   let temporaryImagePreviewPath = "";
   let compressionEstimate = $state<number|null>(null);
   let compressionEstimateLoading = $state(false);
+  let compressionEstimateError = $state(false);
+  let compressionEstimateRetry = $state(0);
   let compressionEstimateId = 0;
   let qualityAnalysis: QualityAnalysis | null = $state(null);
   let qualityAnalyzing = $state(false);
@@ -145,6 +171,32 @@
   let colorEnabled: Record<string,boolean> = $state({});
   let colorPreviewVisible = $state(true);
   let textLayers: TextLayer[] = $state([]);
+  let textPresets: {id:string;name:string;sourceWidth?:number;layer:TextLayer}[] = $state([]);
+  let textPresetName = $state("");
+  let selectedTextPreset = $state("");
+  let textPresetBusy = $state(false);
+  let watermarkLoading=$state(false);
+  let watermarkFontReady=$state("");
+  let watermarkSelectionVersion=0;
+  const watermarkLayer=$derived.by(()=>{try{return JSON.parse(toolValue("watermark_layer")||"null") as TextAppearance|null}catch{return null}});
+  function changeWatermark(patch:Partial<TextAppearance>){if(!watermarkLayer)return;const next={...watermarkLayer,...patch};setToolValue("watermark_layer",JSON.stringify(next));setToolValue("watermark_text",next.text)}
+  async function prepareWatermark(){
+    if(watermarkLoading)return;const sourceTool=selected,version=watermarkSelectionVersion;watermarkLoading=true;
+    try{
+      const fonts=await ensureSystemFonts();const existing=watermarkLayer;
+      const font=existing?fonts.find(font=>font.path===existing.font_path):fonts.find(font=>font.name.toLowerCase()==="arial")??fonts[0];
+      if(!font)throw new Error("Watermark font is unavailable. Choose an installed font.");
+      const fontName=await loadPreviewFont(font);if(selected!==sourceTool||version!==watermarkSelectionVersion)return;
+      const layer:TextAppearance=existing?{...existing,fontName}:{text:toolValue("watermark_text"),x:50,y:50,size:toolNumber("watermark_size")||32,color:"#ffffff",opacity:toolNumber("watermark_opacity")||85,align:"center",fontName,font_path:font.path,outline:0,outline_color:"#000000",shadow:0,shadow_color:"#000000",background:toolValue("watermark_background")==="true",background_color:"#000000",background_opacity:65,background_padding:12};
+      setToolValue("watermark_layer",JSON.stringify(layer));watermarkFontReady=font.path;
+    }catch(reason){reportProblem(reason)}finally{
+      watermarkLoading=false;
+      if(selected!==sourceTool&&selected?.id==="clipper"&&toolValue("watermark_enabled")==="true"&&(!watermarkLayer||watermarkFontReady!==watermarkLayer.font_path))void prepareWatermark();
+    }
+  }
+  async function chooseWatermarkFont(path:string){const sourceTool=selected,version=++watermarkSelectionVersion;try{const font=(await ensureSystemFonts()).find(font=>font.path===path);if(!font)return;const fontName=await loadPreviewFont(font);if(selected===sourceTool&&version===watermarkSelectionVersion){changeWatermark({font_path:path,fontName});watermarkFontReady=path}}catch(reason){if(version===watermarkSelectionVersion)reportProblem(reason)}}
+  async function applyWatermarkPreset(id:string){const preset=textPresets.find(item=>item.id===id);if(!preset)return;const sourceTool=selected,version=++watermarkSelectionVersion;try{const font=(await ensureSystemFonts()).find(font=>font.path.toLowerCase()===preset.layer.font_path.toLowerCase());if(!font)throw new Error("Preset font is unavailable.");const fontName=await loadPreviewFont(font);if(selected!==sourceTool||version!==watermarkSelectionVersion)return;const scale=preset.sourceWidth?(toolNumber("output_width")||1080)/preset.sourceWidth:1;const layer={...preset.layer,font_path:font.path,fontName,size:preset.layer.size*scale,outline:preset.layer.outline*scale,shadow:preset.layer.shadow*scale,background_padding:preset.layer.background_padding*scale};setToolValue("watermark_layer",JSON.stringify(layer));setToolValue("watermark_text",layer.text);watermarkFontReady=font.path;clipperPreviewMode="output"}catch(reason){if(version===watermarkSelectionVersion)reportProblem(reason)}}
+  $effect(()=>{if(selected?.id==="clipper"&&toolValue("watermark_enabled")==="true"&&(!watermarkLayer||watermarkFontReady!==watermarkLayer.font_path))untrack(()=>void prepareWatermark())});
   let activeTextId: number | null = $state(null);
   let systemFonts: FontOption[] = $state([]);
   let systemFontsLoad: Promise<FontOption[]> | null = null;
@@ -194,7 +246,7 @@
   let outputCleanupMessage = $state("");
   let outputCleanupMessageTimer:number|undefined;
   let toastMessage=$state("");
-  let toastKind:"error"|"info"=$state("error");
+  let toastKind:"error"|"info"|"success"=$state("error");
   let toastTimer:number|undefined;
   let updateChecking = $state(false);
   let updateInstalling = $state(false);
@@ -205,12 +257,13 @@
   let updateDownloaded = $state(0);
   let updateTotal = $state(0);
   const messages:Record<"tr"|"en",Record<string,string>>={
-    tr:{tagline:"FFMPEG MEDYA ARAÇLARI",close:"kapat",drop:"dosyanı buraya bırak",browse:"ya da seçmek için tıkla",landingTitle:"tek yerde. tüm araçlar.",landingCopy:"Videonu, sesini veya görselini aç; ihtiyacın olan araçlar ve tüm ayarlar burada.",local:"işlemler cihazında yapılır",untouched:"kaynak dosyaların değişmez",tools:"ARAÇLAR",available:"araç",video:"video",audio:"ses",image:"görsel",search:"araç ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen süre",showOutput:"çıktıyı göster",cancelJob:"işlemi iptal et",parameters:"AYARLAR",defaults:"varsayılanlar",what:"NE İŞE YARAR?",forVideo:"BU VİDEODA",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktın İndirilenler/CONTAINER Output klasörüne kaydedilir. Kaynak dosyan değişmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
-    en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one place. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show output",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to Downloads/CONTAINER Output. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
+    tr:{tagline:"FFMPEG MEDYA ARAÇLARI",close:"kapat",drop:"dosyanı buraya bırak",browse:"ya da seçmek için tıkla",landingTitle:"tek yerde. tüm araçlar.",landingCopy:"Videonu, sesini veya görselini aç; ihtiyacın olan araçlar ve tüm ayarlar burada.",local:"işlemler cihazında yapılır",untouched:"kaynak dosyaların değişmez",tools:"ARAÇLAR",available:"araç",video:"video",audio:"ses",image:"görsel",search:"araç ara...",preview:"ÖNİZLEME",original:"ORİJİNAL",rendered:"İŞLENMİŞ",process:"İŞLEM",frame:"kare",speed:"hız",elapsed:"geçen süre",showOutput:"klasörde göster",cancelJob:"işlemi iptal et",parameters:"AYARLAR",defaults:"varsayılanlar",what:"NE İŞE YARAR?",forVideo:"BU VİDEODA",choose:"dosya seç...",custom:"Özel…",render:"işle",outputNote:"Çıktın İndirilenler/CONTAINER Output klasörüne kaydedilir. Kaynak dosyan değişmez.",selectTool:"Bir araç seç",dropOpen:"açmak için bırak",ready:"hazır",toolbox:"ARAÇ KUTUSU"},
+    en:{tagline:"FFMPEG MEDIA TOOLBOX",close:"close",drop:"drop media here",browse:"or click to browse files",landingTitle:"one place. every tool.",landingCopy:"All CONTAINER FFmpeg operations in one workspace with detailed controls and live progress.",local:"local processing only",untouched:"original files stay untouched",tools:"TOOLS",available:"available",video:"video",audio:"audio",image:"image",search:"search tools...",preview:"PREVIEW",original:"ORIGINAL",rendered:"RENDERED",process:"PROCESS",frame:"frame",speed:"speed",elapsed:"elapsed",showOutput:"show in folder",cancelJob:"cancel job",parameters:"PARAMETERS",defaults:"defaults",what:"WHAT DOES IT DO?",forVideo:"FOR THIS VIDEO",choose:"choose file...",custom:"Custom…",render:"render",outputNote:"Output is written to Downloads/CONTAINER Output. The source file is not changed.",selectTool:"Select a tool",dropOpen:"drop to open",ready:"ready",toolbox:"TOOLBOX"}
   };
   const t=(key:string)=>messages[language][key]??key;
   function friendlyProblem(reason:unknown){
     const raw=String(reason??"").trim();
+    const renderHint=renderProblem(raw,language);if(renderHint)return renderHint;
     if(language==="tr"){
       if(/valid HTTPS|video link/i.test(raw))return "Geçerli bir HTTPS video bağlantısı girip tekrar dene.";
       if(/yt-dlp.*not ready|yt-dlp gerekli/i.test(raw))return "İndirme bileşeni hazır değil. Önce resmî yt-dlp.exe dosyasını seç.";
@@ -238,11 +291,11 @@
     if(/format.*(?:unavailable|not available|unsupported)/i.test(raw))return "That format is unavailable for this video. Choose another quality.";
     return raw||"An unexpected problem occurred. Please try again.";
   }
-  function showToast(reason:unknown,kind:"error"|"info"="error"){
+  function showToast(reason:unknown,kind:"error"|"info"|"success"="error"){
     toastMessage=kind==="error"?friendlyProblem(reason):String(reason);
     toastKind=kind;
     window.clearTimeout(toastTimer);
-    toastTimer=window.setTimeout(()=>toastMessage="",3000);
+    toastTimer=window.setTimeout(()=>toastMessage="",kind==="error"?10000:5000);
   }
   const kindTools=(kind:MediaKind)=>localizedForSection(kind,media?.kind??kind,language).filter(tool=>{
     if(!ffmpegCapabilities)return true;
@@ -252,7 +305,7 @@
     if(tool.id==="merge_videos")return ffmpegCapabilities.concat;
     return true;
   });
-  const timelineTool = $derived.by(()=>media?.kind==="video"&&selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
+  const timelineTool = $derived.by(()=>!stackResultPreview&&media?.kind==="video"&&selected ? ["cut","screenshot","gif","image_overlay"].includes(selected.id) : false);
   const operationBusy=$derived(busy||qualityAnalyzing||cameraDetecting||autoCutBusy||batchBusy||downloaderBusy||restoringSession||stageNavigating);
   const canUndo = $derived(!operationBusy&&(workspaceMode==="toolbox"?editHistoryIndex>0:workspaceMode==="autocut"?autoCutCanUndo:batchCanUndo));
   const canRedo = $derived(!operationBusy&&(workspaceMode==="toolbox"?editHistoryIndex>=0&&editHistoryIndex<editHistory.length-1:workspaceMode==="autocut"?autoCutCanRedo:batchCanRedo));
@@ -299,7 +352,10 @@
     return Promise.all(projectResources(session).map(async resource=>({resource,exists:await invoke<boolean>("project_media_available",{path:resource.path}).catch(()=>false)})));
   }
   async function loadProjectPath(path:string){
-    const saved=JSON.parse(await invoke<string>("read_project",{path}));
+    const loadId=++mediaLoadId;
+    const contents=await invoke<string>("read_project",{path});
+    if(loadId!==mediaLoadId)return;
+    const saved=JSON.parse(contents);
     if(!validRecovery(saved))throw new Error(language==="tr"?"Geçersiz CONTAINER proje dosyası.":"Invalid CONTAINER project file.");
     recoveryCandidate=saved;await restorePreviousSession();
   }
@@ -409,7 +465,6 @@
         await tick();
         if(media?.kind==="video"){
           toolboxVideo?.load();
-          transformBackdropVideo?.load();
         }
         await restorePreviewFonts();resetEditorHistory();
       }
@@ -426,7 +481,7 @@
 
   function captureEditorSnapshot():EditorSnapshot|null{
     if(!media)return null;
-    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,outputSettingsKey,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields,mergeInputs});
+    return cloneEditorValue({media,mediaUrl,selected,activeKind,output,outputSettingsKey,outputMode,renderedImageUrl,colorEnabled,colorPreviewVisible,textLayers,activeTextId,qualityAnalysis,customNumberFields,mergeInputs,processingStack,stackQuality,editingStackStepId});
   }
   function snapshotSignature(snapshot:EditorSnapshot){return JSON.stringify(snapshot)}
   function resetEditorHistory(){const snapshot=captureEditorSnapshot();editHistory=snapshot?[snapshot]:[];editHistoryIndex=snapshot?0:-1}
@@ -451,12 +506,16 @@
     return restored;
   }
   function applyEditorSnapshot(snapshot:EditorSnapshot,direction:"undo"|"redo",preserveLoadedMedia=false){
+    stackResultPreview=false;
     historyApplying=true;
     toolboxVideo?.pause();
     if(!preserveLoadedMedia){media=cloneEditorValue(snapshot.media);mediaUrl=snapshot.mediaUrl}
     activeKind=snapshot.activeKind;
     selected=restoreToolSnapshot(snapshot.selected);
-    output=snapshot.output;outputSettingsKey=snapshot.outputSettingsKey??"";renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);mergeInputs=cloneEditorValue(snapshot.mergeInputs??(media?[media.path]:[]));toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
+    // Loading a historical source clears derived previews. Restoring its tool
+    // bypasses selectTool, so request the filmstrip here as well.
+    if(selected&&["cut","screenshot","gif","image_overlay"].includes(selected.id))void loadToolboxFilmstrip();
+    output=snapshot.output;outputSettingsKey=snapshot.outputSettingsKey??"";outputMode=snapshot.outputMode??"tool";renderedImageUrl=snapshot.renderedImageUrl;colorEnabled=cloneEditorValue(snapshot.colorEnabled);colorPreviewVisible=snapshot.colorPreviewVisible;textLayers=cloneEditorValue(snapshot.textLayers);activeTextId=snapshot.activeTextId;qualityAnalysis=cloneEditorValue(snapshot.qualityAnalysis);customNumberFields=cloneEditorValue(snapshot.customNumberFields);mergeInputs=cloneEditorValue(snapshot.mergeInputs??(media?[media.path]:[]));processingStack=cloneEditorValue(snapshot.processingStack??[]);stackQuality=snapshot.stackQuality??"high";editingStackStepId=processingStack.some(step=>step.id===snapshot.editingStackStepId&&step.tool.id===selected?.id)?snapshot.editingStackStepId??null:null;toolboxPlaying=false;toolboxCurrent=0;error="";jobStatus=language==="tr"?(direction==="undo"?"geri alındı":"ileri alındı"):(direction==="undo"?"undone":"redone");
     requestAnimationFrame(()=>historyApplying=false);
   }
   function undoEditor(){if(operationBusy)return;if(workspaceMode==="autocut"){autoCutWorkspace?.undo();return}if(workspaceMode==="batch"){batchWorkspace?.undo();return}flushEditorSnapshot();if(editHistoryIndex<=0)return;editHistoryIndex-=1;applyEditorSnapshot(editHistory[editHistoryIndex],"undo")}
@@ -637,6 +696,8 @@
   }
 
   function chooseTool(tool: Tool) {
+    stackResultPreview=false;
+    editingStackStepId=null;
     const changed = selected?.id !== tool.id;
     if(changed){
       colorEnabled={};
@@ -645,12 +706,14 @@
       activeTextId=null;
     }
     selected = localizedTool(tool,language);
+    frameAdvanced=false;
     if(selected.id==="clipper"){clipperPreviewMode="source";setCropPreset("9:16",true);centerContentRegion()}
     if(selected.id==="merge_videos"&&media)mergeInputs=[media.path];
     if(selected.id==="subtitles"&&media)void loadSubtitleTracks();
     if(selected.id==="text")void ensureSystemFonts();
     configureUpscale(selected);
     configureTimelineFields(selected);
+    if(selected.id==="frame_extractor"&&media?.duration){const end=selected.fields.find(field=>field.key==="end");if(end)end.value=Math.min(86400,media.duration)}
     restrictEncoderOptions(selected);
     error = "";
     output = "";
@@ -685,6 +748,19 @@
   function toolField(key:string){return selected?.fields.find(field=>field.key===key)}
   function fieldLivesOnTimeline(key:string){return ["cut","gif","image_overlay"].includes(selected?.id??"")?["start","end"].includes(key):selected?.id==="screenshot"?key==="timestamp":false}
   function fieldVisible(key:string){
+    if(selected?.id==="audio_lab"){
+      if(key==="lufs")return toolValue("preset")==="custom";
+      if(key==="format")return media?.kind==="audio";
+    }
+    if(selected?.id==="frame_extractor"){
+      if(!frameAdvanced)return false;
+      const mode=toolValue("mode");
+      if(key==="interval")return mode==="seconds";
+      if(key==="every_frames")return mode==="frames";
+      if(key==="scene_threshold")return mode==="scene";
+      if(key==="count")return mode==="even"||mode==="sheet";
+      if(key==="columns")return mode==="sheet";
+    }
     if(["transform","clipper"].includes(selected?.id??"") && key!=="crf") return false;
     if(selected?.id==="color" || selected?.id==="text") return false;
     if(selected?.id==="compression"){
@@ -696,9 +772,10 @@
     if(selected?.id==="blur_pixelate"&&key.startsWith("region_"))return false;
     if(selected?.id==="image_overlay")return media?.kind==="image"?["image_path","opacity"].includes(key):["image_path","opacity","start","end"].includes(key);
     if(selected?.id==="image_compressor"){
-      if(key==="quality")return toolValue("mode")==="quality";
+      if(key==="quality")return toolValue("mode")==="quality"&&imageQualityAdjustable(imageOutputFormat(media?.path??"",toolValue("format")));
       if(key==="target_kb")return toolValue("mode")==="target";
-      if(key==="jpeg_background")return toolValue("format")==="jpg";
+      if(key==="png_mode")return imageOutputFormat(media?.path??"",toolValue("format"))==="png";
+      if(key==="jpeg_background")return imageOutputFormat(media?.path??"",toolValue("format"))==="jpg";
     }
     if(selected?.id==="subtitles"){
       const action=toolValue("action");
@@ -748,12 +825,14 @@
     colorPreviewVisible=true;
   }
   function colorOn(key:string){return !!colorEnabled[key]}
-  function toggleColor(key:string){colorEnabled={...colorEnabled,[key]:!colorEnabled[key]}}
+  function neutralColorValue(key:string){return ["contrast","saturation","gamma"].includes(key)?100:key==="temperature"?6500:0}
+  function displayedColorValue(key:string){return colorOn(key)?toolNumber(key):neutralColorValue(key)}
+  function adjustColor(key:string,value:number){setToolNumber(key,value);colorEnabled={...colorEnabled,[key]:value!==neutralColorValue(key)}}
   function resetColorKey(key:string){
-    const source=kindTools(activeKind).find(tool=>tool.id==="color")?.fields.find(field=>field.key===key);
-    if(source)setToolNumber(key,Number(source.value));
+    setToolNumber(key,neutralColorValue(key));
+    colorEnabled={...colorEnabled,[key]:false};
   }
-  function colorValueLabel(key:string){const value=toolNumber(key);return key==="temperature"?`${value} K`:key==="hue"?`${value}°`:`${value}%`}
+  function colorValueLabel(key:string){const value=displayedColorValue(key);return key==="temperature"?`${value} K`:key==="hue"?`${value}°`:`${value}%`}
   function colorPreviewStyle(){
     if(selected?.id!=="color"||!colorPreviewVisible)return "";
     const filters:string[]=[];
@@ -827,21 +906,56 @@
     const frame=blurForegroundGeometry();if(!frame)return "display:none";
     return `left:${frame.box.left}px;top:${frame.top}px;width:${frame.box.width}px;height:${frame.height}px`;
   }
-  function verticalBackdropStyle(){
-    const box=verticalOutputBox();if(!box)return "display:none";
-    return `position:absolute;z-index:1;pointer-events:none;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;object-fit:cover;filter:blur(${toolNumber("blur_strength")*box.width/1080}px);clip-path:inset(0)`;
-  }
   function originalCanvasStyle(){
     const box=verticalOutputBox();if(!box)return "display:none";
     const background=toolValue("canvas_background"),color=background==="white"?"#fff":background==="custom"?toolValue("canvas_color"):"#000";
     return `position:absolute;z-index:1;pointer-events:none;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;background:${color}`;
   }
-  function syncTransformBackdrop(force=false){
-    if(!toolboxVideo||!transformBackdropVideo)return;
-    if(force||Math.abs(transformBackdropVideo.currentTime-toolboxVideo.currentTime)>.12)transformBackdropVideo.currentTime=toolboxVideo.currentTime;
-  }
 
   function activeText(){return textLayers.find(layer=>layer.id===activeTextId)??null}
+  function persistTextPresets(next:typeof textPresets){
+    try{localStorage.setItem("container-text-presets-v1",JSON.stringify(next));textPresets=next;return true}
+    catch{showToast(language==="tr"?"Yazı preseti kaydedilemedi. Depolama alanını kontrol et.":"Could not save text presets. Check available storage.","info");return false}
+  }
+  function saveTextPreset(){
+    const layer=activeText(),name=textPresetName.trim();if(!layer||!name)return;
+    const existing=textPresets.find(preset=>preset.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(existing){selectedTextPreset=existing.id;showToast(language==="tr"?"Bu ad zaten var. Seçili preseti güncelle veya farklı bir ad kullan.":"This name already exists. Update the selected preset or use another name.","info");return}
+    const preset={id:crypto.randomUUID(),name,sourceWidth:previewSourceDimensions().width||media?.width||undefined,layer:cloneEditorValue(layer)};
+    if(persistTextPresets([...textPresets,preset])){selectedTextPreset=preset.id;textPresetName="";showToast(language==="tr"?"Yazı preseti kaydedildi.":"Text preset saved.","info")}
+  }
+  function deleteTextPreset(){if(persistTextPresets(textPresets.filter(preset=>preset.id!==selectedTextPreset)))selectedTextPreset=""}
+  function updateTextPreset(){
+    const layer=activeText();if(!layer||!selectedTextPreset)return;
+    if(persistTextPresets(textPresets.map(preset=>preset.id===selectedTextPreset?{...preset,sourceWidth:previewSourceDimensions().width||media?.width||undefined,layer:cloneEditorValue(layer)}:preset)))showToast(language==="tr"?"Preset güncellendi.":"Preset updated.","info");
+  }
+  function renameTextPreset(){
+    const name=textPresetName.trim();if(!name||!selectedTextPreset)return;
+    if(textPresets.some(preset=>preset.id!==selectedTextPreset&&preset.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showToast(language==="tr"?"Bu ad zaten kullanılıyor. Başka bir ad gir.":"This name is already used. Enter another name.","info");return}
+    if(persistTextPresets(textPresets.map(preset=>preset.id===selectedTextPreset?{...preset,name}:preset))){textPresetName="";showToast(language==="tr"?"Presetin adı değiştirildi.":"Preset renamed.","info")}
+  }
+  async function applyTextPreset(){
+    const preset=textPresets.find(item=>item.id===selectedTextPreset);if(!preset||textPresetBusy)return;
+    const sourceMedia=media;const sourceTool=selected;textPresetBusy=true;
+    try{
+      const fonts=await ensureSystemFonts();
+      const font=fonts.find(item=>item.path.toLowerCase()===preset.layer.font_path.toLowerCase());
+      if(!font){showToast(language==="tr"?"Presetin fontu bu bilgisayarda bulunamadı.":"This preset's font is unavailable on this computer.","info");return}
+      const fontName=await loadPreviewFont(font);
+      if(media!==sourceMedia||selected!==sourceTool)return;
+      const layer={...cloneEditorValue(preset.layer),id:nextTextId++,fontName,font_path:font.path};
+      // Text coordinates are percentages, but font/effect sizes are source pixels.
+      // Keep their visual proportions when applying to a different resolution.
+      const width=previewSourceDimensions().width||media?.width||0;
+      if(Number.isFinite(preset.sourceWidth)&&preset.sourceWidth!>0&&width>0){
+        const scale=width/preset.sourceWidth!;
+        layer.size*=scale;layer.outline*=scale;layer.shadow*=scale;layer.background_padding*=scale;
+      }else{
+        showToast(language==="tr"?"Eski preset piksel boyutuyla uygulandı. Çözünürlüğe uyarlamak için doğru boyutta yeniden kaydet.":"Legacy preset applied at its saved pixel size. Save it again at the correct size to enable resolution scaling.","info");
+      }
+      textLayers=[...textLayers,layer];activeTextId=layer.id;
+    }catch(reason){reportProblem(reason)}finally{textPresetBusy=false}
+  }
   async function ensureSystemFonts(){
     if(systemFonts.length)return systemFonts;
     systemFontsLoad??=invoke<FontOption[]>("list_system_fonts")
@@ -872,28 +986,20 @@
     const box=mediaDisplayBox();if(!box)return "display:none";
     return `left:${(box.stageWidth-box.width)/2}px;top:${(box.stageHeight-box.height)/2}px;width:${box.width}px;height:${box.height}px`;
   }
-  function textLayerAvailableWidth(layer:TextLayer){
-    const sourceWidth=previewSourceDimensions().width||media?.width||1,x=Math.max(0,Math.min(1,layer.x/100));
+  function textLayerAvailableWidth(layer:TextLayer,canvasWidth=previewSourceDimensions().width||media?.width||1){
+    const sourceWidth=canvasWidth,x=Math.max(0,Math.min(1,layer.x/100));
     const anchorWidth=layer.align==="left"?1-x:layer.align==="right"?x:2*Math.min(x,1-x);
     const safeWidth=sourceWidth*Math.min(.9,Math.max(.05,anchorWidth));
     const effects=(layer.background?layer.background_padding*2:0)+layer.outline+Math.max(0,layer.shadow);
     return layer.wrap_width?Math.max(layer.size,layer.wrap_width*layer.size):Math.max(layer.size,safeWidth-effects);
   }
-  function wrappedText(layer:TextLayer){
+  function wrappedText(layer:TextLayer,canvasWidth?:number){
     textMeasureCanvas??=document.createElement("canvas");
     const context=textMeasureCanvas.getContext("2d");
     if(!context)return layer.text;
     context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}, "Segoe UI Emoji", sans-serif`;
-    const maxWidth=textLayerAvailableWidth(layer),lines:string[]=[];
+    const maxWidth=textLayerAvailableWidth(layer,canvasWidth),lines:string[]=[];
     const fits=(value:string)=>context.measureText(value).width<=maxWidth;
-    const splitLongWord=(word:string)=>{
-      let part="";
-      for(const character of Array.from(word)){
-        const candidate=part+character;
-        if(part&&!fits(candidate)){lines.push(part);part=character}else part=candidate;
-      }
-      return part;
-    };
     for(const paragraph of layer.text.replace(/\r\n?/g,"\n").split("\n")){
       if(!paragraph){lines.push("");continue}
       let line="";
@@ -901,7 +1007,9 @@
         const candidate=line?`${line} ${word}`:word;
         if(fits(candidate)){line=candidate;continue}
         if(line){lines.push(line);line=""}
-        line=fits(word)?word:splitLongWord(word);
+        // Usernames and other unbroken words remain intact. Wrap only at
+        // whitespace; explicit Enter breaks are preserved by the outer loop.
+        line=word;
       }
       lines.push(line);
     }
@@ -916,11 +1024,14 @@
     const canvas=textPreviewCanvas,source=previewSourceDimensions();
     if(!canvas||selected?.id!=="text"||!source.width||!source.height)return;
     const width=Math.max(1,Math.round(source.width)),height=Math.max(1,Math.round(source.height));
+    drawTextLayers(canvas,textLayers,width,height);
+  }
+  function drawTextLayers(canvas:HTMLCanvasElement,layers:TextLayer[],width:number,height:number){
     if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
     const context=canvas.getContext("2d");if(!context)return;
     context.clearRect(0,0,width,height);
-    for(const layer of textLayers){
-      const lines=wrappedText(layer).split("\n"),lineHeight=layer.size*1.05,totalHeight=lineHeight*lines.length;
+    for(const layer of layers){
+      const lines=wrappedText(layer,width).split("\n"),lineHeight=layer.size*1.05,totalHeight=lineHeight*lines.length;
       context.font=`400 ${layer.size}px ${JSON.stringify(layer.fontName)}, "Segoe UI Emoji", sans-serif`;
       context.textAlign=layer.align;context.textBaseline="middle";
       const anchorX=width*layer.x/100,centerY=height*layer.y/100;
@@ -964,7 +1075,7 @@
       if(!font)return layer;
       try{return {...layer,fontName:await loadPreviewFont(font),font_path:font.path}}catch(reason){reportProblem(reason);return layer}
     }));
-    if(layers.every((layer,index)=>textLayers[index]?.id===layer.id)){
+    if(JSON.stringify(layers)===JSON.stringify(textLayers)){
       textLayers=restored;
       nextTextId=Math.max(0,...restored.map(layer=>layer.id))+1;
     }
@@ -1665,6 +1776,7 @@
       const previousPreview=temporaryImagePreviewPath;
       temporaryImagePreviewPath=preparedPreview;
       media = loaded;
+      processingStack=[];editingStackStepId=null;stackQuality="high";
       clipperPreviewMode = "source";
       mergeInputs=[];
       activeKind = media.kind;
@@ -1738,7 +1850,7 @@
     stageHistory=null;
   }
 
-  function stageLabel(){return workspaceMode==="autocut"?"SmartCut":workspaceMode==="batch"?"Batch":selected?.title??media?.name??"Media"}
+  function stageLabel(){if(workspaceMode==="toolbox"&&processingStack.length)return `${language==="tr"?"İşlem listesi":"Processing Stack"} · ${processingStack.filter(step=>step.enabled).length} ${language==="tr"?"adım":"steps"}`;return workspaceMode==="autocut"?"SmartCut":workspaceMode==="batch"?"Batch":selected?.title??media?.name??"Media"}
   async function continueEditingOutput(path=output){
     if(!path||operationBusy)return;
     if(workspaceMode==="toolbox"&&outputStale){showToast(language==="tr"?"Ayarlar değişti. Devam etmeden önce yeniden işle.":"Settings changed. Render again before continuing.","info");return}
@@ -1761,7 +1873,7 @@
 
   function seekToolbox(value: number) {
     if (!toolboxVideo) return;
-    const duration = toolboxVideo.duration || media?.duration || 0;
+    const duration = Number.isFinite(toolboxVideo.duration) ? toolboxVideo.duration : playbackDuration;
     toolboxVideo.currentTime = Math.max(0, Math.min(duration, value));
     toolboxCurrent = toolboxVideo.currentTime;
   }
@@ -1773,7 +1885,7 @@
     const rect=(event.currentTarget as HTMLInputElement).getBoundingClientRect(),thumbWidth=11;
     const visualPercent=Math.max(0,Math.min(100,(event.clientX-rect.left)/Math.max(1,rect.width)*100));
     const valuePercent=Math.max(0,Math.min(100,(event.clientX-rect.left-thumbWidth/2)/Math.max(1,rect.width-thumbWidth)*100));
-    const time=(media?.duration??0)*valuePercent/100;
+    const time=playbackDuration*valuePercent/100;
     return {percent:visualPercent,time:event.shiftKey?Math.floor(time):time,precision:event.shiftKey};
   }
   function hoverPlayerSeek(event:PointerEvent){playerSeekHover=playerSeekPosition(event)}
@@ -1789,7 +1901,7 @@
 
   function handleToolboxMetadata(){
     toolboxMetadataVersion++;
-    syncTransformBackdrop(true);
+
     if(selected?.id==="upscale"&&selected)configureUpscale(selected);
     const duration=toolboxVideo?.duration;
     if(!media||!duration||!Number.isFinite(duration)||duration<=0)return;
@@ -1920,21 +2032,81 @@
     if(tool.id==="text")params.layers=JSON.stringify(textLayers.map(layer=>({...layer,text:wrappedText(layer)})));
     return params;
   }
+  const stackToolIds=new Set(["cut","transform","clipper","color","text","image_overlay","audio_lab"]);
+  function captureStackStep(id:number):StackStep{
+    if(!selected)throw new Error("Select a tool first.");
+    return cloneEditorValue({id,tool:selected,params:paramsFrom(selected),textLayers,colorEnabled,enabled:true,sourceWidth:previewSourceDimensions().width});
+  }
+  function addOrUpdateStackStep(){
+    if(!media||!selected||media.kind!=="video"||!stackToolIds.has(selected.id)||operationBusy)return;
+    const issue=validate(selected);if(issue){error=issue;return}
+    if(editingStackStepId!==null){const previous=processingStack.find(step=>step.id===editingStackStepId);if(previous)processingStack=processingStack.map(step=>step.id===editingStackStepId?{...captureStackStep(step.id),enabled:step.enabled}:step)}
+    else{const id=Math.max(0,...processingStack.map(step=>step.id))+1;processingStack=[...processingStack,captureStackStep(id)];editingStackStepId=id}
+    error="";flushEditorSnapshot();persistRecovery();
+  }
+  async function addSmartCutStack(value:{cuts:{start:number;end:number;enabled:boolean}[];resolution:string}){
+    if(!media||operationBusy||!value.cuts.some(cut=>cut.enabled))return;
+    if(stackDraftDirty()){showToast(language==="tr"?"Toolbox'taki adımın ayarları değişti. Önce Seçili adımı güncelle'ye bas.":"Your Toolbox step has unapplied changes. Click Update selected step before adding cuts.","info");return;}
+    const previous=processingStack.find(step=>step.tool.id==="smartcut");
+    const tool:Tool={id:"smartcut",title:"SmartCut",category:"SmartCut",kind:["video"],description:"",detail:"",fields:[]};
+    const step:StackStep={id:previous?.id??Math.max(0,...processingStack.map(step=>step.id))+1,tool,params:{cuts:JSON.stringify(value.cuts),resolution:"source",source_path:media.path},textLayers:[],colorEnabled:{},enabled:previous?.enabled??true,smartcutSession:cloneEditorValue(value)};
+    // SmartCut timestamps refer to the original source, before any timeline-changing step.
+    processingStack=[step,...processingStack.filter(item=>item.tool.id!=="smartcut")];
+    await setWorkspaceMode("toolbox");flushEditorSnapshot();persistRecovery();
+  }
+  async function selectStackStep(step:StackStep){if(operationBusy)return;if(step.tool.id==="smartcut"){await setWorkspaceMode("autocut");if(step.smartcutSession)autoCutWorkspace?.restoreSession(cloneEditorValue(step.smartcutSession));return}editingStackStepId=step.id;selected=restoreToolSnapshot(step.tool);textLayers=cloneEditorValue(step.textLayers);colorEnabled=cloneEditorValue(step.colorEnabled);activeTextId=textLayers[0]?.id??null;void restorePreviewFonts()}
+  function moveStackStep(index:number,change:number){const next=index+change;if(next<0||next>=processingStack.length||operationBusy||processingStack[index].tool.id==="smartcut"||processingStack[next].tool.id==="smartcut")return;const steps=[...processingStack];[steps[index],steps[next]]=[steps[next],steps[index]];processingStack=steps;flushEditorSnapshot();persistRecovery()}
+  function removeStackStep(id:number){if(operationBusy)return;processingStack=processingStack.filter(step=>step.id!==id);if(editingStackStepId===id)editingStackStepId=null;flushEditorSnapshot();persistRecovery()}
+  function stackDraftDirty(){const step=processingStack.find(item=>item.id===editingStackStepId);return !!step&&!!selected&&JSON.stringify(paramsFrom(selected))!==JSON.stringify(step.params)}
+  async function runProcessingStack(){
+    if(!media||media.kind!=="video"||operationBusy||!processingStack.some(step=>step.enabled))return;
+    if(stackDraftDirty()){error=language==="tr"?"Önce seçili adımı güncelle.":"Update the selected step before rendering.";return}
+    armCompletionSound();
+    busy=true;stackPreparing=true;++renderJobId;const jobId=crypto.randomUUID();activeJobToken=jobId;error="";output="";progress=0;elapsed=0;speed="—";frame="—";jobStatus=language==="tr"?"işlem listesi işleniyor":"processing stack";
+    const source=media.path,started=performance.now();
+    try{
+      const steps=processingStack.map(step=>({operation:step.tool.id,params:{...step.params},enabled:step.enabled}));
+      let width=media.width??1920,height=media.height??1080;
+      for(let index=0;index<steps.length;index++){
+        const step=steps[index],saved=processingStack[index];if(!step.enabled)continue;
+        if(step.operation==="text"){
+          const fonts=await ensureSystemFonts();const layers=await Promise.all(saved.textLayers.map(async original=>{const layer=scaleStackText(original,saved.sourceWidth??width,width);const font=fonts.find(item=>item.path.toLowerCase()===layer.font_path.toLowerCase());return font?{...layer,fontName:await loadPreviewFont(font)}:layer}));
+          step.params.layers=JSON.stringify(layers.map(layer=>({...layer,text:wrappedText(layer,width)})));
+          if(layers.some(layer=>/[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u20e3\ufe0f]/u.test(layer.text))){const raster=document.createElement("canvas");drawTextLayers(raster,layers,width,height);step.params.text_raster_png=raster.toDataURL("image/png");}
+        }
+        if(step.operation==="clipper"&&step.params.watermark_enabled==="true"&&step.params.watermark_layer){
+          const layer=JSON.parse(step.params.watermark_layer) as TextAppearance;
+          const fonts=await ensureSystemFonts(),font=fonts.find(item=>item.path.toLowerCase()===layer.font_path.toLowerCase());
+          if(!font)throw new Error("Watermark font is unavailable.");
+          const raster=document.createElement("canvas");rasterText(raster,{...layer,fontName:await loadPreviewFont(font)},Number(step.params.output_width)||1080,Number(step.params.output_height)||1920);step.params.text_raster_png=raster.toDataURL("image/png");
+        }
+        ({width,height}=stackOutputDimensions(step.operation,step.params,{width,height}));
+      }
+      const settings=renderSettingsKey("stack");
+      if(activeJobToken!==jobId)return;
+      stackPreparing=false;
+      const result=await invoke<JobResult>("run_operation",{jobId,request:{input:source,operation:"processing_stack",params:{steps:JSON.stringify(steps),quality:stackQuality}}});
+      if(activeJobToken!==jobId||media?.path!==source)return;
+      output=result.output;outputSettingsKey=settings;outputMode="stack";progress=100;elapsed=result.elapsed;jobStatus="complete";void completionAlert(language==="tr"?"İşlem listesi tamamlandı.":"Processing Stack complete.");await playCompletionSound();
+    }catch(reason){if(activeJobToken===jobId){error=String(reason);elapsed=(performance.now()-started)/1000;jobStatus=String(reason).toLowerCase().includes("cancel")?"cancelled":"failed";reportProblem(reason)}}finally{if(activeJobToken===jobId){busy=false;stackPreparing=false}}
+  }
   function hasEmojiText(){return textLayers.some(layer=>/[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u20e3\ufe0f]/u.test(layer.text))}
 
   $effect(()=>{
-    const path=media?.path,id=selected?.id,mode=toolValue("mode"),format=toolValue("format"),quality=toolNumber("quality"),background=toolValue("jpeg_background");
+    const path=media?.path,id=selected?.id,mode=toolValue("mode"),format=toolValue("format"),quality=toolNumber("quality"),background=toolValue("jpeg_background"),pngMode=toolValue("png_mode");
+    compressionEstimateRetry;
     const requestId=++compressionEstimateId;
     compressionEstimate=null;
+    compressionEstimateError=false;
     compressionEstimateLoading=false;
     if(!path||id!=="image_compressor"||mode!=="quality"||busy)return;
     compressionEstimateLoading=true;
     const timer=window.setTimeout(async()=>{
       try{
-        const size=await invoke<number>("estimate_image_compression",{request:{input:temporaryImagePreviewPath||path,operation:"image_compressor",params:{mode,format,quality:String(quality),target_kb:"1",jpeg_background:background||"#ffffff"}}});
-        if(requestId===compressionEstimateId)compressionEstimate=size;
+        const size=await invoke<number>("estimate_image_compression",{request:{input:temporaryImagePreviewPath||path,operation:"image_compressor",params:{mode,format,png_mode:pngMode||"lossless",quality:String(quality),target_kb:"1",jpeg_background:background||"#ffffff",...(temporaryImagePreviewPath?{__source_path:path}:{})}}});
+        if(requestId===compressionEstimateId){if(!Number.isFinite(size)||size<=0)throw new Error("Invalid image size estimate");compressionEstimate=size;}
       }catch{
-        if(requestId===compressionEstimateId)compressionEstimate=null;
+        if(requestId===compressionEstimateId){compressionEstimate=null;compressionEstimateError=true;}
       }finally{
         if(requestId===compressionEstimateId)compressionEstimateLoading=false;
       }
@@ -1946,8 +2118,9 @@
     if(!media||selected?.id!=="compression"||qualityAnalyzing||busy)return;
     const analyzedPath=media.path;
     qualityAnalyzing=true;error="";qualityAnalysis=null;jobStatus=language==="tr"?"kalite analiz ediliyor":"analyzing quality";
+    activeJobToken=crypto.randomUUID();
     try{
-      const result=await invoke<QualityAnalysis>("analyze_quality",{request:{input:analyzedPath,goal:toolValue("goal")||"balanced",sample_duration:toolNumber("sample_duration")||2}});
+      const result=await invoke<QualityAnalysis>("analyze_quality",{jobId:activeJobToken,request:{input:analyzedPath,goal:toolValue("goal")||"balanced",sample_duration:toolNumber("sample_duration")||2}});
       if(selected?.id==="compression"&&media?.path===analyzedPath){qualityAnalysis=result;elapsed=result.elapsed;progress=100;jobStatus=language==="tr"?"analiz tamamlandı":"analysis complete"}
     }catch(reason){error=String(reason);jobStatus="failed";reportProblem(reason)}finally{qualityAnalyzing=false}
   }
@@ -1969,6 +2142,7 @@
   }
 
   function validate(tool: Tool): string | null {
+    if(tool.id==="image_compressor"&&toolValue("mode")==="target"&&!imageTargetSupported(imageOutputFormat(media?.path??"",toolValue("format"))))return language==="tr"?"Hedef boyut için WebP veya JPEG seç.":"Choose WebP or JPEG for a target size.";
     const params = paramsFrom(tool);
     if(tool.id==="clipper"&&params.watermark_enabled==="true"&&!params.watermark_text.trim())return language==="tr"?"Watermark açıkken bir yazı gir.":"Enter watermark text or turn the watermark off.";
     if(tool.id==="clipper"&&params.social_tag_enabled==="true"&&(!params.social_tag_username.trim()||Array.from(params.social_tag_username.trim()).length>32||/[\r\n]/.test(params.social_tag_username)))return language==="tr"?"Social Tag için tek satırda en fazla 32 karakterlik bir kullanıcı adı gir.":"Enter a Social Tag username of up to 32 characters on one line.";
@@ -2001,10 +2175,17 @@
 
   async function runTool() {
     if (!media || !selected || operationBusy) return;
+    if(selected.id==="frame_extractor"&&toolValue("mode")==="burst"){
+      setToolValue("start",String(toolboxVideo?.currentTime??toolboxCurrent));
+      setToolValue("end",String(media.duration??0));
+    }
+    if(selected.id==="extract_audio"&&!media.audio_codec){error=language==="tr"?"Bu videoda ses yok. Ses içeren bir video açın veya Kaynak geçmişinden önceki videoya dönün.":"This video has no audio. Open a video with audio or return to the previous video in Source history.";return;}
     const validation = validate(selected);
     if (validation) { error = validation; return; }
     armCompletionSound();
     busy = true;
+    ++renderJobId;
+    activeJobToken=crypto.randomUUID();
     error = "";
     output = "";
     progress = 0;
@@ -2023,6 +2204,10 @@
       }
       const renderedSettingsKey=renderSettingsKey();
       const operationParams=paramsFrom(selected);
+      if(selected.id==="clipper"&&toolValue("watermark_enabled")==="true"&&watermarkLayer){
+        if(watermarkLoading||watermarkFontReady!==watermarkLayer.font_path)throw new Error("Watermark font is still loading. Try again when it is ready.");
+        const raster=document.createElement("canvas");rasterText(raster,watermarkLayer,toolNumber("output_width")||1080,toolNumber("output_height")||1920);operationParams.text_raster_png=raster.toDataURL("image/png");
+      }
       if(selected.id==="text"&&hasEmojiText()){
         renderTextPreview();
         if(!textPreviewCanvas)throw new Error(language==="tr"?"Emoji çıktısı için yazı önizlemesi hazır değil.":"Text preview is not ready for emoji export.");
@@ -2031,10 +2216,12 @@
       const operationInput=temporaryImagePreviewPath||media.path;
       if(temporaryImagePreviewPath)operationParams.__source_path=media.path;
       const result = await invoke<JobResult>("run_operation", {
+        jobId: activeJobToken,
         request: { input: operationInput, operation: selected.id, params: operationParams },
       });
       output = result.output;
       outputSettingsKey=renderedSettingsKey;
+      outputMode="tool";
       if (media.kind === "image") {
         renderedImageUrl = `${convertFileSrc(result.output)}?render=${Date.now()}`;
         renderedImageSize = (await invoke<MediaInfo>("probe_media",{path:result.output})).size;
@@ -2043,6 +2230,7 @@
       elapsed = result.elapsed;
       progress = 100;
       jobStatus = "complete";
+      void completionAlert(language==="tr"?"Render tamamlandı. Çıktı hazır.":"Render complete. Your output is ready.");
       await playCompletionSound();
     } catch (reason) {
       error = String(reason);
@@ -2056,8 +2244,12 @@
 
   async function cancelJob() {
     if (!busy) return;
-    await invoke("cancel_job");
-    jobStatus = "cancelling";
+    const jobId=renderJobId;
+    if(stackPreparing){activeJobToken="";stackPreparing=false;busy=false;jobStatus="cancelled";return}
+    try {
+      await invoke("cancel_job",{jobId:activeJobToken});
+      if(busy&&jobId===renderJobId)jobStatus = "cancelling";
+    } catch(reason) { reportProblem(reason); }
   }
 
   async function selectFieldFile(field: Field) {
@@ -2161,6 +2353,10 @@
   onMount(() => {
     let disposed=false;
     void document.fonts.load('32px "Gotham XNarrow Black"').then(()=>{if(!disposed)bannerFontReady=true}).catch(()=>{});
+    try{
+      const savedPresets=JSON.parse(localStorage.getItem("container-text-presets-v1")??"[]");
+      if(Array.isArray(savedPresets))textPresets=savedPresets.filter(p=>p&&typeof p.id==="string"&&typeof p.name==="string"&&p.layer&&typeof p.layer.text==="string"&&typeof p.layer.font_path==="string"&&["x","y","size","opacity","outline","shadow","background_opacity","background_padding"].every(key=>Number.isFinite(p.layer[key]))&&["color","outline_color","shadow_color","background_color"].every(key=>/^#[0-9a-f]{6}$/i.test(p.layer[key]))&&["left","center","right"].includes(p.layer.align));
+    }catch{textPresets=[]}
     const saved=localStorage.getItem("container-language");
     language=saved==="tr"||saved==="en"?saved:navigator.language.toLowerCase().startsWith("tr")?"tr":"en";
     document.documentElement.lang=language;
@@ -2256,8 +2452,8 @@
       if (workspaceMode !== "toolbox") return;
       if (media.kind !== "video" || event.ctrlKey || event.altKey || event.metaKey) return;
       if (event.code === "Space") { event.preventDefault(); toggleToolboxPlayer(); }
-      else if (rangeTimelineTool() && key === "i") { event.preventDefault(); markCutAtPlayhead("start"); }
-      else if (rangeTimelineTool() && key === "o") { event.preventDefault(); markCutAtPlayhead("end"); }
+      else if (!stackResultPreview && rangeTimelineTool() && key === "i") { event.preventDefault(); markCutAtPlayhead("start"); }
+      else if (!stackResultPreview && rangeTimelineTool() && key === "o") { event.preventDefault(); markCutAtPlayhead("end"); }
       else if (event.key === "ArrowLeft") seekToolboxBy(-5);
       else if (event.key === "ArrowRight") seekToolboxBy(5);
     };
@@ -2272,6 +2468,8 @@
     window.addEventListener("error",browserError);
     window.addEventListener("unhandledrejection",rejected);
     listen<ProgressEvent>("container-progress", (event) => {
+      if(!busy&&!qualityAnalyzing)return;
+      if(event.payload.job_id&&event.payload.job_id!==activeJobToken)return;
       progress = Math.max(0, Math.min(100, event.payload.percent));
       speed = event.payload.speed || "—";
       frame = event.payload.frame || "—";
@@ -2332,7 +2530,7 @@
 {/snippet}
 <main class="shell" class:drag-active={dragActive} inert={restoringSession||stageNavigating} aria-busy={restoringSession||stageNavigating}>
   <header class="topbar">
-    <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt="" decoding="sync"><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt="" decoding="sync"></span>CONTAINER</span>
+    <span class="brand"><span class="brand-logo-stack" aria-hidden="true"><img class="brand-logo brand-logo-dark" src="/mark-dark.svg" alt="" decoding="sync" draggable="false"><img class="brand-logo brand-logo-light" src="/mark-light.svg" alt="" decoding="sync" draggable="false"></span>CONTAINER</span>
     {#if !media && devVersion}<span class="dev-version mono" aria-label={`Development build version ${devVersion}`}><span>DEV BUILD</span><b>v{devVersion}</b></span>{/if}
     {#if media}
       {@render historyControl()}
@@ -2354,7 +2552,6 @@
         <button class:active={!downloaderOpen&&workspaceMode === "batch"} onclick={() => setWorkspaceMode("batch")} disabled={operationBusy&&workspaceMode!=="batch"}>{language === "tr" ? "TOPLU" : "BATCH"}</button>
       </nav>
       <div class="project-actions"><button onclick={saveProject} disabled={operationBusy}>{language==="tr"?"PROJEYİ KAYDET":"SAVE PROJECT"}</button></div>
-      <button class="panel-reset-trigger" onclick={()=>panelResetDialogOpen=true} disabled={operationBusy} aria-label={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"} title={language==="tr"?"Panel genişliklerini sıfırla":"Reset panel widths"}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M7 3.5v13M13 3.5v13"/></svg></button>
       <button class="ghost top-cancel" onclick={closeMedia} disabled={operationBusy}>{t("close")}</button>
     {:else}
       <div class="landing-header-actions">
@@ -2363,6 +2560,7 @@
         {#if updaterEnabled}<button class="update-trigger" class:available={!!availableUpdate} class:checking={updateChecking} onclick={() => checkForUpdates(true)} title={language === "tr" ? "Güncellemeleri denetle" : "Check for updates"}><b>↻</b><span>{availableUpdate ? `v${availableUpdate.version}` : (language === "tr" ? "GÜNCELLE" : "UPDATE")}</span>{#if availableUpdate}<i></i>{/if}</button>{/if}
       </div>
     {/if}
+    <GeneralSettings {language} {theme} onlanguage={setLanguage} ontheme={setTheme} onresetlayout={media&&!downloaderOpen?()=>panelResetDialogOpen=true:undefined} layoutBusy={operationBusy}/>
   </header>
 
   {#if panelResetDialogOpen}
@@ -2376,7 +2574,7 @@
   {#if updatePanel}
     <div class="update-layer">
       <button class="update-backdrop" aria-label={language === "tr" ? "Güncelleme penceresini kapat" : "Close update dialog"} onclick={() => { if (!updateInstalling) updatePanel = false; }}></button>
-      <dialog class="update-dialog panel" open aria-labelledby="update-title">
+      <dialog class="update-dialog panel" open use:containDialog aria-labelledby="update-title">
         <header><div><span class="status-dot"></span><h2 id="update-title">CONTAINER UPDATE</h2></div><button onclick={() => updatePanel = false} disabled={updateInstalling} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
         <div class="update-version"><span>v{appVersion}</span><b>→</b><strong>{availableUpdate ? `v${availableUpdate.version}` : `v${appVersion}`}</strong></div>
         <p>{updateStatus}</p>
@@ -2396,7 +2594,7 @@
   {#if projectFilesOpen}
     <div class="update-layer project-files-layer">
       <button class="update-backdrop" aria-label={language==="tr"?"Proje dosyaları penceresini kapat":"Close project files"} onclick={()=>projectFilesOpen=false}></button>
-      <dialog class="update-dialog project-files-dialog panel" open aria-labelledby="project-files-title">
+      <dialog class="update-dialog project-files-dialog panel" open use:containDialog aria-labelledby="project-files-title">
         <header><div><span class="status-dot"></span><h2 id="project-files-title">{language==="tr"?"PROJE DOSYALARI":"PROJECT FILES"}</h2></div><button aria-label={language==="tr"?"Kapat":"Close"} onclick={()=>projectFilesOpen=false}>×</button></header>
         <p>{language==="tr"?"Proje dosyası medya içermez. Projeyi başka yere taşıyacaksan kaynakları aynı klasör düzeniyle yanında tut; kayıt sırasında göreli yollar da saklanır.":"Project files do not contain media. Keep the sources in the same folder layout when moving a project; relative paths are saved as a fallback."}</p>
         <div class="project-file-list">{#each projectFileChecks as item}<div><b class:missing={!item.exists}>{item.exists?"✓":"!"}</b><span><strong>{item.resource.label}</strong><small title={item.resource.path}>{item.resource.path}</small></span></div>{/each}</div>
@@ -2409,7 +2607,7 @@
   {#if dependencyPanel && !updatePanel}
     <div class="update-layer dependency-layer">
       <button class="update-backdrop" aria-label={language === "tr" ? "FFmpeg bildirimini kapat" : "Close FFmpeg notice"} onclick={() => dependencyPanel = false}></button>
-      <dialog class="update-dialog dependency-dialog panel" open aria-labelledby="dependency-title">
+      <dialog class="update-dialog dependency-dialog panel" open use:containDialog aria-labelledby="dependency-title">
         <header><div><span class="status-dot missing"></span><h2 id="dependency-title">{runtimeMigrationError ? (language === "tr" ? "FFMPEG GÜNCELLEMESİ TAMAMLANMADI" : "FFMPEG UPDATE DID NOT FINISH") : (language === "tr" ? "FFMPEG GEREKLİ" : "FFMPEG REQUIRED")}</h2></div><button onclick={() => dependencyPanel = false} aria-label={language === "tr" ? "Kapat" : "Close"}>×</button></header>
         <div class="dependency-message"><span>!</span><div><h3>{runtimeMigrationError ? (language === "tr" ? "SONRAKİ GÜNCELLEME İÇİN BİR ADIM GEREKİYOR" : "ONE STEP IS NEEDED FOR THE NEXT UPDATE") : (language === "tr" ? "MEDYA ARAÇLARI HENÜZ KULLANILAMAZ" : "MEDIA TOOLS ARE NOT READY YET")}</h3><p>{runtimeMigrationError ? (language === "tr" ? "CONTAINER, FFmpeg bileşenlerini güvenli güncelleme alanına hazırlayamadı. Bu sürüm çalışmaya devam eder; ancak sonraki küçük güncellemelerden önce aşağıdaki işlemi tekrar dene. Sorun sürerse bu sürümü yeniden kur." : "CONTAINER could not prepare its FFmpeg components for future lightweight updates. This version can still run; retry below before the next update. If it continues, reinstall this version.") : (language === "tr" ? "Kurulumla gelen FFmpeg bileşenleri bulunamadı veya çalıştırılamadı. CONTAINER’ı yeniden kurup tekrar dene." : "The FFmpeg components included with CONTAINER are missing or could not start. Reinstall CONTAINER and try again.")}</p>{#if runtimeMigrationError}<small class="runtime-migration-detail mono">{runtimeMigrationError}</small>{/if}</div></div>
         <footer><button class="ghost" onclick={() => dependencyPanel = false}>{language === "tr" ? "ŞİMDİ DEĞİL" : "NOT NOW"}</button><button class="dependency-check" onclick={runtimeMigrationError ? repairFfmpegRuntime : () => refreshFfmpegStatus(true)} disabled={dependencyChecking}>{dependencyChecking ? "…" : (language === "tr" ? (runtimeMigrationError ? "YENİDEN HAZIRLA" : "TEKRAR KONTROL ET") : (runtimeMigrationError ? "REPAIR RUNTIME" : "CHECK AGAIN"))}</button></footer>
@@ -2420,7 +2618,7 @@
   {#if !media && outputCleanupOpen}
     <div class="update-layer output-clean-layer">
       <button class="update-backdrop" aria-label={language==="tr"?"Çıktı temizleme penceresini kapat":"Close output cleanup dialog"} onclick={()=>{if(!outputCleaning)outputCleanupOpen=false}}></button>
-      <dialog class="update-dialog output-clean-dialog panel" open aria-labelledby="output-clean-title">
+      <dialog class="update-dialog output-clean-dialog panel" open use:containDialog aria-labelledby="output-clean-title">
         <header><div><span class="output-clean-dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v6m4-6v6"/></svg></span><h2 id="output-clean-title">{language==="tr"?"CONTAINER OUTPUT TEMİZLE":"CLEAN CONTAINER OUTPUT"}</h2></div><button onclick={()=>outputCleanupOpen=false} disabled={outputCleaning} aria-label={language==="tr"?"Kapat":"Close"}>×</button></header>
         <p>{language==="tr"?"Downloads/CONTAINER Output içindeki tüm çıktılar Geri Dönüşüm Kutusu’na taşınacak; klasör yerinde kalacak.":"Everything inside Downloads/CONTAINER Output will be moved to the Recycle Bin; the folder itself will remain."}</p>
         {#if outputCleanupMessage}<small class="output-clean-error">{outputCleanupMessage}</small>{/if}
@@ -2453,6 +2651,7 @@
         </span>
         <h1>{t("drop")}</h1>
         <p>{t("browse")}</p>
+        <small class="multi-import-hint">{language==="tr"?"Birden fazla video seç → toplu işlem":"Select multiple videos → batch processing"}</small>
         <div class="format-row"><span>{t("video")}</span><span>{t("audio")}</span><span>{t("image")}</span></div>
       </button>
       {#if ffmpegStatus && !ffmpegStatus.ready}
@@ -2464,7 +2663,7 @@
       <div class="landing-copy motto-only">
         <h2>{t("landingTitle")}</h2>
       </div>
-      <footer><span class="status-dot" class:missing={(ffmpegStatus !== null && !ffmpegStatus.ready)||(downloaderStatus!==null&&!downloaderStatus.ready)}></span> {ffmpegStatus?.ready&&downloaderStatus?.ready ? `FFMPEG · FFPROBE · YT-DLP ${t("ready").toUpperCase()}` : (dependencyChecking||downloaderStatus===null ? (language==="tr"?"BİLEŞENLER KONTROL EDİLİYOR":"CHECKING COMPONENTS") : (language==="tr"?"MEDYA BİLEŞENLERİ GEREKLİ":"MEDIA COMPONENTS REQUIRED"))}</footer>
+      <footer class="landing-engine-status"><span class="status-dot" class:missing={(ffmpegStatus !== null && !ffmpegStatus.ready)||(downloaderStatus!==null&&!downloaderStatus.ready)}></span> {ffmpegStatus?.ready&&downloaderStatus?.ready ? `FFMPEG · FFPROBE · YT-DLP ${t("ready").toUpperCase()}` : (dependencyChecking||downloaderStatus===null ? (language==="tr"?"BİLEŞENLER KONTROL EDİLİYOR":"CHECKING COMPONENTS") : (language==="tr"?"MEDYA BİLEŞENLERİ GEREKLİ":"MEDIA COMPONENTS REQUIRED"))}</footer>
       <button class="output-clean-trigger al-icon-wrapper" onclick={()=>{outputCleanupMessage="";outputCleanupOpen=true}} title={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"} aria-label={language==="tr"?"CONTAINER Output klasörünü temizle":"Clean CONTAINER Output"}>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M10 11v6" class="trash-handle trash-delay-0" />
@@ -2476,12 +2675,13 @@
       </button>
       <button class="downloader-quick-trigger" onclick={()=>downloaderOpen=true} title={language==="tr"?"DWLNDR’ı aç":"Open DWLNDR"} aria-label={language==="tr"?"DWLNDR’ı aç":"Open DWLNDR"}>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v11M8 10l4 4 4-4M5 18v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2" /></svg>
+        <span>{language==="tr"?"Bağlantıdan indir":"Download from link"}</span>
       </button>
       {#if outputCleanupMessage}<div class="output-clean-toast" role="status">{outputCleanupMessage}</div>{/if}
     </section>
   {:else}
     {#if workspaceMode === "autocut" && media.kind === "video"}
-      <SmartCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
+      <SmartCutWorkspace bind:this={autoCutWorkspace} {media} {mediaUrl} {language} onaddstack={addSmartCutStack} stackHasCuts={processingStack.some(step=>step.tool.id==="smartcut")} stackCount={processingStack.length} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{autoCutCanUndo=undo;autoCutCanRedo=redo}} onsessionchange={(value:unknown)=>{autoCutSession=value}} onbusychange={(value:boolean)=>autoCutBusy=value} />
     {:else if workspaceMode === "batch"}
       <BatchWorkspace bind:this={batchWorkspace} initialPaths={batchInitialPaths.length?batchInitialPaths:[media.path]} initialKind={media.kind} {language} {availableEncoders} oncontinue={continueEditingOutput} onhistorychange={(undo:boolean,redo:boolean)=>{batchCanUndo=undo;batchCanRedo=redo}} onsessionchange={(value:unknown)=>{batchSession=value}} onbusychange={(value:boolean)=>batchBusy=value} onqueuechange={(count:number)=>batchQueueCount=count} />
     {:else}
@@ -2514,27 +2714,30 @@
               {/each}
             </section>
           {/each}
-          {#if favoritesOnly&&categories.length===0}<p class="favorites-empty">{language==="tr"?"Bu bölümde henüz favori araç yok.":"No favorite tools in this section yet."}</p>{/if}
+          {#if categories.length===0}<div class="favorites-empty"><p>{search.trim()?(language==="tr"?"Aramana uygun araç bulunamadı.":"No matching tools found."):(language==="tr"?"Bu bölümde henüz favori araç yok.":"No favorite tools in this section yet.")}</p>{#if search.trim()}<button class="ghost" onclick={()=>search=""}>{language==="tr"?"Aramayı temizle":"Clear search"}</button>{/if}{#if favoritesOnly}<button class="ghost" onclick={()=>favoritesOnly=false}>{language==="tr"?"Tüm araçları göster":"Show all tools"}</button>{/if}</div>{/if}
         </div>
       </aside>
 
       <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Araçlar panelinin genişliği":"Tools panel width"} aria-orientation="horizontal" aria-valuemin={panelSizes.minLeft} aria-valuemax={Math.min(560,panelSizes.available-panelSizes.right-panelSizes.minCenter)} aria-valuenow={Math.round(panelSizes.left)} onpointerdown={(event)=>startToolboxPanelResize(event,"left")} onkeydown={(event)=>toolboxPanelKey(event,"left")} ondblclick={resetToolboxPanelWidths} title={language==="tr"?"Genişliği sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
 
       <section class="center-stack" class:timeline-active={timelineTool}>
-        <div class="preview panel">
-          <div class="preview-head"><span>{t("preview")}</span>{#if multiRegionClipper}<div class="clipper-preview-tabs" role="group" aria-label={language==="tr"?"Clipper önizleme görünümü":"Clipper preview view"}><button class:active={clipperPreviewMode==="source"} aria-pressed={clipperPreviewMode==="source"} onclick={()=>clipperPreviewMode="source"}>{language==="tr"?"KAYNAK BÖLGELERİ":"SOURCE REGIONS"}</button><button class:active={clipperPreviewMode==="output"} aria-pressed={clipperPreviewMode==="output"} onclick={()=>clipperPreviewMode="output"}>{language==="tr"?"ÇIKTI ÖNİZLEME":"OUTPUT PREVIEW"}</button></div>{:else}<span class="mono">{t(media.kind).toUpperCase()} · {media.codec.toUpperCase()}</span>{/if}</div>
+        <div class="preview panel" class:stack-preview={media.kind==="video"&&processingStack.length>0}>
+          <div class="preview-head"><span>{stackResultPreview&&outputMode==="stack"&&!outputStale?(language==="tr"?"STACK SONUCU":"STACK RESULT"):processingStack.length?(language==="tr"?"ARAÇ ÖNİZLEMESİ":"TOOL PREVIEW"):t("preview")}</span>{#if multiRegionClipper&&!(stackResultPreview&&outputMode==="stack"&&!outputStale)}<div class="clipper-preview-tabs" role="group" aria-label={language==="tr"?"Clipper önizleme görünümü":"Clipper preview view"}><button class:active={clipperPreviewMode==="source"} aria-pressed={clipperPreviewMode==="source"} onclick={()=>clipperPreviewMode="source"}>{language==="tr"?"KAYNAK BÖLGELERİ":"SOURCE REGIONS"}</button><button class:active={clipperPreviewMode==="output"} aria-pressed={clipperPreviewMode==="output"} onclick={()=>clipperPreviewMode="output"}>{language==="tr"?"ÇIKTI ÖNİZLEME":"OUTPUT PREVIEW"}</button></div>{:else}<span class="mono">{t(media.kind).toUpperCase()} · {media.codec.toUpperCase()}</span>{/if}{#if processingStack.length}<button class="stack-preview-toggle ghost" onclick={()=>{toolboxVideo?.pause();stackResultPreview=!stackResultPreview}} disabled={!output||outputMode!=="stack"||outputStale} title={language==="tr"?"Tüm adımların birleşmiş sonucu renderdan sonra görüntülenir.":"The combined result of all steps is available after rendering."}>{stackResultPreview?(language==="tr"?"Araca dön":"Back to tool"):(language==="tr"?"Stack sonucu":"Stack result")}</button>{/if}</div>
           <div class="media-stage" class:ac-player={media.kind === "video"} class:toolbox-player={media.kind === "video"} bind:this={toolboxStage}>
-            {#if media.kind === "video"}
+            {#if media.kind === "video"&&stackResultPreview&&output&&outputMode==="stack"&&!outputStale}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <div class="video-canvas"><video bind:this={toolboxVideo} class="stack-result-video" aria-label={language==="tr"?"Render edilmiş işlem listesi sonucu":"Rendered Stack result"} src={convertFileSrc(output)} preload="metadata" onloadedmetadata={()=>{stackResultDuration=Number.isFinite(toolboxVideo?.duration)?toolboxVideo!.duration:0;toolboxCurrent=0;toolboxPlaying=false;if(toolboxVideo)toolboxVideo.volume=toolboxVolume}} ontimeupdate={()=>{if(toolboxVideo)toolboxCurrent=toolboxVideo.currentTime}} onplay={()=>toolboxPlaying=true} onpause={()=>toolboxPlaying=false} onended={()=>toolboxPlaying=false}></video></div>
+            {:else if media.kind === "video"}
               <div class="video-canvas" bind:this={toolboxCanvas}>
               <!-- svelte-ignore a11y_media_has_caption -->
               {#if selected?.id==="clipper"&&toolValue("vertical_layout")==="blur"}
-                <!-- svelte-ignore a11y_media_has_caption -->
-                <video bind:this={transformBackdropVideo} class="transform-video-backdrop" style={verticalBackdropStyle()} src={mediaUrl} preload="metadata" muted tabindex="-1"></video>
+                {@const blurBox=verticalOutputBox()}
+                {#if blurBox}<BlurBackdropPreview video={toolboxVideo} box={blurBox} strength={toolNumber("blur_strength")}/>{/if}
               {/if}
               {#if selected?.id==="clipper"&&toolValue("vertical_layout")==="original"}<div style={originalCanvasStyle()}></div>{/if}
               <!-- svelte-ignore a11y_media_has_caption -->
               <div style={blurForegroundBoxStyle()}>
-                <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload="metadata" onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime; syncTransformBackdrop(); }} onplay={() => {toolboxPlaying=true;syncTransformBackdrop(true);void transformBackdropVideo?.play().catch(()=>{})}} onpause={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}} onended={() => {toolboxPlaying=false;transformBackdropVideo?.pause()}}></video>
+                <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload={clipperOutputVisible?"auto":"metadata"} onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime;  }} onplay={() => {toolboxPlaying=true;}} onpause={() => {toolboxPlaying=false;}} onended={() => {toolboxPlaying=false;}}></video>
               </div>
               {#if clipperOutputVisible}
                 {@const outputBox=verticalOutputBox()}
@@ -2578,8 +2781,10 @@
                  {/if}
                {/if}
                {#if selected?.id==="clipper"&&(!multiRegionClipper||clipperOutputVisible)&&toolValue("watermark_enabled")==="true"&&toolValue("watermark_text").trim()}
+                {#if watermarkLayer&&watermarkFontReady===watermarkLayer.font_path}<WatermarkPreview layer={watermarkLayer} width={toolNumber("output_width")||1080} height={toolNumber("output_height")||1920} box={verticalOutputBox()} onchange={changeWatermark}/>{:else}
                 <i class="clipper-watermark-background" style={clipperWatermarkPreviewStyle(true)}></i>
                 <span class="clipper-watermark-preview" style={clipperWatermarkPreviewStyle()}>{toolValue("watermark_text")}</span>
+                {/if}
               {/if}
               {#if selected?.id==="clipper"&&(!multiRegionClipper||clipperOutputVisible)&&toolValue("social_tag_enabled")==="true"&&toolValue("social_tag_username").trim()}
                 {#if toolValue("social_tag_style")==="kick_banner"}
@@ -2624,16 +2829,6 @@
                   </div>
                 </div>
               {/if}
-              </div>
-              <div class="ac-controls">
-                {#if playerSeekHover}<span class="player-seek-tooltip mono" class:precision={playerSeekHover.precision} style:left={`${playerSeekHover.percent}%`}>{playerTime(playerSeekHover.time)}</span>{/if}
-                <input class="player-seek" style={`--seek-pct:${media.duration ? Math.min(100, toolboxCurrent / media.duration * 100) : 0}%`} aria-label="Video position" type="range" min="0" max={media.duration ?? 0} step="0.01" value={toolboxCurrent} onpointerdown={precisionPlayerSeek} onpointermove={hoverPlayerSeek} onpointerleave={()=>playerSeekHover=null} onwheel={wheelPlayerSeek} oninput={(event) => seekToolbox(Number(event.currentTarget.value))}>
-                <button onclick={() => seekToolboxBy(-5)} title="5 seconds back">−5</button>
-                <button class="play" onclick={toggleToolboxPlayer} title="Play / Pause">{toolboxPlaying ? "Ⅱ" : "▶"}</button>
-                <button onclick={() => seekToolboxBy(5)} title="5 seconds forward">+5</button>
-                <span class="ac-time mono">{playerTime(toolboxCurrent)} <i>/</i> {playerTime(media.duration ?? 0)}</span>
-                <input class="volume" aria-label="Volume" type="range" min="0" max="1" step="0.05" bind:value={toolboxVolume} oninput={() => { if (toolboxVideo) toolboxVideo.volume = toolboxVolume; }}>
-                <button onclick={fullscreenToolboxPlayer} title="Fullscreen">⛶</button>
               </div>
             {:else if media.kind === "audio"}
               <div class="audio-visual"><div class="disc">◉</div><h2>{media.name}</h2><p>{media.codec.toUpperCase()} · {formatDuration(media.duration)}</p><audio src={mediaUrl} controls></audio></div>
@@ -2699,13 +2894,25 @@
                 <span class="image-view-hint mono">{language === "tr" ? "TEKERLEK: YAKINLAŞTIR · SÜRÜKLE: TAŞI" : "SCROLL: ZOOM · DRAG: PAN"}</span>
               </div>
             {/if}
+            {#if media.kind==="video"}
+              <div class="ac-controls">
+                {#if playerSeekHover}<span class="player-seek-tooltip mono" class:precision={playerSeekHover.precision} style:left={`${playerSeekHover.percent}%`}>{playerTime(playerSeekHover.time)}</span>{/if}
+                <input class="player-seek" style={`--seek-pct:${playbackDuration?Math.min(100,toolboxCurrent/playbackDuration*100):0}%`} aria-label="Video position" type="range" min="0" max={playbackDuration} step="0.01" value={toolboxCurrent} onpointerdown={precisionPlayerSeek} onpointermove={hoverPlayerSeek} onpointerleave={()=>playerSeekHover=null} onwheel={wheelPlayerSeek} oninput={event=>seekToolbox(Number(event.currentTarget.value))}>
+                <button onclick={()=>seekToolboxBy(-5)} title="5 seconds back">−5</button>
+                <button class="play" onclick={toggleToolboxPlayer} title="Play / Pause">{toolboxPlaying?"Ⅱ":"▶"}</button>
+                <button onclick={()=>seekToolboxBy(5)} title="5 seconds forward">+5</button>
+                <span class="ac-time mono">{playerTime(toolboxCurrent)} <i>/</i> {playerTime(playbackDuration)}</span>
+                <input class="volume" aria-label="Volume" type="range" min="0" max="1" step="0.05" bind:value={toolboxVolume} oninput={()=>{if(toolboxVideo)toolboxVideo.volume=toolboxVolume}}>
+                <button onclick={fullscreenToolboxPlayer} title="Fullscreen">⛶</button>
+              </div>
+            {/if}
           </div>
         </div>
 
         {#if timelineTool && media.duration}
           <div class="tool-timeline panel">
-            <header><div><h3>TIMELINE</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div>{#if selected?.id==="cut"}<span class="timeline-current mono"><i>▶</i> {language==="tr"?"KONUM":"PLAYHEAD"} {editableTime(toolboxCurrent)}</span>{/if}<b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${timelineTime(timelineBounds().start)} — ${timelineTime(timelineBounds().end)}`}</b></header>
-            {#if rangeTimelineTool()}<div class="cut-timecodes"><div class="cut-timecode"><span>START <i>H:M:S</i></span><input aria-label={language==="tr"?"Başlangıç zamanı":"Start time"} class="mono" bind:value={cutStartInput} onfocus={()=>cutTimeEditing="start"} onblur={()=>commitCutTime("start")} onkeydown={(event)=>handleCutTimeKey(event,"start")} placeholder="0:05:14"><button onclick={()=>markCutAtPlayhead("start")} title={language==="tr"?"Geçerli oynatma zamanını başlangıç yap (I)":"Set IN to current playhead time (I)"}><b>IN</b><kbd>I</kbd></button></div><div class="cut-timecode"><span>END <i>H:M:S</i></span><input aria-label={language==="tr"?"Bitiş zamanı":"End time"} class="mono" bind:value={cutEndInput} onfocus={()=>cutTimeEditing="end"} onblur={()=>commitCutTime("end")} onkeydown={(event)=>handleCutTimeKey(event,"end")} placeholder="0:05:46"><button onclick={()=>markCutAtPlayhead("end")} title={language==="tr"?"Geçerli oynatma zamanını bitiş yap (O)":"Set OUT to current playhead time (O)"}><b>OUT</b><kbd>O</kbd></button></div><small class="cut-seek-help mono">{language==="tr"?"PLAYER ÇUBUĞU: tekerlek ±1 sn · Ctrl+tekerlek ±5 sn · Shift+tık tam saniye":"PLAYER BAR: wheel ±1 sec · Ctrl+wheel ±5 sec · Shift+click whole second"}</small></div>{/if}
+            <header><div><h3>{language==="tr"?"ZAMAN ÇİZELGESİ":"TIMELINE"}</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div>{#if selected?.id==="cut"}<span class="timeline-current mono"><i>▶</i> {language==="tr"?"KONUM":"PLAYHEAD"} {editableTime(toolboxCurrent)}</span>{/if}<b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${timelineTime(timelineBounds().start)} — ${timelineTime(timelineBounds().end)}`}</b></header>
+            {#if rangeTimelineTool()}<div class="cut-timecodes"><div class="cut-timecode"><span>{language==="tr"?"BAŞLANGIÇ":"START"} <i>H:M:S</i></span><input aria-label={language==="tr"?"Başlangıç zamanı":"Start time"} class="mono" bind:value={cutStartInput} onfocus={()=>cutTimeEditing="start"} onblur={()=>commitCutTime("start")} onkeydown={(event)=>handleCutTimeKey(event,"start")} placeholder="0:05:14"><button onclick={()=>markCutAtPlayhead("start")} title={language==="tr"?"Geçerli oynatma zamanını başlangıç yap (I)":"Set IN to current playhead time (I)"}><b>IN</b><kbd>I</kbd></button></div><div class="cut-timecode"><span>{language==="tr"?"BİTİŞ":"END"} <i>H:M:S</i></span><input aria-label={language==="tr"?"Bitiş zamanı":"End time"} class="mono" bind:value={cutEndInput} onfocus={()=>cutTimeEditing="end"} onblur={()=>commitCutTime("end")} onkeydown={(event)=>handleCutTimeKey(event,"end")} placeholder="0:05:46"><button onclick={()=>markCutAtPlayhead("end")} title={language==="tr"?"Geçerli oynatma zamanını bitiş yap (O)":"Set OUT to current playhead time (O)"}><b>OUT</b><kbd>O</kbd></button></div><small class="cut-seek-help mono">{language==="tr"?"PLAYER ÇUBUĞU: tekerlek ±1 sn · Ctrl+tekerlek ±5 sn · Shift+tık tam saniye":"PLAYER BAR: wheel ±1 sec · Ctrl+wheel ±5 sec · Shift+click whole second"}</small></div>{/if}
             <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} onpointermove={hoverTimeline} onpointerleave={()=>timelineHover=null} role="presentation">
               {#if toolboxFilmstripUrl}<img class="filmstrip" src={toolboxFilmstripUrl} alt="Video filmstrip" draggable="false">{:else}<span class="wave-loading">{toolboxFilmstripLoading ? (language==="tr"?"video kareleri hazırlanıyor…":"building video frames…") : "—"}</span>{/if}
               {#if selected?.id === "screenshot"}
@@ -2724,14 +2931,17 @@
 
         <div class="job panel">
           <div class="job-head">
-            <div class="job-status"><h3>{t("process")}</h3><div class="job-status-line"><p class="mono">{outputStale?(language==="tr"?"ayarlar değişti · yeniden işle":"settings changed · render again"):jobStatus}</p>{#if output}<button class="ghost job-action play-render" disabled={operationBusy} onclick={playRenderedOutput} title={language==="tr"?"Son çıktıyı varsayılan oynatıcıda aç":"Open the last output in your default player"}>▶ {language==="tr"?"render’ı oynat":"play render"}</button>{/if}</div></div>
+            <div class="job-status"><h3>{t("process")}</h3><div class="job-status-line"><p class="mono">{outputStale?(language==="tr"?"ayarlar değişti · yeniden işle":"settings changed · render again"):jobStatus}</p></div></div>
             <div class="job-meta">
               <div class="job-stats mono"><span><b>{t("frame")}</b>{frame}</span><span><b>{t("speed")}</b>{speed}</span><span><b>{t("elapsed")}</b>{elapsed.toFixed(1)}s</span></div>
-              {#if output||busy}<div class="job-actions">{#if output}<button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"çıktıyı düzenle":"continue editing"}</button><button class="ghost job-action" onclick={() => {if(outputStale)showToast(language==="tr"?"Bu eski çıktı. Yeni ayarları görmek için yeniden işle.":"This is the old output. Render again to see the new settings.","info");revealItemInDir(output)}}>{outputStale?(language==="tr"?"eski çıktı · güncellenmedi":"old output · not updated"):t("showOutput")}</button>{/if}{#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}</div>{/if}
+              {#if output||busy}<div class="job-actions">{#if output}
+                <button class="ghost job-action play-render" disabled={operationBusy} onclick={playRenderedOutput} title={language==="tr"?"Son çıktıyı aç":"Open the last output"}>▶ {output.endsWith(".frames")?(language==="tr"?"kareler":"frames"):(language==="tr"?"oynat":"play")}</button>
+                <button class="ghost job-action" onclick={() => {if(outputStale)showToast(language==="tr"?"Bu eski çıktı. Yeni ayarları görmek için yeniden işle.":"This is the old output. Render again to see the new settings.","info");revealItemInDir(output)}}>{outputStale?(language==="tr"?"eski çıktı · güncellenmedi":"old output · not updated"):t("showOutput")}</button><button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"Kaynak olarak aç":"Open as source"}</button>{/if}{#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}</div>{/if}
             </div>
           </div>
+          <div class="job-feedback"><RenderFeedback running={busy} {progress} {language} {speed} {elapsed} {output}/></div>
           <div class="progress-track"><div style:width={`${progress}%`}></div></div>
-          {#if error}<div class="error-box">{error}</div>{/if}
+          {#if error}<div class="error-box"><ProblemDetails reason={error} {language}/></div>{/if}
         </div>
       </section>
 
@@ -2739,8 +2949,28 @@
 
       <aside class="settings panel" class:merge-compact={selected?.id==="merge_videos"} class:compact-controls={panelSizes.right<300}>
         {#if selected}
-          <div class="pane-head"><div><h3>{t("parameters")}</h3><p>{selected.category}</p></div><button class="reset" onclick={resetSelectedTool}>{t("defaults")}</button></div>
-          <div class="selected-title"><span class="index mono">{String(kindTools(activeKind).findIndex((tool) => tool.id === selected?.id) + 1).padStart(2,"0")}</span><div><h2>{selected.title}</h2><p>{selected.description}</p></div></div>
+          <div class="pane-head tool-settings-head"><div><h2>{selected.title}</h2><p>{selected.description}</p></div><button class="reset" onclick={resetSelectedTool}>{t("defaults")}</button></div>
+          {#if media.kind==="video"}
+            <section class="processing-stack" aria-label="Processing Stack">
+              <header><b>{language==="tr"?"İŞLEM LİSTESİ":"PROCESSING STACK"}</b><small>{processingStack.length}</small></header>
+              {#if processingStack.length}
+                <div class="processing-stack-list">
+                  {#each processingStack as step,index (step.id)}
+                    <div class:current={editingStackStepId===step.id} class="processing-stack-step">
+                      <input type="checkbox" aria-label={`${step.tool.title} ${language==="tr"?"etkin":"enabled"}`} checked={step.enabled} disabled={operationBusy} onchange={(event)=>{step.enabled=event.currentTarget.checked;flushEditorSnapshot();persistRecovery()}}>
+                      <button class="processing-stack-name" onclick={()=>selectStackStep(step)} disabled={operationBusy}>{index+1}. {step.tool.title}</button>
+                      <button aria-label="Move up" onclick={()=>moveStackStep(index,-1)} disabled={operationBusy||index===0||step.tool.id==="smartcut"||processingStack[index-1]?.tool.id==="smartcut"}>↑</button>
+                      <button aria-label="Move down" onclick={()=>moveStackStep(index,1)} disabled={operationBusy||index===processingStack.length-1||step.tool.id==="smartcut"}>↓</button>
+                      <button aria-label="Remove step" onclick={()=>removeStackStep(step.id)} disabled={operationBusy}>×</button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              {#if stackToolIds.has(selected.id)}<button class="processing-stack-add" onclick={addOrUpdateStackStep} disabled={operationBusy}>{editingStackStepId!==null&&processingStack.some(step=>step.id===editingStackStepId)?(language==="tr"?"Seçili adımı güncelle":"Update selected step"):(language==="tr"?"+ Listeye ekle":"+ Add to stack")}</button>{/if}
+              {#if stackDraftDirty()}<small class="processing-stack-draft">{language==="tr"?"Bu adımda kaydedilmemiş ayarlar var.":"This step has unapplied settings."}</small>{/if}
+              {#if processingStack.length}<details class="stack-help"><summary>{language==="tr"?"Liste nasıl çalışır?":"How does the Stack work?"}</summary><p>{language==="tr"?"Araç önizlemesi yalnızca seçili aracı gösterir. Tüm adımların birleşmiş sonucunu renderdan sonra Stack sonucu ile izle. Cut zamanları orijinal kaynak videoya aittir; önceki kesimlerde kaldırılan bölümler dahil edilmez. Ara adımlar kayıpsız dosyalar kullanır ve ek disk alanı gerektirir.":"Tool preview shows only the selected tool. View the combined result with Stack result after rendering. Cut times refer to the original source; regions removed by earlier cuts are excluded. Intermediate steps use lossless files and require extra disk space."}</p></details>{/if}
+            </section>
+          {/if}
           {#if !["transform","clipper","cut","text","color","merge_videos"].includes(selected.id)}<div class="explain"><b>{t("what")}</b><p>{selected.id==="fix_timestamps"&&media.kind==="audio"?(language==="tr"?"Hızlı onarım, sesi kalite kaybı olmadan yeniden paketler. Derin onarım sesi FLAC olarak yeniden kodlar; yalnızca hızlı yöntem yetmezse kullan.":"Fast Repair remuxes audio without quality loss. Deep Repair re-encodes audio as FLAC; use it only when the fast method is not enough."):selected.detail}</p></div>{/if}
           {#if selected.id === "merge_videos"}
             <div class="merge-list">
@@ -2765,19 +2995,19 @@
                     {@const field=toolField(key)}
                     {#if field}
                       <label class="color-control">
-                        <span><input type="checkbox" checked={colorOn(key)} onchange={()=>toggleColor(key)}><b>{language==="tr"?(field.label):colorLabels[key]}</b><em>{colorValueLabel(key)}</em><button type="button" title="Reset" onclick={(event)=>{event.preventDefault();resetColorKey(key)}}>↻</button></span>
-                        <input type="range" style={`--range-pct:${rangePercent(Number(field.value),Number(field.min),Number(field.max))}%`} min={field.min} max={field.max} step={field.step} value={field.value} disabled={!colorOn(key)} oninput={(event)=>setToolNumber(key,Number(event.currentTarget.value))}>
+                        <span><b>{language==="tr"?(field.label):colorLabels[key]}</b><em>{colorValueLabel(key)}</em><button type="button" aria-label={language==="tr"?`${field.label} sıfırla`:`Reset ${colorLabels[key]}`} title={language==="tr"?"Sıfırla":"Reset"} onclick={(event)=>{event.preventDefault();resetColorKey(key)}}>↻</button></span>
+                        <input aria-label={language==="tr"?field.label:colorLabels[key]} type="range" style={`--range-pct:${rangePercent(displayedColorValue(key),Number(field.min),Number(field.max))}%`} min={field.min} max={field.max} step={field.step} value={displayedColorValue(key)} oninput={(event)=>adjustColor(key,Number(event.currentTarget.value))}>
                       </label>
                     {/if}
                   {/each}
                   {#if group.title === "Cleanup"}
                     <div class="denoise-control">
-                      <label class="color-toggle"><input type="checkbox" checked={toolValue("denoise")!=="off"} onchange={(event)=>setToolValue("denoise",event.currentTarget.checked?"medium":"off")}><span>{language==="tr"?"Gürültü azaltma":"Denoise"}</span></label>
-                      <div class="segmented">{#each ["low","medium","high"] as mode}<button class:active={toolValue("denoise")===mode} disabled={toolValue("denoise")==="off"} onclick={()=>setToolValue("denoise",mode)}>{mode}</button>{/each}</div>
+                      <span>{language==="tr"?"Gürültü azaltma":"Denoise"}</span>
+                      <div class="segmented">{#each [["off",language==="tr"?"Kapalı":"Off"],["low",language==="tr"?"Az":"Low"],["medium",language==="tr"?"Orta":"Medium"],["high",language==="tr"?"Yüksek":"High"]] as mode}<button class:active={toolValue("denoise")===mode[0]} onclick={()=>setToolValue("denoise",mode[0])}>{mode[1]}</button>{/each}</div>
                     </div>
                   {/if}
                   {#if group.title === "Style"}
-                    <label class="color-toggle"><input type="checkbox" checked={toolValue("grayscale")==="on"} onchange={(event)=>setToolValue("grayscale",event.currentTarget.checked?"on":"off")}><span>{language==="tr"?"Gri tonlama":"Grayscale"}</span></label>
+                    <button class="ghost color-grayscale" aria-pressed={toolValue("grayscale")==="on"} onclick={()=>setToolValue("grayscale",toolValue("grayscale")==="on"?"off":"on")}>{language==="tr"?"Gri tonlama":"Grayscale"}</button>
                   {/if}
                 </section>
               {/each}
@@ -2785,6 +3015,21 @@
             </div>
           {:else if selected.id === "text"}
             <div class="text-workspace">
+              <section class="text-presets">
+                <h4 title={language==="tr"?"Seçili yazıyı, konumunu ve tüm görünüm ayarlarını kaydet. Uygula yeni bir katman ekler.":"Save the selected text, position and all appearance settings. Add from preset creates a new layer."}>{language==="tr"?"Yazı presetleri":"Text presets"}</h4>
+                {#if textPresets.length}
+                  <div class="text-preset-row">
+                    <select aria-label={language==="tr"?"Kayıtlı preset":"Saved preset"} bind:value={selectedTextPreset}><option value="">{language==="tr"?"Preset seç":"Choose a preset"}</option>{#each textPresets as preset (preset.id)}<option value={preset.id}>{preset.name}</option>{/each}</select>
+                    <button class="ghost" disabled={!selectedTextPreset||textPresetBusy} onclick={applyTextPreset}>{language==="tr"?"Presetten ekle":"Add from preset"}</button>
+                    <button class="ghost preset-delete" aria-label={language==="tr"?"Preseti sil":"Delete preset"} title={language==="tr"?"Preseti sil":"Delete preset"} disabled={!selectedTextPreset||textPresetBusy} onclick={deleteTextPreset}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button>
+                  </div>
+                {/if}
+                <div class="text-preset-row">
+                  <input aria-label={language==="tr"?"Preset adı":"Preset name"} maxlength="80" bind:value={textPresetName} placeholder={language==="tr"?"Yeni preset adı…":"New preset name…"}>
+                  <button class="ghost" aria-label={language==="tr"?"Seçili yazıyı kaydet":"Save selected text"} title={language==="tr"?"Seçili yazıyı kaydet":"Save selected text"} disabled={!activeText()||!textPresetName.trim()} onclick={saveTextPreset}>{language==="tr"?"Kaydet":"Save"}</button>
+                </div>
+                {#if selectedTextPreset}<details class="preset-manage"><summary>{language==="tr"?"Seçili preseti düzenle":"Edit selected preset"}</summary><div class="text-preset-row"><button class="ghost" disabled={!activeText()||textPresetBusy} onclick={updateTextPreset}>{language==="tr"?"Seçili yazıyla güncelle":"Update from selected text"}</button><button class="ghost" disabled={!textPresetName.trim()||textPresetBusy} onclick={renameTextPreset}>{language==="tr"?"Adı değiştir":"Rename"}</button></div><small>{language==="tr"?"Adı değiştirmek için üstteki ad alanını kullan.":"Use the name field above to rename."}</small></details>{/if}
+              </section>
               <button class="add-text" onclick={addTextLayer}>＋ {language==="tr"?"Yazı ekle":"Add text"}</button>
               {#if textLayers.length}
                 <div class="text-tabs">{#each textLayers as layer,index (layer.id)}<div class="text-tab" class:active={activeTextId===layer.id}><button class="text-tab-select" onclick={()=>activeTextId=layer.id}>{index+1}. {layer.text||"—"}</button><button class="text-tab-remove" aria-label={`${language==="tr"?"Yazıyı kaldır":"Remove text"}: ${layer.text||index+1}`} title={language==="tr"?"Yazıyı kaldır":"Remove text"} onclick={()=>removeTextLayer(layer.id)}>×</button></div>{/each}</div>
@@ -2918,13 +3163,9 @@
                      <button class="center-content" onclick={()=>{setToolNumber("freecam_x",50);setToolNumber("freecam_y",2);setToolNumber("freecam_size",77)}}>{language==="tr"?"KAMERAYI SIFIRLA":"RESET CAMERA"}</button>
                   {/if}
                   <div class="clipper-watermark-controls">
-                    <label class="watermark-toggle"><input type="checkbox" checked={toolValue("watermark_enabled")==="true"} onchange={(event)=>setToolValue("watermark_enabled",event.currentTarget.checked?"true":"false")}><span>Watermark</span></label>
+                    <label class="watermark-toggle"><input type="checkbox" checked={toolValue("watermark_enabled")==="true"} onchange={(event)=>{setToolValue("watermark_enabled",event.currentTarget.checked?"true":"false");if(event.currentTarget.checked)clipperPreviewMode="output"}}><span>Watermark</span></label>
                     {#if toolValue("watermark_enabled")==="true"}
-                      {#if ["split","squares","freecam"].includes(toolValue("vertical_layout"))}<label class="watermark-toggle"><input type="checkbox" checked={toolValue("watermark_background")==="true"} onchange={(event)=>setToolValue("watermark_background",event.currentTarget.checked?"true":"false")}><span>{language==="tr"?"Siyah arka plan şeridi":"Black background strip"}</span></label>{/if}
-                      <label class="watermark-text-field"><span>{language==="tr"?"Yazı":"Text"}</span><input type="text" maxlength="64" placeholder="@kanaladi" value={toolValue("watermark_text")} oninput={(event)=>setToolValue("watermark_text",event.currentTarget.value)}></label>
-                      <label class="watermark-slider"><span>{language==="tr"?"Boyut":"Size"}<small>{toolNumber("watermark_size").toFixed(0)} px</small></span><input type="range" min="18" max="160" step="1" value={toolNumber("watermark_size")} oninput={(event)=>setToolNumber("watermark_size",Number(event.currentTarget.value))}></label>
-                      <label class="watermark-slider"><span>{language==="tr"?"Saydamlık":"Opacity"}<small>{toolNumber("watermark_opacity").toFixed(0)}%</small></span><input type="range" min="10" max="100" step="5" value={toolNumber("watermark_opacity")} oninput={(event)=>setToolNumber("watermark_opacity",Number(event.currentTarget.value))}></label>
-                      <p>{language==="tr"?"Split/Squares'ta iki panelin birleşim çizgisinin tam ortasında; diğer düzenlerde TikTok ve Shorts arayüzlerinden uzak ortak güvenli alanda görünür.":"Centered exactly on the Split/Squares panel seam; other layouts use a shared TikTok/Shorts safe area."}</p>
+                      {#if watermarkLayer}<WatermarkControls layer={watermarkLayer} fonts={systemFonts} presets={textPresets} width={toolNumber("output_width")||1080} {language} onchange={changeWatermark} onfont={chooseWatermarkFont} onpreset={applyWatermarkPreset}/>{:else}<small>{language==="tr"?"Font hazırlanıyor…":"Preparing font…"}</small><button class="ghost" disabled={watermarkLoading} onclick={prepareWatermark}>{language==="tr"?"Tekrar dene":"Retry"}</button>{/if}
                     {/if}
                   </div>
                   <div class="clipper-watermark-controls">
@@ -2997,6 +3238,18 @@
               <div class="quality-mode-switch"><button class:active={!qualityAdvanced} onclick={()=>setQualityMode(false)}>{language==="tr"?"Basit":"Simple"}</button><button class:active={qualityAdvanced} onclick={()=>setQualityMode(true)}>{language==="tr"?"Gelişmiş":"Advanced"}</button></div>
               {#if !qualityAdvanced}<div class="quality-profiles">{#each [["high",language==="tr"?"Yüksek kalite":"High quality","CRF 16"],["balanced",language==="tr"?"Dengeli":"Balanced","CRF 20"],["small",language==="tr"?"Küçük dosya":"Small file","CRF 24"]] as profile}<button class:active={toolValue("goal")===profile[0]} onclick={()=>applyQualityProfile(profile[0] as "high"|"balanced"|"small")}><b>{profile[1]}</b><small>{profile[2]}</small></button>{/each}</div>{/if}
             {/if}
+            {#if selected.id==="frame_extractor"}
+              <div class="frame-extractor-simple">
+                {#if toolValue("mode")==="burst"}
+                  <p>{language==="tr"?"Çıkarma başlayacak:":"Extraction starts at:"} <b class="mono">{playerTime(toolboxCurrent)}</b><br/><small>{language==="tr"?"Başlangıcı oynatıcıdan değiştir.":"Move the playhead to choose the start."}</small></p>
+                  <label class="field"><span>{language==="tr"?"Çıkarılacak kare sayısı":"Number of frames to extract"}</span><input type="number" min="1" max="1000" step="1" value={toolValue("count")} oninput={event=>setToolValue("count",event.currentTarget.value)}/></label>
+                  <label class="field"><span>{language==="tr"?"Kareler arası süre":"Distance between frames"}<small>ms</small></span><input type="number" min="1" max="3600000" step="1" value={Math.round(toolNumber("interval")*1000)} oninput={event=>setToolValue("interval",String(Number(event.currentTarget.value)/1000))}/></label>
+                  <p>{language==="tr"?`${toolValue("count")} kare, ${Math.round(toolNumber("interval")*1000)} ms aralıkla. Örnek: 10 kare × 100 ms, ilk kareden son kareye yaklaşık 0,9 saniyeyi kapsar.`:`${toolValue("count")} frames, ${Math.round(toolNumber("interval")*1000)} ms apart. Example: 10 frames × 100 ms covers about 0.9 seconds from first to last.`}</p>
+                  <small>{language==="tr"?"PNG, videonun kendi çözünürlüğünde. Video biterse daha az kare çıkar. Aralıklar mevcut video karelerine yuvarlanır; aynı kare tekrarlanmaz.":"PNG at the video's original resolution. Fewer frames are extracted if the video ends. Intervals align to available video frames; frames are not duplicated."}</small>
+                {/if}
+                <button class="ghost" onclick={()=>{frameAdvanced=!frameAdvanced;if(!frameAdvanced)setToolValue("mode","burst")}}>{frameAdvanced?(language==="tr"?"Basit moda dön":"Back to simple mode"):(language==="tr"?"Gelişmiş seçenekler":"Advanced options")}</button>
+              </div>
+            {/if}
             {#each selected.fields as field}
               {#if !fieldLivesOnTimeline(field.key) && fieldVisible(field.key)}
               <label class="field">
@@ -3059,12 +3312,36 @@
               </div>
             {/if}
             {#if selected.id === "image_compressor"}
-              <div class="codec-note"><b>{language==="tr"?"TAHMİNİ BOYUT":"ESTIMATED SIZE"}</b><span>{formatBytes(media.size)} → {toolValue("mode")==="target"?`${toolNumber("target_kb")} KB`:(compressionEstimateLoading?(language==="tr"?"hesaplanıyor…":"calculating…"):(compressionEstimate!=null?formatBytes(compressionEstimate):"—"))}</span></div>
-              {#if renderedImageSize}<div class="codec-note"><b>{language==="tr"?"GERÇEK ÇIKTI":"ACTUAL OUTPUT"}</b><span>{formatBytes(renderedImageSize)}</span></div>{/if}
+              {@const outputFormat=imageOutputFormat(media.path,toolValue("format"))}
+              <section class="image-size-summary" aria-live="polite">
+                <div><span>{language==="tr"?"Kaynak boyutu":"Source size"}</span><b>{formatBytes(media.size)}</b></div>
+                <div><span>{toolValue("mode")==="target"?(language==="tr"?"Hedef boyut":"Target size"):(language==="tr"?"Tahmini çıktı":"Estimated output")}</span><b>{toolValue("mode")==="target"?formatBytes(toolNumber("target_kb")*1024):(compressionEstimateLoading?(language==="tr"?"Hesaplanıyor…":"Calculating…"):(compressionEstimate!=null?formatBytes(compressionEstimate):compressionEstimateError?(language==="tr"?"Hesaplanamadı":"Unavailable"):"—"))}</b></div>
+                {#if toolValue("mode")==="target"}
+                  {#if !imageTargetSupported(outputFormat)}<p class="image-format-warning">{language==="tr"?"Hedef boyut için WebP veya JPEG seç. Mevcut biçimde bu işlem desteklenmiyor.":"Choose WebP or JPEG for a target size. The current format does not support this mode."}</p><div class="image-format-actions"><button class="ghost" onclick={()=>setToolValue("format","webp")}>WebP</button><button class="ghost" onclick={()=>setToolValue("format","jpg")}>JPEG</button></div>{:else}<p>{language==="tr"?"Bu bir boyut hedefidir; en uygun kalite render sırasında aranır. Ulaşılamayan hedeflerde çıktı daha büyük olabilir.":"This is a size target, not an estimate. Rendering searches for the best fitting quality; an unattainable target may produce a larger file."}</p>{/if}
+                {:else if !imageQualityAdjustable(outputFormat)}<p>{outputFormat==="png"?(language==="tr"?"PNG yerel olarak optimize edilir; kalite yüzdesi uygulanmaz.":"PNG is optimized locally; quality percentages do not apply."):(language==="tr"?"Bu biçim kayıpsızdır; kalite yüzdesi uygulanmaz.":"This format is lossless; quality percentages do not apply.")}</p>
+                {:else}<p>{language==="tr"?"Boyut, seçilen ayarlarla yapılan gerçek deneme kodlamasından hesaplanır.":"Size is calculated from a trial encode using the selected settings."}</p>{/if}
+                {#if outputFormat==="png"}<p>{toolValue("png_mode")==="palette"?(language==="tr"?"Renk paleti azaltılabilir; bu mod tamamen kayıpsız değildir. Ölçüler ve şeffaf alanlar korunur; yarı saydam renkler sınırlı değişebilir. 16-bit, animasyonlu veya 16 MP üzeri PNG kayıpsız optimize edilir.":"The palette may be reduced; this mode is not fully lossless. Dimensions and transparent areas are retained; translucent colours may change within the error limit. 16-bit, animated or over-16MP PNG stay lossless."):(language==="tr"?"Pikseller, şeffaflık ve renk profili aynen korunur. Hedefe ulaşılamazsa en küçük kayıpsız sonuç kaydedilir; daha fazla küçültmek için palet modunu seçebilirsin.":"Pixels, transparency and colour profile stay unchanged. If the target cannot be reached, the smallest lossless result is saved; palette mode can reduce it further.")}</p>{/if}
+                {#if compressionEstimateError&&toolValue("mode")==="quality"}<button class="ghost" onclick={()=>compressionEstimateRetry++}>{language==="tr"?"Tekrar hesapla":"Retry estimate"}</button>{/if}
+                {#if renderedImageSize}<div class="image-size-actual"><span>{language==="tr"?"Son çıktı":"Last output"}</span><b>{formatBytes(renderedImageSize)}</b></div>{/if}
+                {#if outputFormat==="png"&&toolValue("mode")==="target"&&renderedImageSize&&renderedImageSize>toolNumber("target_kb")*1024}<p class="image-format-warning">{language==="tr"?"Hedef boyuta ulaşılamadı; kalite sınırları korunarak bulunan en küçük PNG kaydedildi.":"The target was not reached; the smallest PNG within the quality limits was saved."}</p>{/if}
+              </section>
             {/if}
           </div>
-          <div class="run-box">
-            <button class="run" onclick={runTool} disabled={busy||qualityAnalyzing}>▶ {selected.id === "file_hash" ? (language === "tr" ? "SHA-256 hesapla" : "calculate SHA-256") : `${t("render")} ${selected.title.toLocaleLowerCase(language)}`}</button>
+          <div class="run-box" class:stack-run-box={media.kind==="video"&&processingStack.length>0}>
+            {#if media.kind==="video"&&processingStack.length}
+              <div class="stack-output-quality" role="group" aria-label={language==="tr"?"Son çıktı kalitesi":"Final output quality"}>
+                <span>{language==="tr"?"Çıktı kalitesi":"Output quality"}</span>
+                <div class="stack-quality-options">
+                  {#each [{value:"high",label:language==="tr"?"Yüksek":"High"},{value:"medium",label:language==="tr"?"Orta":"Medium"},{value:"small",label:language==="tr"?"Küçük":"Small"},{value:"lossless",label:language==="tr"?"Kayıpsız":"Lossless"}] as quality}
+                    <button class:active={stackQuality===quality.value} aria-pressed={stackQuality===quality.value} disabled={operationBusy} onclick={()=>stackQuality=quality.value}>{quality.label}</button>
+                  {/each}
+                </div>
+              </div>
+              <button class="run stack-render" aria-label={language==="tr"?"İşlem listesini renderla":"Render processing stack"} onclick={runProcessingStack} disabled={busy||qualityAnalyzing||!processingStack.some(step=>step.enabled)||stackDraftDirty()}><span>▶ {language==="tr"?"Listeyi renderla":"Render stack"}</span><small>{processingStack.filter(step=>step.enabled).length} {language==="tr"?"adım":"steps"}</small></button>
+              <button class="stack-render-single" onclick={runTool} disabled={busy||qualityAnalyzing}>{language==="tr"?"Yalnızca açık aracı renderla":"Render current tool only"}</button>
+            {:else}
+              <button class="run" onclick={runTool} disabled={busy||qualityAnalyzing||(selected.id==="image_compressor"&&toolValue("mode")==="target"&&!imageTargetSupported(imageOutputFormat(media.path,toolValue("format"))))}>▶ {selected.id === "file_hash" ? (language === "tr" ? "SHA-256 hesapla" : "calculate SHA-256") : `${t("render")} ${selected.title.toLocaleLowerCase(language)}`}</button>
+            {/if}
           </div>
         {:else}
           <div class="empty-settings"><span>←</span><p>{t("selectTool")}</p></div>
@@ -3074,5 +3351,5 @@
     {/if}
   {/if}
   {#if dragActive}<div class="drop-overlay"><span>{t("dropOpen")}</span></div>{/if}
-  {#if toastMessage}<aside class:error={toastKind==="error"} class="app-toast" role="alert"><span>{toastMessage}</span><button onclick={()=>{toastMessage="";window.clearTimeout(toastTimer)}} aria-label={language==="tr"?"Bildirimi kapat":"Close notification"}>×</button></aside>{/if}
+  {#if toastMessage}<aside class:error={toastKind==="error"} class:success={toastKind==="success"} class="app-toast" role="alert">{#if toastKind==="success"}<i class="toast-success-icon" aria-hidden="true">✓</i>{/if}<span>{toastMessage}</span><button onclick={()=>{toastMessage="";window.clearTimeout(toastTimer)}} aria-label={language==="tr"?"Bildirimi kapat":"Close notification"}>×</button></aside>{/if}
 </main>

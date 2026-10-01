@@ -2,7 +2,27 @@
 
 CONTAINER uses open-source libraries listed in `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Their individual licenses remain in effect.
 
-## FFmpeg
+## Montserrat
+
+CONTAINER bundles the unmodified Montserrat ExtraBold Italic font (weight 800) for text preview and export. Copyright 2024 The Montserrat.Git Project Authors. Licensed under the SIL Open Font License 1.1, included as `licenses/Montserrat-OFL.txt`.
+
+Source: https://github.com/JulietaUla/Montserrat
+
+## PNG optimization
+
+PNG compression embeds Oxipng 10.2.1 (https://github.com/oxipng/oxipng) and Exoquant 0.2.0 (https://github.com/exoticorn/exoquant-rs), both under the MIT license. No external executable or cloud service is required.
+
+Copyright (c) 2016 Joshua Holmer (Oxipng)
+
+Copyright (c) 2016 Dennis Ranke (Exoquant)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## FFmpeg (bundled executables)
 
 Windows release packages bundle FFmpeg and FFprobe 9.0.1 full build as separate programs. They are not relicensed by CONTAINER and remain under the GNU GPL version 3. The exact release build is produced by Gyan.dev; corresponding FFmpeg source and build information are available from the links below.
 

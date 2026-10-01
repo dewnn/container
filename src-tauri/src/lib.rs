@@ -27,7 +27,10 @@ use tokio::{
 use url::{Host, Url};
 
 mod auto_encoder;
+mod job_inspector;
+mod processing_stack;
 mod face_detection;
+mod png_compression;
 
 use auto_encoder::{
     auto_encoder_configured, available_encoders, fastest_h264_encoder, warm_up_auto_encoder,
@@ -129,6 +132,13 @@ fn legacy_storage_name() -> &'static str {
     }
 }
 
+#[cfg(test)]
+fn test_runtime_root() -> PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| std::env::temp_dir().join(format!("container-test-runtime-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()))).clone()
+}
+
+#[cfg(not(test))]
 fn app_data_directory() -> Result<PathBuf, String> {
     Ok(dirs::data_local_dir()
         .ok_or("Application data folder is unavailable.")?
@@ -136,11 +146,22 @@ fn app_data_directory() -> Result<PathBuf, String> {
         .join("data"))
 }
 
+#[cfg(test)]
+fn app_data_directory() -> Result<PathBuf, String> {
+    Ok(test_runtime_root().join(app_storage_namespace()).join("data"))
+}
+
+#[cfg(not(test))]
 fn app_cache_directory() -> Result<PathBuf, String> {
     Ok(dirs::cache_dir()
         .ok_or("User cache directory unavailable")?
         .join(app_storage_namespace())
         .join("cache"))
+}
+
+#[cfg(test)]
+fn app_cache_directory() -> Result<PathBuf, String> {
+    Ok(test_runtime_root().join(app_storage_namespace()).join("cache"))
 }
 
 // Embed the exact model used by the dependency, so released builds never
@@ -306,11 +327,66 @@ fn allow_asset_file(app: &AppHandle, path: &Path) -> Result<(), String> {
 
 #[derive(Default)]
 struct JobState {
-    cancelled: AtomicBool,
+    inspector: job_inspector::Inspector,
+    active_job: Mutex<Option<String>>,
+    cancelled: Arc<AtomicBool>,
     pid: Mutex<Option<u32>>,
     download_cleanup: Mutex<Option<DownloadCleanup>>,
     download_info: Mutex<Option<DownloadInfoCache>>,
     vad_cache: Mutex<Option<VadCache>>,
+}
+
+struct JobLease<'a>(&'a JobState);
+
+impl<'a> JobLease<'a> {
+    fn acquire(state: &'a JobState, id: Option<String>) -> Result<Self, String> {
+        let mut active = state.active_job.lock().map_err(|_| "Job state lock failed")?;
+        if active.is_some() {
+            return Err("Another media job is already running.".into());
+        }
+        state.cancelled.store(false, Ordering::Relaxed);
+        if let Ok(mut attempts) = state.inspector.0.lock() { attempts.clear(); }
+        *active = Some(id.unwrap_or_else(|| format!("legacy-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos())));
+        Ok(Self(state))
+    }
+}
+
+impl Drop for JobLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.0.active_job.lock() {
+            *active = None;
+        }
+    }
+}
+
+fn progress_job_id(state: &JobState) -> Option<String> {
+    state.active_job.lock().ok().and_then(|active| active.clone())
+}
+
+fn reset_legacy_job_cancellation(state: &JobState) {
+    // Command jobs reset atomically when acquiring their lease. In particular,
+    // downloader setup awaits must never erase a cancellation received during
+    // setup. Direct test/helper callers have no lease and retain their reset.
+    if let Ok(active) = state.active_job.lock() {
+        if active.is_none() {
+            state.cancelled.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+struct CancelTarget {
+    job_id: Option<String>,
+    pid: Option<u32>,
+}
+
+fn request_job_cancellation(state: &JobState, job_id: Option<&str>) -> Result<Option<CancelTarget>, String> {
+    let active = state.active_job.lock().map_err(|_| "Job state lock failed")?;
+    if job_id.is_some_and(|id| active.as_deref() != Some(id)) {
+        return Ok(None);
+    }
+    let pid = *state.pid.lock().map_err(|_| "Job state lock failed")?;
+    state.cancelled.store(true, Ordering::Relaxed);
+    Ok(Some(CancelTarget { job_id: active.clone(), pid }))
 }
 
 struct ActiveProcess<'a> {
@@ -406,6 +482,7 @@ struct DownloadFormat {
 
 #[derive(Debug, Clone, Serialize)]
 struct DownloaderProgress {
+    job_id: Option<String>,
     percent: f64,
     downloaded: String,
     speed: String,
@@ -430,6 +507,7 @@ fn parse_downloader_progress(line: &str) -> Option<DownloaderProgress> {
         .parse::<f64>()
         .ok()?;
     Some(DownloaderProgress {
+        job_id: None,
         percent: percent.clamp(0.0, 100.0),
         downloaded: fields[1].trim().to_string(),
         speed: fields[2].trim().to_string(),
@@ -1337,7 +1415,9 @@ async fn download_media(
     history: State<'_, DownloadHistoryState>,
     url: String,
     format: String,
+    job_id: Option<String>,
 ) -> Result<DownloaderResult, String> {
+    let _job = JobLease::acquire(&state, job_id)?;
     let url = validated_download_url(&url)?;
     let binary = downloader_binary_path()?;
     if !binary.is_file() || downloader_version().await.is_none() {
@@ -1358,8 +1438,11 @@ async fn download_media(
         .as_ref()
         .filter(|info| info.url == url && info.created.elapsed() < Duration::from_secs(10 * 60))
         .map(|info| info.json.clone());
-    state.cancelled.store(false, Ordering::Relaxed);
+    reset_legacy_job_cancellation(&state);
     let existing_temporary_files = downloader_temporary_files(&output_dir);
+    if state.cancelled.load(Ordering::Relaxed) {
+        return Err("Job cancelled.".into());
+    }
     let mut command = hidden_path_command(&binary);
     command
         .args([
@@ -1455,7 +1538,8 @@ async fn download_media(
             let _ = child.kill().await;
             break;
         }
-        if let Some(progress) = parse_downloader_progress(&line) {
+        if let Some(mut progress) = parse_downloader_progress(&line) {
+            progress.job_id = progress_job_id(&state);
             let _ = app.emit("downloader-progress", progress);
         } else if is_stdout {
             output_lines.push(line);
@@ -1747,11 +1831,12 @@ struct FontOption {
     path: String,
 }
 
-const SOCIAL_FONT_NAMES: [&str; 10] = [
+const SOCIAL_FONT_NAMES: [&str; 11] = [
     "Impact",
     "Arial Black",
     "Montserrat Black",
     "Montserrat ExtraBold",
+    "Montserrat ExtraBold Italic (800)",
     "Montserrat Bold",
     "Montserrat SemiBold",
     "Poppins Black",
@@ -1759,6 +1844,18 @@ const SOCIAL_FONT_NAMES: [&str; 10] = [
     "Poppins Bold",
     "Poppins SemiBold",
 ];
+
+fn bundled_text_font() -> Result<FontOption, String> {
+    let path = social_tag_asset_path_in(
+        &app_cache_directory()?.join("text-fonts"),
+        include_bytes!("../resources/fonts/Montserrat-ExtraBoldItalic.ttf"),
+        "ttf",
+    )?;
+    Ok(FontOption {
+        name: "Montserrat ExtraBold Italic (800)".into(),
+        path: path.to_string_lossy().into_owned(),
+    })
+}
 
 fn curate_social_fonts(fonts: Vec<FontOption>) -> Vec<FontOption> {
     SOCIAL_FONT_NAMES
@@ -1850,6 +1947,7 @@ async fn list_system_fonts() -> Result<Vec<FontOption>, String> {
             }
         }
     }
+    fonts.push(bundled_text_font()?);
     fonts.sort_by_key(|font| font.name.to_ascii_lowercase());
     fonts.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
     Ok(curate_social_fonts(fonts))
@@ -1867,12 +1965,14 @@ fn font_preview_data(path: String) -> Result<String, String> {
     {
         roots.push(user_fonts);
     }
-    let allowed = roots
-        .iter()
-        .filter_map(|root| root.canonicalize().ok())
-        .any(|root| canonical.starts_with(root));
+    let bundled = bundled_text_font()?;
+    let allowed = PathBuf::from(bundled.path).canonicalize().ok().as_ref() == Some(&canonical)
+        || roots
+            .iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .any(|root| canonical.starts_with(root));
     if !allowed {
-        return Err("Font preview is limited to installed system fonts.".into());
+        return Err("Font preview is limited to installed or bundled fonts.".into());
     }
     let extension = canonical
         .extension()
@@ -1929,6 +2029,7 @@ struct QualityAnalysis {
 
 #[derive(Clone, Serialize)]
 struct ProgressEvent {
+    job_id: Option<String>,
     percent: f64,
     time: f64,
     speed: String,
@@ -2050,6 +2151,40 @@ fn parse_number(params: &HashMap<String, String>, key: &str) -> Result<f64, Stri
         .ok_or_else(|| format!("Missing parameter: {key}"))?
         .parse::<f64>()
         .map_err(|_| format!("Invalid number for {key}"))
+}
+
+fn operation_progress_duration(request: &OperationRequest, source: f64) -> f64 {
+    let number = |key: &str| {
+        request
+            .params
+            .get(key)
+            .and_then(|value| value.parse::<f64>().ok())
+    };
+    let output = match request.operation.as_str() {
+        "cut" | "gif" => number("end")
+            .zip(number("start"))
+            .map(|(end, start)| end - start),
+        "speed" => number("speed").map(|speed| source / speed),
+        _ => None,
+    };
+    output
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .unwrap_or(source)
+}
+
+#[test]
+fn output_duration_drives_progress() {
+    let mut request = OperationRequest {
+        input: String::new(),
+        operation: "cut".into(),
+        params: HashMap::from([("start".into(), "60".into()), ("end".into(), "90".into())]),
+    };
+    assert_eq!(operation_progress_duration(&request, 600.0), 30.0);
+    request.operation = "speed".into();
+    request.params.insert("speed".into(), "2".into());
+    assert_eq!(operation_progress_duration(&request, 600.0), 300.0);
+    request.params.insert("speed".into(), "0".into());
+    assert_eq!(operation_progress_duration(&request, 600.0), 600.0);
 }
 
 fn param<'a>(params: &'a HashMap<String, String>, key: &str) -> Result<&'a str, String> {
@@ -2455,7 +2590,20 @@ fn write_project(path: String, contents: String) -> Result<(), String> {
     if serialized.len() > 5 * 1024 * 1024 {
         return Err("The project data is too large.".into());
     }
-    std::fs::write(path, serialized).map_err(|error| format!("Project could not be saved: {error}"))
+    // Write beside the target before replacing it: a failed write must not
+    // truncate the previous project or modify a hardlinked source file.
+    let pending=path.with_file_name(format!(".container-project-{}-{}.tmp",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+    let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&pending)
+        .map_err(|error|format!("Project could not be saved: {error}"))?;
+    let result=(|| -> std::io::Result<()> {
+        use std::io::Write;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()
+    })();
+    drop(file);
+    let result=result.and_then(|()|std::fs::rename(&pending,&path));
+    if result.is_err(){let _=std::fs::remove_file(&pending);}
+    result.map_err(|error|format!("Project could not be saved: {error}"))
 }
 
 fn classify_media_kind(
@@ -2674,7 +2822,7 @@ fn safe_stem(input: &Path) -> String {
         .collect()
 }
 
-fn category(operation: &str) -> &str {
+fn category(operation: &str) -> &'static str {
     match operation {
         "transform" | "clipper" | "ratio" | "resize" => "transform",
         "upscale" => "upscale",
@@ -2682,13 +2830,22 @@ fn category(operation: &str) -> &str {
         "compression" | "smart_quality" | "discord_compressor" | "potatoify" => "quality",
         "text" | "image_overlay" => "text",
         "color" | "noise" | "negate" | "blur_pixelate" => "effects",
-        "remove_audio" | "extract_audio" | "replace_audio" | "distortion" | "audio_convert" => {
+        "remove_audio" => "video",
+        "extract_audio" | "replace_audio" | "distortion" | "audio_convert" => {
             "audio"
         }
         "image_ratio" | "image_compressor" | "metadata_cleaner" | "image_potatoify" => "image",
         "proxy" => "proxy",
         "autocut" | "smartcut" => "smartcut",
         _ => "export",
+    }
+}
+
+fn output_category(operation: &str, extension: &str) -> &'static str {
+    if operation == "frame_extractor" || matches!(extension.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff" | "avif" | "heic" | "heif") {
+        "image"
+    } else {
+        category(operation)
     }
 }
 
@@ -2706,7 +2863,7 @@ fn unique_output(input: &Path, operation: &str, extension: &str) -> Result<PathB
     let output_root = dirs::download_dir().unwrap_or_else(|| input_parent.to_path_buf());
     let folder = output_root
         .join("CONTAINER Output")
-        .join(category(operation));
+        .join(output_category(operation, extension));
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     let base = format!("{}_{}", safe_stem(input), operation);
     let mut output = folder.join(format!("{base}.{extension}"));
@@ -3512,7 +3669,7 @@ async fn export_autocut_inner(
     state: &JobState,
     request: AutoCutExportRequest,
 ) -> Result<JobResult, String> {
-    state.cancelled.store(false, Ordering::Relaxed);
+    reset_legacy_job_cancellation(state);
     let info = probe_media(request.input.clone()).await?;
     let duration = info.duration.ok_or("Video duration could not be read.")?;
     let cuts = enabled_cuts(&request.cuts, duration)?;
@@ -3607,11 +3764,14 @@ async fn export_autocut_inner(
         eprintln!("AUTOCUT FILTER GRAPH\n{graph}");
     }
     let crf = match request.quality.as_str() {
+        "preserve" => "14",
+        "lossless" => "0",
         "high" => "18",
         "small" => "26",
         _ => "22",
     };
     let audio_bitrate = match request.quality.as_str() {
+        "lossless" => "320k",
         "high" => "192k",
         "small" => "96k",
         _ => "128k",
@@ -3624,10 +3784,44 @@ async fn export_autocut_inner(
         .arg(&input)
         .arg("-filter_complex")
         .arg(&graph)
-        .args(["-map", "[vout]"])
-        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", crf]);
+        .args(["-map", "[vout]"]);
+    if let Some(fps) = info.fps.filter(|fps| fps.is_finite() && *fps > 0.0) {
+        command.args(["-r", &format!("{fps:.10}"), "-fps_mode", "cfr"]);
+    }
+    if request.quality == "source" {
+        let bitrate = info
+            .bitrate
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .ok_or("Source video bitrate is unavailable. Choose Lossless or High quality.")?;
+        let target = (bitrate.round() as u64).max(1000);
+        command.args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "slow",
+            "-b:v",
+            &target.to_string(),
+        ]);
+    } else {
+        let preset = if request.quality == "preserve" {
+            "fast"
+        } else {
+            "veryfast"
+        };
+        command.args(["-c:v", "libx264", "-preset", preset, "-crf", crf]);
+    }
     if info.audio_codec.is_some() {
-        command.args(["-map", "[aout]", "-c:a", "aac", "-b:a", audio_bitrate]);
+        let source_audio = info
+            .audio_tracks
+            .first()
+            .and_then(|stream| stream.bitrate)
+            .map(|rate| format!("{}", rate.clamp(32000.0, 320000.0).round() as u64));
+        let audio_rate = if matches!(request.quality.as_str(), "source" | "preserve") {
+            source_audio.as_deref().unwrap_or("192k")
+        } else {
+            audio_bitrate
+        };
+        command.args(["-map", "[aout]", "-c:a", "aac", "-b:a", audio_rate]);
     } else {
         command.arg("-an");
     }
@@ -3637,6 +3831,7 @@ async fn export_autocut_inner(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    state.inspector.start(&command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>());
     let mut child = command
         .spawn()
         .map_err(|e| format!("FFmpeg could not start: {e}"))?;
@@ -3677,6 +3872,7 @@ async fn export_autocut_inner(
                 let _ = app.emit(
                     "container-progress",
                     ProgressEvent {
+                        job_id: progress_job_id(state),
                         percent: (seconds / kept_total * 100.0).clamp(0.0, 99.9),
                         time: started.elapsed().as_secs_f64(),
                         speed: "—".into(),
@@ -3696,6 +3892,7 @@ async fn export_autocut_inner(
     };
     drop(active_process);
     let errors = stderr_task.await.unwrap_or_default();
+    state.inspector.errors(&errors);
     if state.cancelled.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(&output);
         return Err("Job cancelled.".into());
@@ -3726,7 +3923,9 @@ async fn export_autocut(
     app: AppHandle,
     state: State<'_, JobState>,
     request: AutoCutExportRequest,
+    job_id: Option<String>,
 ) -> Result<JobResult, String> {
+    let _job = JobLease::acquire(&state, job_id)?;
     export_autocut_inner(Some(&app), &state, request).await
 }
 
@@ -4431,12 +4630,14 @@ fn clipper_kick_banner_filter(
     let text_x = prefix_x + 147.0 * text_scale;
     let text_center_y = bottom - 35.0 * base * factor * 1.18;
     let text_size = (32.0 * text_scale).round().max(1.0);
+    // drawbox uses limited-range YUV black (Y=16). Convert pixels before drawing;
+    // merely relabeling full-range frames makes the bar gray beside RGB artwork.
     let bar_x = placement
         .camera_left
         .round()
         .clamp(0.0, placement.width as f64);
     Ok(format!(
-        "drawbox=x={bar_x:.0}:y={bar_y:.0}:w={bar_width:.0}:h={bar_height:.0}:color=black:t=fill[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,format=rgba,premultiply=inplace=1,split=2[social_logo_source][social_prefix_source];[social_logo_source]crop=350:101:0:0,scale={logo_width:.0}:{logo_height:.0}:flags=lanczos,unpremultiply=inplace=1,format=rgba[social_logo];[social_prefix_source]crop=147:94:419:0,scale={prefix_width:.0}:{prefix_height:.0}:flags=lanczos,unpremultiply=inplace=1,format=rgba,crop={prefix_width:.0}:{prefix_visible_height:.0}:0:{prefix_clip:.0}[social_prefix];[social_barred][social_logo]overlay=x={logo_x:.0}:y={logo_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_logoed];[social_logoed][social_prefix]overlay=x={prefix_x:.0}:y={prefix_overlay_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
+        "scale=in_range=auto:out_range=tv,format=yuv444p,setparams=range=limited,drawbox=x={bar_x:.0}:y={bar_y:.0}:w={bar_width:.0}:h={bar_height:.0}:color=black:t=fill[social_barred];movie=filename={}:dec_threads=1,crop=1080:101:0:979,format=rgba,premultiply=inplace=1,split=2[social_logo_source][social_prefix_source];[social_logo_source]crop=350:101:0:0,scale={logo_width:.0}:{logo_height:.0}:flags=lanczos,unpremultiply=inplace=1,format=rgba[social_logo];[social_prefix_source]crop=147:94:419:0,scale={prefix_width:.0}:{prefix_height:.0}:flags=lanczos,unpremultiply=inplace=1,format=rgba,crop={prefix_width:.0}:{prefix_visible_height:.0}:0:{prefix_clip:.0}[social_prefix];[social_barred][social_logo]overlay=x={logo_x:.0}:y={logo_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1[social_logoed];[social_logoed][social_prefix]overlay=x={prefix_x:.0}:y={prefix_overlay_y:.0}:format=yuv444:eof_action=repeat:repeatlast=1,drawtext=fontfile='{}':text='{}':expansion=none:fontcolor=white:fontsize={text_size:.0}:x={text_x:.0}:y={text_center_y:.0}-text_h/2",
         movie_filter_path(&art),
         drawtext_escape(&font.to_string_lossy()),
         drawtext_escape(&text),
@@ -4795,6 +4996,26 @@ async fn build_command(
     let extension: String;
 
     match op {
+        "audio_lab" => {
+            if !matches!(info.kind.as_str(), "audio" | "video") || info.audio_tracks.is_empty() {
+                return Err("Audio Lab requires an audio stream.".into());
+            }
+            let target = match param(p,"preset")? { "youtube"=>-14.0,"podcast"=>-16.0,"broadcast"=>-23.0,"custom"=>check_range(parse_number(p,"lufs")?,-70.0,-5.0,"Loudness")?,_=>return Err("Invalid audio preset.".into()) };
+            let peak=check_range(parse_number(p,"true_peak")?,-9.0,0.0,"True Peak")?;
+            let mut filters=Vec::new();
+            match param(p,"noise_reduction")? {"off"=>{},"light"=>filters.push("afftdn=nr=6".to_string()),"medium"=>filters.push("afftdn=nr=12".to_string()),_=>return Err("Invalid noise reduction.".into())}
+            match param(p,"voice_enhance")? {"off"=>{},"on"=>filters.push("highpass=f=80,lowpass=f=12000".into()),_=>return Err("Invalid voice setting.".into())}
+            match param(p,"compressor")? {"off"=>{},"on"=>filters.push("acompressor=threshold=0.125:ratio=3:attack=20:release=250:makeup=1".into()),_=>return Err("Invalid compressor.".into())}
+            filters.push(format!("loudnorm=I={target}:TP={peak}:LRA=11"));
+            let fade_in=check_range(parse_number(p,"fade_in")?,0.0,60.0,"Fade in")?;
+            let fade_out=check_range(parse_number(p,"fade_out")?,0.0,60.0,"Fade out")?;
+            if fade_in>0.0 {filters.push(format!("afade=t=in:d={fade_in}"));}
+            if fade_out>0.0 {let duration=info.duration.ok_or("Fade out requires a known duration.")?;if fade_out>duration{return Err("Fade out exceeds duration.".into())}filters.push(format!("afade=t=out:st={}:d={fade_out}",duration-fade_out));}
+            args.extend(["-map".into(),"0:a:0".into(),"-af".into(),filters.join(","),"-ar".into(),"48000".into()]);
+            match param(p,"channels")? {"source"=>{},"mono"=>args.extend(["-ac".into(),"1".into()]),"stereo"=>args.extend(["-ac".into(),"2".into()]),_=>return Err("Invalid channel mode.".into())}
+            if info.kind=="video" {args.extend(["-map".into(),"0:v:0".into(),"-c:v".into(),"copy".into(),"-c:a".into(),"aac".into(),"-b:a".into(),"192k".into()]);extension="mkv".into();}
+            else {extension=param(p,"format")?.into();let codec=match extension.as_str(){"flac"=>"flac","wav"=>"pcm_s24le","mp3"=>"libmp3lame","opus"=>"libopus",_=>return Err("Invalid audio format.".into())};args.extend(["-c:a".into(),codec.into()]);}
+        }
         "transform" | "clipper" => {
             if info.kind != "video" && info.kind != "image" {
                 return Err("Transform requires a video or image file.".into());
@@ -4984,15 +5205,25 @@ async fn build_command(
                     check_range(parse_number(p, "output_width")?, 2.0, 7680.0, "Width")? as u64;
                 let height =
                     check_range(parse_number(p, "output_height")?, 2.0, 7680.0, "Height")? as u64;
-                if let Some(watermark) =
-                    clipper_watermark_filter(p, vertical_layout, width, height, info)?
-                {
-                    filters.push(watermark);
+                let styled_watermark = enabled(p, "watermark_enabled")
+                    && p.get("watermark_layer")
+                        .is_some_and(|value| !value.is_empty());
+                if !styled_watermark {
+                    if let Some(watermark) =
+                        clipper_watermark_filter(p, vertical_layout, width, height, info)?
+                    {
+                        filters.push(watermark);
+                    }
                 }
                 if let Some(social_tag) =
                     clipper_social_tag_filter(p, vertical_layout, width, height, info)?
                 {
                     filters.push(social_tag);
+                }
+                if styled_watermark {
+                    let path = p.get("text_raster_path").map(PathBuf::from)
+                        .filter(|path| path.is_file()).ok_or("Watermark raster is missing. Open the project in the editor and render again.")?;
+                    filters.push(format!("null[wm_base];movie=filename={}:dec_threads=1,format=rgba[wm_text];[wm_base][wm_text]overlay=0:0:format=auto:eof_action=repeat:repeatlast=1", movie_filter_path(&path)));
                 }
             }
             if op == "clipper" {
@@ -5504,8 +5735,16 @@ async fn build_command(
                 append_image_encoder(&mut args, &extension, 100)?;
             } else {
                 args.extend(["-map".into(), "0:a?".into()]);
-                let (_, encoder_args) = fastest_h264_encoder().await;
-                args.extend(encoder_args);
+                // Overlay edits are intermediate media: retain the composed pixels
+                // instead of accumulating another lossy encode on each edit.
+                args.extend([
+                    "-c:v".into(),
+                    "libx264".into(),
+                    "-qp".into(),
+                    "0".into(),
+                    "-preset".into(),
+                    "veryfast".into(),
+                ]);
                 append_mp4_audio_codec(&mut args, info);
                 extension = "mp4".into();
             }
@@ -5780,8 +6019,8 @@ async fn build_command(
                 args.extend([
                     "-c:v".into(),
                     "libx264".into(),
-                    "-crf".into(),
-                    "16".into(),
+                    "-qp".into(),
+                    "0".into(),
                     "-preset".into(),
                     "veryfast".into(),
                 ]);
@@ -6508,6 +6747,17 @@ fn compressor_args(
     Ok(args)
 }
 
+async fn optimized_png(input: PathBuf, palette: bool, target: Option<u64>, cancelled: Arc<AtomicBool>) -> Result<Vec<u8>, String> {
+    static PNG_WORKER: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let permit = PNG_WORKER.acquire().await.map_err(|e| e.to_string())?;
+    let result = tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(input).map_err(|e| e.to_string())?;
+        png_compression::compress(&bytes, palette, target, &cancelled)
+    }).await.map_err(|e| format!("PNG worker failed: {e}"))?;
+    drop(permit);
+    result
+}
+
 #[tauri::command]
 async fn estimate_image_compression(request: OperationRequest) -> Result<u64, String> {
     let input = PathBuf::from(&request.input);
@@ -6516,7 +6766,7 @@ async fn estimate_image_compression(request: OperationRequest) -> Result<u64, St
         return Err("Image Compressor requires an image file.".into());
     }
     let extension = match param(&request.params, "format")? {
-        "source" => image_extension(&input),
+        "source" => image_extension(&operation_output_source(&request)?),
         "jpeg" | "jpg" => "jpg".into(),
         "png" => "png".into(),
         "webp" => "webp".into(),
@@ -6539,6 +6789,10 @@ async fn estimate_image_compression(request: OperationRequest) -> Result<u64, St
     let temp = operation_temp_dir("image-estimate")?;
     let output = temp.join(format!("estimate.{extension}"));
     let result = async {
+        let palette = request.params.get("png_mode").is_some_and(|mode| mode == "palette");
+        if extension == "png" && image_extension(&input) == "png" {
+            return optimized_png(input.clone(), palette, None, Arc::new(AtomicBool::new(false))).await.map(|bytes| bytes.len() as u64);
+        }
         let child = hidden_command("ffmpeg")
             .args(compressor_args(
                 &input,
@@ -6566,6 +6820,9 @@ async fn estimate_image_compression(request: OperationRequest) -> Result<u64, St
             } else {
                 detail
             });
+        }
+        if extension == "png" {
+            return optimized_png(output.clone(), palette, None, Arc::new(AtomicBool::new(false))).await.map(|bytes| bytes.len() as u64);
         }
         std::fs::metadata(&output)
             .map(|metadata| metadata.len())
@@ -6617,7 +6874,24 @@ async fn run_image_compressor(
     let temp = operation_temp_dir("image-compressor")?;
     let started = Instant::now();
     let result = async {
-        let chosen = if mode == "quality" {
+        let chosen = if extension == "png" {
+            let candidate = temp.join("optimized.png");
+            let source = if image_extension(&input) == "png" { input.clone() } else {
+                let converted = temp.join("converted.png");
+                run_ffmpeg_stage(app, state, compressor_args(&input, &converted, "png", 100, background, false)?, 1.0, &started, 0.0, 30.0, "preparing PNG").await?;
+                converted
+            };
+            let target = if mode == "target" { Some((check_range(parse_number(&request.params, "target_kb")?, 1.0, 1_048_576.0, "Target size")? * 1024.0) as u64) } else { None };
+            let palette = match request.params.get("png_mode").map(String::as_str).unwrap_or("lossless") {
+                "lossless" => false,
+                "palette" => true,
+                _ => return Err("Invalid PNG compression mode.".into()),
+            };
+            let bytes = optimized_png(source, palette, target, state.cancelled.clone()).await?;
+            if state.cancelled.load(Ordering::Relaxed) { return Err("Job cancelled.".into()); }
+            std::fs::write(&candidate, bytes).map_err(|e| e.to_string())?;
+            candidate
+        } else if mode == "quality" {
             let candidate = temp.join(format!("quality.{extension}"));
             run_ffmpeg_stage(
                 app,
@@ -6784,6 +7058,7 @@ async fn run_image_potatoify(
                 let _ = app.emit(
                     "container-progress",
                     ProgressEvent {
+                        job_id: progress_job_id(state),
                         percent: index as f64 / times as f64 * 100.0,
                         time: started.elapsed().as_secs_f64(),
                         speed: "—".into(),
@@ -6952,6 +7227,31 @@ fn discord_video_filter(
 async fn run_ffmpeg_stage(
     app: Option<&AppHandle>,
     state: &JobState,
+    args: Vec<String>,
+    duration: f64,
+    started: &Instant,
+    base_percent: f64,
+    percent_span: f64,
+    label: &str,
+) -> Result<(), String> {
+    match run_ffmpeg_stage_attempt(app, state, args.clone(), duration, started, base_percent, percent_span, label).await {
+        Err(error) if !state.cancelled.load(Ordering::Relaxed) => {
+            if let Some(retry) = auto_encoder::cpu_retry_args(&args, &error) {
+                // One retry only; use the same reserved output and preserve
+                // the original inputs, graph, frame rate and audio settings.
+                run_ffmpeg_stage_attempt(app, state, retry, duration, started, base_percent, percent_span, label).await
+            } else {
+                Err(error)
+            }
+        }
+        result => result,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_ffmpeg_stage_attempt(
+    app: Option<&AppHandle>,
+    state: &JobState,
     mut args: Vec<String>,
     duration: f64,
     started: &Instant,
@@ -6964,6 +7264,7 @@ async fn run_ffmpeg_stage(
         output_index..output_index,
         ["-progress".into(), "pipe:1".into(), "-nostats".into()],
     );
+    state.inspector.start(&args);
     let mut child = hidden_command("ffmpeg")
         .args(&args)
         .stdout(Stdio::piped())
@@ -7024,6 +7325,7 @@ async fn run_ffmpeg_stage(
                 let _ = app.emit(
                     "container-progress",
                     ProgressEvent {
+                        job_id: progress_job_id(state),
                         percent: (base_percent + local * percent_span).clamp(0.0, 99.0),
                         time: started.elapsed().as_secs_f64(),
                         speed: speed.clone(),
@@ -7040,6 +7342,7 @@ async fn run_ffmpeg_stage(
     };
     drop(active_process);
     let errors = stderr_task.await.unwrap_or_default();
+    state.inspector.errors(&errors);
     if state.cancelled.load(Ordering::Relaxed) {
         return Err("Job cancelled.".into());
     }
@@ -7397,6 +7700,7 @@ async fn run_discord_compressor(
             let _ = app.emit(
                 "container-progress",
                 ProgressEvent {
+                        job_id: progress_job_id(state),
                     percent: 0.0,
                     time: started.elapsed().as_secs_f64(),
                     speed: "—".into(),
@@ -7451,7 +7755,7 @@ async fn analyze_quality_inner(
     state: &JobState,
     request: QualityAnalysisRequest,
 ) -> Result<QualityAnalysis, String> {
-    state.cancelled.store(false, Ordering::Relaxed);
+    reset_legacy_job_cancellation(state);
     let info = probe_media(request.input.clone()).await?;
     if info.kind != "video" {
         return Err("Smart Quality Analysis requires a video file.".into());
@@ -7494,6 +7798,7 @@ async fn analyze_quality_inner(
             completed += 1.0;
             if let Some(app) = app {
                 let _ = app.emit("container-progress", ProgressEvent {
+                        job_id: progress_job_id(state),
                     percent: completed / total_steps * 99.0,
                     time: started.elapsed().as_secs_f64(), speed: "—".into(),
                     frame: format!("{}/{}", index + 1, positions.len()), status: "preparing samples".into(),
@@ -7519,6 +7824,7 @@ async fn analyze_quality_inner(
                 completed += 1.0;
                 if let Some(app) = app {
                     let _ = app.emit("container-progress", ProgressEvent {
+                        job_id: progress_job_id(state),
                         percent: completed / total_steps * 99.0,
                         time: started.elapsed().as_secs_f64(), speed: "—".into(),
                         frame: format!("CRF {crf}"), status: "encoding test samples".into(),
@@ -7541,6 +7847,7 @@ async fn analyze_quality_inner(
                 completed += 1.0;
                 if let Some(app) = app {
                     let _ = app.emit("container-progress", ProgressEvent {
+                        job_id: progress_job_id(state),
                         percent: completed / total_steps * 99.0,
                         time: started.elapsed().as_secs_f64(), speed: "—".into(),
                         frame: format!("CRF {crf}"), status: "measuring visual quality".into(),
@@ -7571,7 +7878,9 @@ async fn analyze_quality(
     app: AppHandle,
     state: State<'_, JobState>,
     request: QualityAnalysisRequest,
+    job_id: Option<String>,
 ) -> Result<QualityAnalysis, String> {
+    let _job = JobLease::acquire(&state, job_id)?;
     analyze_quality_inner(Some(&app), &state, request).await
 }
 
@@ -7859,16 +8168,164 @@ async fn run_merge_videos(
     result
 }
 
+fn prepare_stack_raster(step:&mut processing_stack::Step,directory:&Path,index:usize)->Result<(),String>{
+    step.params.remove("text_raster_path");
+    let Some(data)=step.params.remove("text_raster_png") else{return Ok(())};
+    if step.operation!="text" && step.operation!="clipper" {return Err("Raster is not allowed for this step.".into())}
+    let encoded=data.strip_prefix("data:image/png;base64,").ok_or("Invalid text raster image.")?;
+    if encoded.len()>24_000_000{return Err("Text raster is too large.".into())}
+    let png=BASE64.decode(encoded).map_err(|_|"Invalid text raster encoding.")?;
+    if png.len()<24||!png.starts_with(b"\x89PNG\r\n\x1a\n"){return Err("Invalid text raster PNG.".into())}
+    let width=u32::from_be_bytes(png[16..20].try_into().unwrap());
+    let height=u32::from_be_bytes(png[20..24].try_into().unwrap());
+    if width==0||height==0||width>8192||height>8192{return Err("Invalid text raster dimensions.".into())}
+    if step.operation=="clipper" && (f64::from(width)!=parse_number(&step.params,"output_width")?||f64::from(height)!=parse_number(&step.params,"output_height")?){return Err("Watermark raster must match the output dimensions.".into())}
+    let path=directory.join(format!("raster-{index}.png"));
+    std::fs::write(&path,png).map_err(|e|e.to_string())?;
+    step.params.insert("text_raster_path".into(),path.to_string_lossy().into_owned());
+    Ok(())
+}
+
+fn stack_smartcut_args(params:&HashMap<String,String>,info:&MediaInfo,input:&str)->Result<(Vec<String>,f64),String>{
+    if params.get("source_path").map(String::as_str)!=Some(input){return Err("SmartCut cuts belong to a different source. Add the cuts again.".into())}
+    let raw=params.get("cuts").ok_or("SmartCut cuts are missing.")?;
+    let cuts:Vec<KeepInterval>=serde_json::from_str(raw).map_err(|_|"Invalid SmartCut cuts.")?;
+    if cuts.len()>1000{return Err("SmartCut Stack is limited to 1000 regions.".into())}
+    let cuts=enabled_cuts(&cuts,info.duration.ok_or("Known duration required for SmartCut.")?)?;
+    let resolution=params.get("resolution").map(String::as_str).unwrap_or("source");
+    if !["source","1080","720","480"].contains(&resolution){return Err("Invalid SmartCut resolution.".into())}
+    let duration=cuts.iter().map(|cut|cut.end-cut.start).sum();
+    let mut args=vec!["-hide_banner".into(),"-y".into(),"-i".into(),input.into(),"-filter_complex".into(),autocut_filter_graph(&cuts,info.audio_codec.is_some(),resolution),"-map".into(),"[vout]".into(),"-c:v".into(),"libx264".into(),"-crf".into(),"14".into(),"-preset".into(),"veryfast".into()];
+    if let Some(fps)=info.fps.filter(|fps|fps.is_finite()&&*fps>0.0){args.extend(["-r".into(),format!("{fps:.10}"),"-fps_mode".into(),"cfr".into()]);}
+    if info.audio_codec.is_some(){args.extend(["-map".into(),"[aout]".into(),"-c:a".into(),"aac".into(),"-b:a".into(),"192k".into()]);}else{args.push("-an".into());}
+    args.push("stack-output.mp4".into());
+    Ok((args,duration))
+}
+
+async fn run_processing_stack(app:&AppHandle,state:&JobState,request:&OperationRequest,mut info:MediaInfo)->Result<JobResult,String>{
+    if info.kind!="video"{return Err("The Processing Stack currently requires video.".into())}
+    let raw=request.params.get("steps").ok_or("Processing Stack is empty.")?;
+    // Text/watermark layers can contain a full-resolution PNG data URL.
+    if raw.len()>64_000_000{return Err("Processing Stack is too large.".into())}
+    let steps:Vec<processing_stack::Step>=serde_json::from_str(raw).map_err(|_|"Invalid Processing Stack.")?;
+    if steps.len()>24{return Err("Processing Stack is limited to 24 steps.".into())}
+    let steps:Vec<_>=steps.into_iter().filter(|step|step.enabled).collect();
+    if steps.is_empty(){return Err("Enable at least one Stack step.".into())}
+    if steps.iter().enumerate().any(|(index,step)|step.operation=="smartcut"&&index!=0){return Err("SmartCut must be the first Stack step because its cuts use source timestamps.".into())}
+    let quality=request.params.get("quality").map(String::as_str).unwrap_or("high");
+    if !["lossless","high","medium","small"].contains(&quality){return Err("Invalid Stack quality.".into())}
+    let temp=OperationTempGuard(operation_temp_dir("processing-stack")?);
+    if steps.len()==2&&steps[0].operation=="smartcut"&&steps[1].operation=="clipper"
+        &&steps[0].params.get("resolution").is_none_or(|value|value=="source"){
+        let (cut_args,duration)=stack_smartcut_args(&steps[0].params,&info,&request.input)?;
+        let graph=cut_args.windows(2).find(|pair|pair[0]=="-filter_complex").map(|pair|pair[1].as_str()).ok_or("SmartCut graph is missing.")?;
+        let mut clipper=steps[1].clone();prepare_stack_raster(&mut clipper,&temp.0,1)?;
+        let stage=OperationRequest{input:request.input.clone(),operation:"clipper".into(),params:clipper.params};
+        let (args,_)=build_command(&stage,&info).await?;
+        if let Some(args)=processing_stack::fuse_smartcut_clipper(args,graph,info.audio_codec.is_some()){
+            let destination=unique_output(Path::new(&request.input),"processing_stack","mp4")?;
+            let mut args=processing_stack::output_args(args,&destination,false,Some(quality))?;
+            if quality=="high"{let (_,profile)=fastest_h264_encoder().await;args=processing_stack::verified_high_args(args,&profile);}
+            let started=Instant::now();
+            if let Err(error)=run_ffmpeg_stage(Some(app),state,args,duration,&started,0.0,99.0,"processing stack").await{let _=std::fs::remove_file(&destination);return Err(error)}
+            if let Err(error)=probe_media(destination.to_string_lossy().into_owned()).await{let _=std::fs::remove_file(&destination);return Err(error)}
+            allow_asset_file(app,&destination)?;
+            return Ok(JobResult{output:destination.to_string_lossy().into_owned(),elapsed:started.elapsed().as_secs_f64()});
+        }
+    }
+    let mut input=request.input.clone();
+    let started=Instant::now();
+    let count=steps.len();
+    let source_duration=info.duration;
+    let mut source_ranges=source_duration.map(|duration|vec![(0.0,duration)]).unwrap_or_default();
+    for (index,mut step) in steps.into_iter().enumerate(){
+        if state.cancelled.load(Ordering::Relaxed){return Err("Job cancelled.".into())}
+        if !["smartcut","cut","transform","clipper","color","text","image_overlay","audio_lab"].contains(&step.operation.as_str()){return Err(format!("{} cannot be used in the Processing Stack.",step.operation))}
+        step.params.remove("__source_path");
+        prepare_stack_raster(&mut step,&temp.0,index)?;
+        let audio_only_step=step.operation=="audio_lab";
+        let stage=OperationRequest{input:input.clone(),operation:step.operation,params:step.params};
+        let (mut args,stage_duration)=if stage.operation=="smartcut"{
+            let cuts:Vec<KeepInterval>=serde_json::from_str(stage.params.get("cuts").ok_or("SmartCut cuts are missing.")?).map_err(|_|"Invalid SmartCut cuts.")?;
+            let cuts=enabled_cuts(&cuts,source_duration.ok_or("Known source duration required.")?)?;
+            source_ranges=cuts.iter().map(|cut|(cut.start,cut.end)).collect();
+            stack_smartcut_args(&stage.params,&info,&input)?
+        }else if stage.operation=="cut"{
+            let duration=source_duration.ok_or("Known source duration required for Stack cuts.")?;
+            let start=check_range(parse_number(&stage.params,"start")?,0.0,duration,"Source start")?;
+            let end=check_cut_end(parse_number(&stage.params,"end")?,duration)?;
+            let (current,kept)=processing_stack::source_window(&source_ranges,start,end)?;
+            // Frame-accurate trims keep the source mapping valid; stream-copy
+            // keyframe cuts can silently include extra time between steps.
+            let cuts:Vec<_>=current.iter().map(|&(start,end)|KeepInterval{start,end,enabled:true}).collect();
+            let params=HashMap::from([("source_path".into(),input.clone()),("cuts".into(),serde_json::to_string(&cuts).map_err(|e|e.to_string())?),("resolution".into(),"source".into())]);
+            let result=stack_smartcut_args(&params,&info,&input)?;
+            source_ranges=kept;result
+        }else{let (args,_)=build_command(&stage,&info).await?;(args,info.duration.unwrap_or(0.0))};
+        let last=index+1==count;
+        let destination=if last{unique_output(Path::new(&request.input),"processing_stack",if audio_only_step{"mkv"}else{"mp4"})?}else{temp.0.join(format!("stage-{index}.mkv"))};
+        args=processing_stack::output_args(args,&destination,!last,if last&&(count>1||quality!="high")&&!(count==1&&audio_only_step){Some(quality)}else{None})?;
+        if last&&count>1&&quality=="high"&&!audio_only_step{let (_,profile)=fastest_h264_encoder().await;args=processing_stack::verified_high_args(args,&profile);}
+        if let Err(error)=run_ffmpeg_stage(Some(app),state,args,stage_duration,&started,index as f64*99.0/count as f64,99.0/count as f64,"processing stack").await{let _=std::fs::remove_file(&destination);return Err(error)}
+        if !destination.is_file()||std::fs::metadata(&destination).map_err(|e|e.to_string())?.len()==0{return Err("Stack stage did not produce a video.".into())}
+        info=match probe_media(destination.to_string_lossy().into_owned()).await{Ok(info)=>info,Err(error)=>{let _=std::fs::remove_file(&destination);return Err(error)}};
+        // Keep at most the previous and current intermediate, not the whole
+        // lossless chain. Only exact files owned by this temp guard are removed.
+        if index>0{let previous=temp.0.join(format!("stage-{}.mkv",index-1));if Path::new(&input)==previous{let _=std::fs::remove_file(previous);}}
+        input=destination.to_string_lossy().into_owned();
+    }
+    let output=PathBuf::from(input);
+    allow_asset_file(app,&output)?;
+    Ok(JobResult{output:output.to_string_lossy().into_owned(),elapsed:started.elapsed().as_secs_f64()})
+}
+
+async fn run_frame_extractor(app:&AppHandle,state:&JobState,request:&OperationRequest,info:&MediaInfo)->Result<JobResult,String>{
+    if info.kind!="video" {return Err("Frame extraction requires video.".into())}
+    let p=&request.params;
+    let start=check_range(parse_number(p,"start")?,0.0,info.duration.ok_or("Known duration required.")?,"Start")?;
+    let end=check_range(parse_number(p,"end")?,start+0.001,info.duration.unwrap(),"End")?;
+    let duration=end-start;
+    let mode=param(p,"mode")?;
+    let count=check_range(parse_number(p,"count")?,1.0,1000.0,"Count")?.floor() as usize;
+    let filter=match mode {
+        "burst"=>{let interval=check_range(parse_number(p,"interval")?,0.001,3600.0,"Interval")?;format!("select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{})",(interval-0.000001).max(0.0))},
+        "seconds"=>{let interval=check_range(parse_number(p,"interval")?,0.1,3600.0,"Interval")?;if duration/interval>1000.0{return Err("Requested interval exceeds the 1000-frame safety limit.".into())}format!("fps={}",1.0/interval)},
+        "frames"=>{let n=check_range(parse_number(p,"every_frames")?,1.0,100000.0,"Frame interval")?.floor();if duration*info.fps.unwrap_or(60.0)/n>1000.0{return Err("Requested interval exceeds the 1000-frame safety limit.".into())}format!("select=not(mod(n\\,{n}))")},
+        "scene"=>format!("select=gt(scene\\,{})",check_range(parse_number(p,"scene_threshold")?,0.01,1.0,"Scene threshold")?),
+        "even"=>format!("fps={}",count as f64/duration),
+        "sheet"=>{if count>100{return Err("Contact sheet is limited to 100 frames.".into())}let columns=check_range(parse_number(p,"columns")?,1.0,10.0,"Columns")?.floor() as usize;format!("fps={},scale=320:-2,tile={}x{}",count as f64/duration,columns,count.div_ceil(columns))},
+        _=>return Err("Invalid extraction mode.".into())
+    };
+    let output=unique_output(Path::new(&request.input),"frame_extractor",if mode=="sheet"{"png"}else{"frames"})?;
+    if mode!="sheet" {std::fs::create_dir(&output).map_err(|e|e.to_string())?;}
+    let destination=if mode=="sheet"{output.clone()}else{output.join("frame-%06d.png")};
+    let args=vec!["-hide_banner".into(),"-loglevel".into(),"error".into(),"-y".into(),"-ss".into(),start.to_string(),"-i".into(),request.input.clone(),"-t".into(),duration.to_string(),"-vf".into(),filter,"-fps_mode".into(),"vfr".into(),"-frames:v".into(),if mode=="sheet"{"1".into()}else if mode=="even"||mode=="burst"{count.to_string()}else{"1000".into()},destination.to_string_lossy().into_owned()];
+    let started=Instant::now();
+    if let Err(error)=run_ffmpeg_stage(Some(app),state,args,duration,&started,0.0,99.0,"extracting frames").await{if mode=="sheet"{let _=std::fs::remove_file(&output);}else{let _=std::fs::remove_dir_all(&output);}return Err(error)}
+    if mode=="sheet"{if !output.is_file()||std::fs::metadata(&output).map_err(|e|e.to_string())?.len()==0{return Err("Contact sheet was not produced.".into())}allow_asset_file(app,&output)?;}else{let mut produced=0;for entry in std::fs::read_dir(&output).map_err(|e|e.to_string())?{let path=entry.map_err(|e|e.to_string())?.path();if path.is_file(){allow_asset_file(app,&path)?;produced+=1}}if produced==0{let _=std::fs::remove_dir(&output);return Err("No matching frames found in this range.".into())}}
+    Ok(JobResult{output:output.to_string_lossy().into_owned(),elapsed:started.elapsed().as_secs_f64()})
+}
+
 #[tauri::command]
 async fn run_operation(
     app: AppHandle,
     state: State<'_, JobState>,
     mut request: OperationRequest,
+    job_id: Option<String>,
 ) -> Result<JobResult, String> {
-    state.cancelled.store(false, Ordering::Relaxed);
+    let _job = JobLease::acquire(&state, job_id)?;
+    reset_legacy_job_cancellation(&state);
     let info = probe_media(request.input.clone()).await?;
+    if request.operation=="frame_extractor" {
+        return run_frame_extractor(&app,&state,&request,&info).await;
+    }
+    if request.operation=="processing_stack" {
+        return run_processing_stack(&app,&state,&request,info).await;
+    }
     request.params.remove("text_raster_path");
-    let _text_raster_temp = if request.operation == "text" {
+    let _text_raster_temp = if request.operation == "text"
+        || (request.operation == "clipper" && enabled(&request.params, "watermark_enabled"))
+    {
         if let Some(data_url) = request.params.remove("text_raster_png") {
             let encoded = data_url
                 .strip_prefix("data:image/png;base64,")
@@ -7886,6 +8343,12 @@ async fn run_operation(
             let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
             if width == 0 || height == 0 || width > 8192 || height > 8192 {
                 return Err("Invalid text raster dimensions.".into());
+            }
+            if request.operation == "clipper"
+                && (f64::from(width) != parse_number(&request.params, "output_width")?
+                    || f64::from(height) != parse_number(&request.params, "output_height")?)
+            {
+                return Err("Watermark raster must match the output dimensions.".into());
             }
             let directory = OperationTempGuard(operation_temp_dir("text-raster")?);
             let path = directory.0.join("text.png");
@@ -7924,123 +8387,138 @@ async fn run_operation(
         ["-progress".into(), "pipe:1".into(), "-nostats".into()],
     );
     let started = Instant::now();
-    let mut child = hidden_command("ffmpeg")
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("FFmpeg could not start: {e}"))?;
-    let active_process = ActiveProcess::register(&state, child.id())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("FFmpeg progress stream unavailable.")?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("FFmpeg error stream unavailable.")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        let mut result = Vec::new();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if !line.trim().is_empty() {
-                result.push(line)
+    let mut cpu_retried = false;
+    loop {
+        state.inspector.start(&args);
+        let mut child = hidden_command("ffmpeg")
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("FFmpeg could not start: {e}"))?;
+        let active_process = ActiveProcess::register(&state, child.id())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("FFmpeg progress stream unavailable.")?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("FFmpeg error stream unavailable.")?;
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            let mut result = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    result.push(line)
+                }
+            }
+            result
+        });
+        let mut lines = BufReader::new(stdout).lines();
+        let mut out_time = 0.0;
+        let mut speed = "—".to_string();
+        let mut frame = "—".to_string();
+        let duration = operation_progress_duration(&request, info.duration.unwrap_or(0.0));
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = child.kill().await;
+                    let _ = std::fs::remove_file(&output);
+                    return Err(error.to_string());
+                }
+            };
+            if state.cancelled.load(Ordering::Relaxed) {
+                let _ = child.kill().await;
+                break;
+            }
+            if let Some(value) = line.strip_prefix("out_time_us=") {
+                out_time = value.parse::<f64>().unwrap_or(0.0) / 1_000_000.0;
+            } else if let Some(value) = line.strip_prefix("speed=") {
+                speed = value.into();
+            } else if let Some(value) = line.strip_prefix("frame=") {
+                frame = value.into();
+            }
+            if line.starts_with("progress=") {
+                let percent = if duration > 0.0 {
+                    (out_time / duration * 100.0).clamp(0.0, 99.9)
+                } else {
+                    0.0
+                };
+                let _ = app.emit(
+                    "container-progress",
+                    ProgressEvent {
+                        job_id: progress_job_id(&state),
+                        percent,
+                        time: started.elapsed().as_secs_f64(),
+                        speed: speed.clone(),
+                        frame: frame.clone(),
+                        status: "rendering".into(),
+                    },
+                );
             }
         }
-        result
-    });
-    let mut lines = BufReader::new(stdout).lines();
-    let mut out_time = 0.0;
-    let mut speed = "—".to_string();
-    let mut frame = "—".to_string();
-    let duration = info.duration.unwrap_or(0.0);
-    loop {
-        let line = match lines.next_line().await {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
+        let status = match child.wait().await {
+            Ok(status) => status,
             Err(error) => {
-                let _ = child.kill().await;
                 let _ = std::fs::remove_file(&output);
                 return Err(error.to_string());
             }
         };
+        drop(active_process);
+        let errors = stderr_task.await.unwrap_or_default();
+        state.inspector.errors(&errors);
         if state.cancelled.load(Ordering::Relaxed) {
-            let _ = child.kill().await;
-            break;
-        }
-        if let Some(value) = line.strip_prefix("out_time_us=") {
-            out_time = value.parse::<f64>().unwrap_or(0.0) / 1_000_000.0;
-        } else if let Some(value) = line.strip_prefix("speed=") {
-            speed = value.into();
-        } else if let Some(value) = line.strip_prefix("frame=") {
-            frame = value.into();
-        }
-        if line.starts_with("progress=") {
-            let percent = if duration > 0.0 {
-                (out_time / duration * 100.0).clamp(0.0, 99.9)
-            } else {
-                0.0
-            };
-            let _ = app.emit(
-                "container-progress",
-                ProgressEvent {
-                    percent,
-                    time: started.elapsed().as_secs_f64(),
-                    speed: speed.clone(),
-                    frame: frame.clone(),
-                    status: "rendering".into(),
-                },
-            );
-        }
-    }
-    let status = match child.wait().await {
-        Ok(status) => status,
-        Err(error) => {
             let _ = std::fs::remove_file(&output);
-            return Err(error.to_string());
+            return Err("Job cancelled.".into());
         }
-    };
-    drop(active_process);
-    let errors = stderr_task.await.unwrap_or_default();
-    if state.cancelled.load(Ordering::Relaxed) {
-        let _ = std::fs::remove_file(&output);
-        return Err("Job cancelled.".into());
-    }
-    if !status.success() {
-        let _ = std::fs::remove_file(&output);
-        let detail = errors
-            .into_iter()
-            .rev()
-            .take(8)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(if detail.is_empty() {
-            "FFmpeg operation failed.".into()
-        } else {
-            detail
+        if !status.success() {
+            let _ = std::fs::remove_file(&output);
+            let detail = errors
+                .into_iter()
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !cpu_retried {
+                if let Some(retry) = auto_encoder::cpu_retry_args(&args, &detail) {
+                    args = retry;
+                    cpu_retried = true;
+                    continue;
+                }
+            }
+            return Err(if detail.is_empty() {
+                "FFmpeg operation failed.".into()
+            } else {
+                detail
+            });
+        }
+        allow_asset_file(&app, &output)?;
+        return Ok(JobResult {
+            output: output.to_string_lossy().to_string(),
+            elapsed: started.elapsed().as_secs_f64(),
         });
     }
-    allow_asset_file(&app, &output)?;
-    Ok(JobResult {
-        output: output.to_string_lossy().to_string(),
-        elapsed: started.elapsed().as_secs_f64(),
-    })
 }
 
 #[tauri::command]
-async fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
-    state.cancelled.store(true, Ordering::Relaxed);
-    let pid = *state.pid.lock().map_err(|_| "Job state lock failed")?;
-    if let Some(pid) = pid {
+async fn cancel_job(state: State<'_, JobState>, job_id: Option<String>) -> Result<(), String> {
+    let Some(target) = request_job_cancellation(&state, job_id.as_deref())? else { return Ok(()); };
+    if let Some(pid) = target.pid {
         tokio::task::spawn_blocking(move || stop_process_tree(pid))
             .await
             .ok();
     }
-    cleanup_current_download(&state);
+    let active = state.active_job.lock().map_err(|_| "Job state lock failed")?;
+    if *active == target.job_id {
+        cleanup_current_download(&state);
+    }
     Ok(())
 }
 
@@ -8355,6 +8833,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            job_inspector::job_inspector,
             probe_media,
             authorize_media_preview,
             read_project,
@@ -8514,8 +8993,161 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn job_identity_rejects_overlap_and_stale_cancel() {
+        let state = super::JobState::default();
+        let first = super::JobLease::acquire(&state, Some("first".into())).unwrap();
+        assert!(super::JobLease::acquire(&state, Some("second".into())).is_err());
+        assert_eq!(super::progress_job_id(&state).as_deref(), Some("first"));
+        drop(first);
+        let second = super::JobLease::acquire(&state, Some("second".into())).unwrap();
+        assert!(super::request_job_cancellation(&state, Some("first")).unwrap().is_none());
+        assert!(!state.cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(super::request_job_cancellation(&state, Some("second")).unwrap().is_some());
+        assert!(state.cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        super::reset_legacy_job_cancellation(&state);
+        assert!(state.cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        drop(second);
+        assert!(super::progress_job_id(&state).is_none());
+        let _third = super::JobLease::acquire(&state, Some("third".into())).unwrap();
+        assert!(!state.cancelled.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn hardware_startup_failure_retries_cpu_and_produces_probeable_output() {
+        let root = super::OperationTempGuard(super::operation_temp_dir("cpu-fallback-test").unwrap());
+        let output = root.0.join("fallback.mp4");
+        let args = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=s=2x2:r=1:d=1", "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "14", "-b:v", "0", "-pix_fmt", "yuv420p"]
+            .into_iter().map(str::to_owned).chain(std::iter::once(output.to_string_lossy().into_owned())).collect::<Vec<_>>();
+        let state = super::JobState::default();
+        let started = std::time::Instant::now();
+        let failure = super::run_ffmpeg_stage_attempt(None, &state, args.clone(), 1.0, &started, 0.0, 99.0, "test").await.unwrap_err();
+        assert!(super::auto_encoder::cpu_retry_args(&args, &failure).is_some(), "{failure}");
+        super::run_ffmpeg_stage(None, &state, args, 1.0, &started, 0.0, 99.0, "test").await.unwrap();
+        let info = super::probe_media(output.to_string_lossy().into_owned()).await.unwrap();
+        assert_eq!(info.width, Some(2));
+        assert_eq!(info.height, Some(2));
+        assert!(std::fs::metadata(output).unwrap().len() > 0);
+        assert!(state.pid.lock().unwrap().is_none());
+    }
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn stack_smartcut_real_media_preserves_frames_audio_and_cancellation() {
+        let temp=OperationTempGuard(operation_temp_dir("stack-smartcut-test").unwrap());
+        for audio in [false,true] {
+            let source=temp.0.join(format!("kaynak ğ & ({audio}).mp4"));
+            let mut command=std::process::Command::new("ffmpeg");
+            command.args(["-v","error","-y","-f","lavfi","-i","testsrc2=s=160x90:r=30:d=1"]);
+            if audio {command.args(["-f","lavfi","-i","sine=frequency=440:duration=1","-c:a","aac"]);}
+            command.args(["-c:v","libx264","-pix_fmt","yuv420p"]).arg(&source);
+            assert!(command.status().unwrap().success());
+            let input=source.to_string_lossy().into_owned();
+            let info=probe_media(input.clone()).await.unwrap();
+            let params=values(&[("source_path",&input),("cuts",r#"[{"start":0,"end":0.2,"enabled":true},{"start":0.6,"end":0.9,"enabled":true},{"start":0.3,"end":0.5,"enabled":false}]"#),("resolution","source")]);
+            let (args,duration)=stack_smartcut_args(&params,&info,&input).unwrap();
+            assert!((duration-0.5).abs()<0.001);
+            assert!(stack_smartcut_args(&params,&info,"different.mp4").is_err());
+            let stage=temp.0.join(format!("stage-{audio}.mkv"));
+            let args=processing_stack::output_args(args,&stage,true,None).unwrap();
+            let state=JobState::default();
+            run_ffmpeg_stage(None,&state,args.clone(),duration,&Instant::now(),0.0,50.0,"stack test").await.unwrap();
+            let cut_info=probe_media(stage.to_string_lossy().into_owned()).await.unwrap();
+            assert!((cut_info.duration.unwrap()-0.5).abs()<0.08);
+            assert_eq!(cut_info.width,Some(160));
+            assert_eq!(cut_info.audio_codec.is_some(),audio);
+            // A source cut crossing removed silence must map onto the shortened
+            // intermediate; .1-.7 in the source retains .1-.2 and .6-.7.
+            let (mapped,_)=processing_stack::source_window(&[(0.0,0.2),(0.6,0.9)],0.1,0.7).unwrap();
+            let mapped:Vec<_>=mapped.into_iter().map(|(start,end)|KeepInterval{start,end,enabled:true}).collect();
+            let mapped_params=values(&[("source_path",&stage.to_string_lossy()),("cuts",&serde_json::to_string(&mapped).unwrap()),("resolution","source")]);
+            let (mapped_args,mapped_duration)=stack_smartcut_args(&mapped_params,&cut_info,&stage.to_string_lossy()).unwrap();
+            assert!((mapped_duration-0.2).abs()<0.001);
+            let mapped_path=temp.0.join(format!("mapped-cut-{audio}.mkv"));
+            let mapped_args=processing_stack::output_args(mapped_args,&mapped_path,true,None).unwrap();
+            run_ffmpeg_stage(None,&state,mapped_args,mapped_duration,&Instant::now(),0.0,50.0,"mapped cut test").await.unwrap();
+            let mapped_info=probe_media(mapped_path.to_string_lossy().into_owned()).await.unwrap();
+            assert!((mapped_info.duration.unwrap()-0.2).abs()<0.08);
+            assert_eq!(mapped_info.audio_codec.is_some(),audio);
+            let clipper=OperationRequest{input:stage.to_string_lossy().into_owned(),operation:"clipper".into(),params:values(&[("crop_mode","9:16"),("vertical_layout","split"),("rotate","0"),("flip_h","false"),("flip_v","false"),("size_mode","exact"),("output_width","90"),("output_height","160"),("region_a_x","72"),("region_a_y","2"),("region_a_w","26"),("region_a_h","30"),("region_b_x","0"),("region_b_y","0"),("region_b_w","100"),("region_b_h","100"),("region_order","a_first"),("region_a_height","30")])};
+            let (args,_)=build_command(&clipper,&cut_info).await.unwrap();
+            let clipper_path=temp.0.join(format!("clipper-{audio}.mkv"));
+            let args=processing_stack::output_args(args,&clipper_path,true,None).unwrap();
+            run_ffmpeg_stage(None,&state,args,duration,&Instant::now(),40.0,30.0,"clipper test").await.unwrap();
+            let clipper_info=probe_media(clipper_path.to_string_lossy().into_owned()).await.unwrap();
+            assert_eq!((clipper_info.width,clipper_info.height),(Some(90),Some(160)));
+            // Exercise the actual fused graph with/without audio, including
+            // Clipper's internally labelled split and blur filters.
+            let (smart_args,_)=stack_smartcut_args(&params,&info,&input).unwrap();
+            let graph=smart_args.windows(2).find(|pair|pair[0]=="-filter_complex").unwrap()[1].clone();
+            for layout in ["split","blur","fill","original"] {
+                let mut fused_request=OperationRequest{input:input.clone(),operation:clipper.operation.clone(),params:clipper.params.clone()};
+                fused_request.input=input.clone();
+                fused_request.params.insert("vertical_layout".into(),layout.into());
+                for (key,value) in [("crop_x","0"),("crop_y","0"),("crop_w","100"),("crop_h","100"),("background_blur","20")] {fused_request.params.insert(key.into(),value.into());}
+                let (clip_args,_)=build_command(&fused_request,&info).await.unwrap();
+                let fused=processing_stack::fuse_smartcut_clipper(clip_args,&graph,audio).unwrap();
+                let destination=temp.0.join(format!("fused-{layout}-{audio}.mp4"));
+                let fused=processing_stack::output_args(fused,&destination,false,Some("high")).unwrap();
+                run_ffmpeg_stage(None,&state,fused,duration,&Instant::now(),0.0,99.0,"fused test").await.unwrap();
+                let result=probe_media(destination.to_string_lossy().into_owned()).await.unwrap();
+                assert_eq!((result.width,result.height),(Some(90),Some(160)));
+                assert_eq!(result.audio_codec.is_some(),audio);
+                assert_eq!(result.fps,info.fps);
+                assert!((result.duration.unwrap()-duration).abs()<0.08);
+            }
+            let request=OperationRequest{input:clipper_path.to_string_lossy().into_owned(),operation:"color".into(),params:values(&[("brightness","5"),("brightness_enabled","true"),("denoise","off")])};
+            let (args,_)=build_command(&request,&clipper_info).await.unwrap();
+            let final_path=temp.0.join(format!("final-{audio}.mp4"));
+            let args=processing_stack::output_args(args,&final_path,false,Some("high")).unwrap();
+            run_ffmpeg_stage(None,&state,args,duration,&Instant::now(),50.0,49.0,"stack test").await.unwrap();
+            let final_info=probe_media(final_path.to_string_lossy().into_owned()).await.unwrap();
+            assert!((final_info.duration.unwrap()-0.5).abs()<0.08);
+            assert_eq!(final_info.codec,"h264");
+            assert_eq!(final_info.audio_codec.is_some(),audio);
+            state.cancelled.store(true,Ordering::Relaxed);
+            assert!(run_ffmpeg_stage(None,&state,processing_stack::output_args(args_for_cancel(&input),&temp.0.join("cancel.mkv"),true,None).unwrap(),1.0,&Instant::now(),0.0,99.0,"cancel test").await.is_err());
+            assert!(state.pid.lock().unwrap().is_none());
+        }
+    }
+
+    fn args_for_cancel(input:&str)->Vec<String>{vec!["-y".into(),"-i".into(),input.into(),"output.mkv".into()]}
+
+    #[tokio::test]
+    #[ignore = "set CONTAINER_STACK_BENCH_MEDIA for a real-media performance comparison"]
+    async fn fused_stack_real_media_benchmark(){
+        let source=std::env::var("CONTAINER_STACK_BENCH_MEDIA").unwrap();
+        let temp=OperationTempGuard(operation_temp_dir("stack-pair-benchmark").unwrap());
+        let fixture=temp.0.join("source.mp4");
+        assert!(std::process::Command::new("ffmpeg").args(["-v","error","-y","-i",&source,"-t","6","-c","copy"]).arg(&fixture).status().unwrap().success());
+        let input=fixture.to_string_lossy().into_owned();let info=probe_media(input.clone()).await.unwrap();
+        let params=values(&[("source_path",&input),("cuts",r#"[{"start":0,"end":1.5,"enabled":true},{"start":2.5,"end":4,"enabled":true}]"#),("resolution","source")]);
+        let (cut_args,duration)=stack_smartcut_args(&params,&info,&input).unwrap();
+        let state=JobState::default();let started=Instant::now();let intermediate=temp.0.join("intermediate.mkv");
+        run_ffmpeg_stage(None,&state,processing_stack::output_args(cut_args.clone(),&intermediate,true,None).unwrap(),duration,&started,0.0,50.0,"baseline cut").await.unwrap();
+        let intermediate_info=probe_media(intermediate.to_string_lossy().into_owned()).await.unwrap();
+        let clipper_params=values(&[("crop_mode","9:16"),("vertical_layout","fill"),("crop_x","34.1797"),("crop_y","0"),("crop_w","31.6406"),("crop_h","100"),("rotate","0"),("flip_h","false"),("flip_v","false"),("size_mode","exact"),("output_width","1080"),("output_height","1920"),("clipper_zoom","100"),("clipper_x","50"),("clipper_y","50")]);
+        let clipper=OperationRequest{input:intermediate.to_string_lossy().into_owned(),operation:"clipper".into(),params:clipper_params.clone()};
+        let (args,_)=build_command(&clipper,&intermediate_info).await.unwrap();let baseline=temp.0.join("baseline.mp4");
+        run_ffmpeg_stage(None,&state,processing_stack::output_args(args,&baseline,false,Some("high")).unwrap(),duration,&started,50.0,49.0,"baseline clipper").await.unwrap();
+        let baseline_elapsed=started.elapsed();
+        let clipper=OperationRequest{input:input.clone(),operation:"clipper".into(),params:clipper_params};
+        let (args,_)=build_command(&clipper,&info).await.unwrap();
+        let graph=&cut_args[cut_args.iter().position(|arg|arg=="-filter_complex").unwrap()+1];
+        let args=processing_stack::fuse_smartcut_clipper(args,graph,info.audio_codec.is_some()).unwrap();let fused=temp.0.join("fused.mp4");
+        let started=Instant::now();
+        run_ffmpeg_stage(None,&state,processing_stack::output_args(args,&fused,false,Some("high")).unwrap(),duration,&started,0.0,99.0,"fused clipper").await.unwrap();
+        let fused_elapsed=started.elapsed();
+        let a=probe_media(baseline.to_string_lossy().into_owned()).await.unwrap();let b=probe_media(fused.to_string_lossy().into_owned()).await.unwrap();
+        assert_eq!((a.width,a.height,a.codec,a.fps),(b.width,b.height,b.codec,b.fps));
+        assert!((a.duration.unwrap()-b.duration.unwrap()).abs()<0.06);
+        let comparison=std::process::Command::new("ffmpeg").args(["-v","info","-i"]).arg(&baseline).arg("-i").arg(&fused).args(["-lavfi","[0:v][1:v]ssim","-an","-f","null","-"]).output().unwrap();
+        assert!(comparison.status.success());
+        let report=String::from_utf8_lossy(&comparison.stderr);let ssim=report.lines().rev().find(|line|line.contains("SSIM")).unwrap();
+        let score:f64=ssim.split("All:").nth(1).unwrap().split_whitespace().next().unwrap().parse().unwrap();assert!(score>0.99,"{ssim}");
+        eprintln!("STACK BENCH baseline={baseline_elapsed:?} fused={fused_elapsed:?} speedup={:.2}x {ssim}",baseline_elapsed.as_secs_f64()/fused_elapsed.as_secs_f64());
+    }
 
     fn storage_test_root(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -8538,6 +9170,8 @@ mod tests {
         assert!(cache.ends_with(Path::new(app_storage_namespace()).join("cache")));
         assert!(!data.starts_with(dirs::data_local_dir().unwrap().join("CONTAINER")));
         assert!(!cache.starts_with(dirs::cache_dir().unwrap().join("CONTAINER")));
+        assert!(data.starts_with(std::env::temp_dir()),"tests must not write real runtime data");
+        assert!(cache.starts_with(std::env::temp_dir()),"tests must not write real runtime cache");
     }
 
     #[test]
@@ -8745,6 +9379,48 @@ mod tests {
         let legacy = root.join("older.containerproject");
         std::fs::write(&legacy, contents).unwrap();
         assert!(read_project_contents(legacy.to_string_lossy().into_owned()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_save_does_not_modify_an_existing_hardlinked_source() {
+        let root=storage_test_root("project-hardlink");
+        let source=root.join("source.mp4");
+        let project=root.join("çalışma (1).cproj");
+        let original=b"original source bytes must never change";
+        std::fs::write(&source,original).unwrap();
+        std::fs::hard_link(&source,&project).unwrap();
+        write_project(project.to_string_lossy().into_owned(),r#"{"version":1,"mediaPath":"source.mp4"}"#.into()).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(),original);
+        assert!(read_project_contents(project.to_string_lossy().into_owned()).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_replacement_failure_preserves_saved_bytes_and_unknown_files() {
+        let root=storage_test_root("project-replace-failure");
+        let project=root.join("proje.cproj");
+        let unknown=root.join("unknown-user-file.tmp");
+        std::fs::write(&unknown,b"keep me").unwrap();
+        let original=r#"{"version":1,"mediaPath":"original.mp4"}"#;
+        write_project(project.to_string_lossy().into_owned(),original.into()).unwrap();
+        let saved=std::fs::read(&project).unwrap();
+        #[cfg(windows)] {
+            use std::os::windows::fs::OpenOptionsExt;
+            let locked=std::fs::OpenOptions::new().read(true).share_mode(0).open(&project).unwrap();
+            assert!(write_project(project.to_string_lossy().into_owned(),r#"{"version":1,"mediaPath":"replacement.mp4"}"#.into()).is_err());
+            drop(locked);
+            assert_eq!(std::fs::read(&project).unwrap(),saved);
+        }
+        assert!(write_project(project.to_string_lossy().into_owned(),"invalid JSON".into()).is_err());
+        assert_eq!(std::fs::read(&project).unwrap(),saved);
+        let blocked=root.join("blocked.cproj");std::fs::create_dir(&blocked).unwrap();
+        assert!(write_project(blocked.to_string_lossy().into_owned(),original.into()).is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read(&unknown).unwrap(),b"keep me");
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry|!entry.unwrap().file_name().to_string_lossy().starts_with(".container-project-")));
+        write_project(project.to_string_lossy().into_owned(),r#"{"version":1,"mediaPath":"replacement.mp4"}"#.into()).unwrap();
+        assert!(read_project_contents(project.to_string_lossy().into_owned()).unwrap().contains("replacement.mp4"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -9073,6 +9749,18 @@ mod tests {
         assert_eq!(names, ["Impact", "Montserrat ExtraBold", "Poppins Bold"]);
     }
 
+    #[tokio::test]
+    async fn bundled_montserrat_is_listed_and_can_be_previewed() {
+        let font = bundled_text_font().unwrap();
+        assert_eq!(font.name, "Montserrat ExtraBold Italic (800)");
+        let bytes = std::fs::read(&font.path).unwrap();
+        assert_eq!(bytes, include_bytes!("../resources/fonts/Montserrat-ExtraBoldItalic.ttf"));
+        assert_eq!(font_preview_data(font.path.clone()).unwrap(), format!("data:font/ttf;base64,{}", BASE64.encode(&bytes)));
+        let listed = list_system_fonts().await.unwrap();
+        assert_eq!(listed.iter().filter(|item| item.name == font.name).count(), 1);
+        assert!(listed.iter().any(|item| item.name == font.name && item.path == font.path));
+    }
+
     #[test]
     fn heif_tile_grid_reports_the_composed_display_dimensions() {
         let data = serde_json::json!({
@@ -9103,12 +9791,29 @@ mod tests {
         for job in jobs.as_array().unwrap() {
             let request: OperationRequest = serde_json::from_value(job["request"].clone()).unwrap();
             let info = probe_media(request.input.clone()).await.unwrap();
-            let (command, _) = build_command(&request, &info).await.unwrap();
-            let filter = &command.windows(2).find(|pair| pair[0] == "-vf").unwrap()[1];
+            let (mut command, _) = build_command(&request, &info).await.unwrap();
             let output = manifest
                 .parent()
                 .unwrap()
                 .join(format!("{}-export.png", job["name"].as_str().unwrap()));
+            let encoded = output.with_extension("mp4");
+            command.pop();
+            command.extend([
+                "-frames:v".into(),
+                "1".into(),
+                "-an".into(),
+                encoded.to_string_lossy().into_owned(),
+            ]);
+            let result = hidden_command("ffmpeg")
+                .args(&command)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
             let result = hidden_command("ffmpeg")
                 .args([
                     "-hide_banner",
@@ -9116,9 +9821,7 @@ mod tests {
                     "error",
                     "-y",
                     "-i",
-                    &request.input,
-                    "-vf",
-                    filter,
+                    encoded.to_str().unwrap(),
                     "-frames:v",
                     "1",
                     "-update",
@@ -9730,6 +10433,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kick_banner_black_matches_artwork_for_full_and_limited_range() {
+        let filter = clipper_kick_banner_filter(
+            &HashMap::new(),
+            "batuhanfurkan5",
+            54.0,
+            KickBannerPlacement {
+                width: 360,
+                height: 640,
+                camera_left: 0.0,
+                camera_width: 360.0,
+                camera_bottom: 192.0,
+                seam: 192.0,
+                camera_below: false,
+                seam_offset: 0.0,
+            },
+        )
+        .unwrap();
+        for range in ["pc", "tv"] {
+            let source = format!("color=c=0x303844:s=360x640:r=1:d=1,scale=out_range={range},format=yuv444p,setparams=range={range}");
+            let output = hidden_command("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &source,
+                    "-vf",
+                    &filter,
+                    "-frames:v",
+                    "1",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout.len(), 360 * 640 * 3);
+            for y in 170..188 {
+                for x in 310..350 {
+                    let pixel = &output.stdout[(y * 360 + x) * 3..(y * 360 + x) * 3 + 3];
+                    assert!(
+                        pixel.iter().all(|v| *v <= 2),
+                        "{range}: banner black {pixel:?}"
+                    );
+                }
+            }
+            let background = &output.stdout[(100 * 360 + 200) * 3..(100 * 360 + 200) * 3 + 3];
+            for (actual, expected) in background.iter().zip([48i16, 56, 68]) {
+                assert!(
+                    (i16::from(*actual) - expected).abs() <= 4,
+                    "{range}: background changed {background:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn kick_banner_renders_supplied_art_font_and_camera_seam() {
         let info = MediaInfo {
             path: "source.mp4".into(),
@@ -10184,7 +10953,7 @@ mod tests {
                     "lavfi",
                     "-i",
                 ])
-                .arg("color=c=0x203040:s=160x90:r=25:d=1");
+                .arg("testsrc2=s=160x90:r=25:d=1");
             if kind == "image" {
                 source.args(["-frames:v", "1"]);
             } else {
@@ -10214,6 +10983,42 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!((rendered.width, rendered.height), (Some(160), Some(90)));
+            if kind == "video" {
+                let mut reference = args.clone();
+                reference.truncate(reference.iter().position(|arg| arg == "-c:v").unwrap());
+                reference.extend([
+                    "-frames:v".into(),
+                    "1".into(),
+                    "-an".into(),
+                    "-pix_fmt".into(),
+                    rendered.pixel_format.clone().unwrap(),
+                    "-f".into(),
+                    "rawvideo".into(),
+                    "-".into(),
+                ]);
+                let expected = hidden_command("ffmpeg")
+                    .args(&reference)
+                    .output()
+                    .await
+                    .unwrap();
+                let decoded = hidden_command("ffmpeg")
+                    .args(["-v", "error", "-i"])
+                    .arg(&output)
+                    .args(["-frames:v", "1", "-an", "-f", "rawvideo", "-"])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    expected.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&expected.stderr)
+                );
+                assert!(decoded.status.success());
+                assert!(
+                    expected.stdout == decoded.stdout,
+                    "Text encoding must preserve the composed frame exactly"
+                );
+            }
         }
     }
 
@@ -11516,6 +12321,16 @@ mod tests {
 
     #[test]
     fn menu_operations_route_to_separate_categories() {
+        for operation in ["transform", "text", "image_overlay", "color", "blur_pixelate", "noise", "screenshot", "image_compressor", "metadata_cleaner"] {
+            for extension in ["png", "jpg", "webp", "bmp", "tiff", "avif"] {
+                assert_eq!(output_category(operation, extension), "image");
+            }
+        }
+        assert_eq!(output_category("text", "mp4"), "text");
+        assert_eq!(output_category("color", "mp4"), "effects");
+        assert_eq!(output_category("extract_audio", "mp3"), "audio");
+        assert_eq!(output_category("remove_audio", "mp4"), "video");
+        assert_eq!(category("remove_audio"), "video");
         assert_eq!(category("interpolation"), "motion");
         assert_eq!(category("noise"), "effects");
         assert_eq!(category("extract_audio"), "audio");
@@ -11544,6 +12359,7 @@ mod tests {
         tool_ids.dedup();
         let tested = [
             "audio_convert",
+            "audio_lab",
             "blur_pixelate",
             "clipper",
             "color",
@@ -11557,6 +12373,7 @@ mod tests {
             "fix_timestamps",
             "fps",
             "frame_blend",
+            "frame_extractor",
             "gif",
             "image_compressor",
             "image_overlay",
@@ -11643,6 +12460,9 @@ mod tests {
             request.operation
         );
         assert!(output.is_file());
+        if info.kind == "image" {
+            assert_eq!(output.parent().unwrap().file_name().unwrap(), "image", "image tool {} saved outside the image folder", request.operation);
+        }
         output
     }
 
@@ -11702,6 +12522,66 @@ mod tests {
         assert_eq!(result.fps, Some(10.0));
         assert_eq!((result.width, result.height), (info.width, info.height));
         assert_eq!(copied_audio_hash(&output), copied_audio_hash(&source));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_exports_preserve_unicode_source_and_unique_probeable_outputs() {
+        let root=storage_test_root("repeated-exports");
+        let source=root.join("çekim 🎬 & ' (kaynak).mp4");
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-hide_banner","-loglevel","error","-f","lavfi","-i","testsrc2=s=64x48:r=30:d=0.2","-c:v","libx264","-pix_fmt","yuv420p"])
+            .arg(&source).status().unwrap().success());
+        let original=std::fs::read(&source).unwrap();
+        let info=probe_media(source.to_string_lossy().into_owned()).await.unwrap();
+        assert!(info.audio_codec.is_none());
+        let mut outputs=std::collections::HashSet::new();
+        for _ in 0..55 {
+            let output=render_request(&OperationRequest{input:source.to_string_lossy().into_owned(),operation:"fps".into(),params:values(&[("fps","10"),("crf","0")])},&info).await;
+            assert!(outputs.insert(output.clone()),"export overwrote a previous output");
+            assert!(std::fs::metadata(&output).unwrap().len()>0);
+            let rendered=probe_media(output.to_string_lossy().into_owned()).await.unwrap();
+            assert_eq!((rendered.width,rendered.height,rendered.fps),(Some(64),Some(48),Some(10.0)));
+            assert_eq!(rendered.codec,"h264");
+            assert!(rendered.duration.is_some_and(|duration|duration>0.0&&duration<0.5));
+            assert!(rendered.audio_codec.is_none());
+        }
+        assert_eq!(std::fs::read(&source).unwrap(),original,"source was modified");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_ffmpeg_cancellation_releases_worker_and_allows_next_stage() {
+        let root=storage_test_root("cancel-restart");
+        let state=JobState::default();
+        for delay in [0,1000,0] {
+            state.cancelled.store(false,Ordering::Relaxed);
+            let output=root.join(format!("partial-{delay}.mp4"));
+            let args=["-hide_banner","-loglevel","error","-y","-re","-f","lavfi","-i","testsrc2=s=64x48:r=30:d=2","-c:v","libx264"].into_iter().map(str::to_owned).chain(std::iter::once(output.to_string_lossy().into_owned())).collect();
+            let started=Instant::now();
+            let stage=run_ffmpeg_stage(None,&state,args,2.0,&started,0.0,99.0,"test");
+            let cancel=async {
+                tokio::time::timeout(std::time::Duration::from_secs(5),async {
+                    loop {
+                        if state.pid.lock().unwrap().is_some(){break}
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                }).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                state.cancelled.store(true,Ordering::Relaxed);
+                let pid=(*state.pid.lock().unwrap()).unwrap();
+                tokio::task::spawn_blocking(move||stop_process_tree(pid)).await.unwrap();
+            };
+            let (result,())=tokio::join!(stage,cancel);
+            assert!(result.unwrap_err().to_lowercase().contains("cancel"));
+            assert!(state.pid.lock().unwrap().is_none());
+            state.cancelled.store(false,Ordering::Relaxed);
+            let next=root.join("after-cancel.mp4");
+            let args=["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=s=64x48:r=30:d=0.2","-c:v","libx264"].into_iter().map(str::to_owned).chain(std::iter::once(next.to_string_lossy().into_owned())).collect();
+            run_ffmpeg_stage(None,&state,args,0.2,&Instant::now(),0.0,99.0,"restart").await.unwrap();
+            assert!(probe_media(next.to_string_lossy().into_owned()).await.unwrap().duration.is_some_and(|duration|duration>0.0));
+            assert!(state.pid.lock().unwrap().is_none());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -12481,6 +13361,12 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
+    fn copied_video_hash(path:&Path)->String{
+        let output=std::process::Command::new("ffmpeg").args(["-hide_banner","-loglevel","error","-i"]).arg(path).args(["-map","0:v:0","-c:v","copy","-f","streamhash","-hash","sha256","pipe:1"]).output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
     fn sample_video_signature(path: &Path, at: f64) -> Vec<u8> {
         let output = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-ss"])
@@ -12837,7 +13723,38 @@ mod tests {
             .await
             .unwrap();
         let source_audio_hash = copied_audio_hash(&video);
+        let source_video_hash = copied_video_hash(&video);
         let audio_text = audio.to_string_lossy().to_string();
+
+        let first_stack_step=OperationRequest{input:video.to_string_lossy().into_owned(),operation:"color".into(),params:values(&[("brightness","5"),("brightness_enabled","true"),("denoise","off")])};
+        let (stage_args,_)=build_command(&first_stack_step,&video_info).await.unwrap();
+        let stage_path=root.join("stack-stage.mkv");
+        let stage_args=processing_stack::output_args(stage_args,&stage_path,true,None).unwrap();
+        assert!(std::process::Command::new("ffmpeg").args(&stage_args).status().unwrap().success(),"Stack lossless intermediate failed");
+        let stage_info=probe_media(stage_path.to_string_lossy().into_owned()).await.unwrap();
+        assert_eq!(stage_info.width,video_info.width);
+        let second_stack_step=OperationRequest{input:stage_path.to_string_lossy().into_owned(),operation:"color".into(),params:values(&[("contrast","110"),("contrast_enabled","true"),("denoise","off")])};
+        let (final_args,_)=build_command(&second_stack_step,&stage_info).await.unwrap();
+        let final_path=unique_output(&video,"processing_stack","mp4").unwrap();
+        let final_args=processing_stack::output_args(final_args,&final_path,false,Some("high")).unwrap();
+        assert!(std::process::Command::new("ffmpeg").args(&final_args).status().unwrap().success(),"Stack final encode failed");
+        let final_info=probe_media(final_path.to_string_lossy().into_owned()).await.unwrap();
+        assert_eq!(final_info.kind,"video");
+        assert!(!final_info.audio_tracks.is_empty());
+        assert_eq!(final_info.width,video_info.width);
+        for (mode,filter) in [("burst","select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,0.099999)"),("seconds","fps=5"),("frames","select=not(mod(n\\,3))"),("even","fps=5"),("scene","select=gt(scene\\,0.01)")]{
+            let frames=root.join(format!("frames-{mode}"));
+            std::fs::create_dir(&frames).unwrap();
+            let destination=frames.join("frame-%06d.png");
+            let status=std::process::Command::new("ffmpeg").args(["-hide_banner","-loglevel","error","-y","-ss","0","-i",video.to_str().unwrap(),"-t","0.6","-vf",filter,"-fps_mode","vfr","-frames:v","1000"]).arg(&destination).status().unwrap();
+            assert!(status.success(),"Frame Extractor {mode} failed");
+            let count=std::fs::read_dir(&frames).unwrap().count();
+            if mode!="scene"{assert!(count>0,"Frame Extractor {mode} produced no frames")}
+            if mode=="burst"{assert_eq!(count,6,"100ms spacing over 600ms must extract six distinct frames");}
+        }
+        let sheet=root.join("contact-sheet.png");
+        assert!(std::process::Command::new("ffmpeg").args(["-hide_banner","-loglevel","error","-y","-ss","0","-i",video.to_str().unwrap(),"-t","0.6","-vf","fps=5,scale=320:-2,tile=3x1","-fps_mode","vfr","-frames:v","1"]).arg(&sheet).status().unwrap().success());
+        assert_eq!(probe_media(sheet.to_string_lossy().into_owned()).await.unwrap().kind,"image");
 
         let operations: Vec<(&str, HashMap<String, String>)> = vec![
             (
@@ -12930,6 +13847,7 @@ mod tests {
                 ]),
             ),
             ("noise", values(&[("amount", "3")])),
+            ("audio_lab", values(&[("preset", "youtube"),("lufs", "-14"),("true_peak", "-1"),("noise_reduction", "off"),("voice_enhance", "off"),("compressor", "off"),("fade_in", "0"),("fade_out", "0"),("channels", "source"),("format", "flac")])),
             ("negate", values(&[])),
             ("encode", values(&[("encoder", "libx264"), ("crf", "20")])),
             (
@@ -13034,6 +13952,7 @@ mod tests {
                 .unwrap();
             assert!(status.success(), "operation failed: {operation}");
             assert!(output.is_file(), "output missing: {operation}");
+            if operation=="audio_lab"{assert_eq!(copied_video_hash(&output),source_video_hash,"Audio Lab changed the video stream");}
             assert!(
                 std::fs::metadata(&output).unwrap().len() > 0,
                 "empty output: {operation}"
@@ -13088,6 +14007,12 @@ mod tests {
                 .kind,
             "audio"
         );
+        let audio_lab_request=OperationRequest{input:audio.to_string_lossy().into_owned(),operation:"audio_lab".into(),params:values(&[("preset","podcast"),("lufs","-16"),("true_peak","-1"),("noise_reduction","off"),("voice_enhance","off"),("compressor","off"),("fade_in","0"),("fade_out","0"),("channels","mono"),("format","flac")])};
+        let (lab_args,lab_output)=build_command(&audio_lab_request,&audio_info).await.unwrap();
+        assert!(std::process::Command::new("ffmpeg").args(&lab_args).status().unwrap().success(),"Audio Lab encode failed");
+        let lab_info=probe_media(lab_output.to_string_lossy().into_owned()).await.unwrap();
+        assert_eq!(lab_info.kind,"audio");
+        assert_eq!(lab_info.audio_tracks[0].channels,Some(1));
 
         let image = root.join("source.png");
         assert!(std::process::Command::new("ffmpeg")
@@ -13651,6 +14576,18 @@ mod tests {
             Some(640)
         );
         let quality_size = std::fs::metadata(&quality_path).unwrap().len();
+        assert_eq!(quality_path.parent().unwrap().file_name().unwrap(), "image");
+        for format in ["png", "jpg"] {
+            let request = OperationRequest {
+                input: transparent.to_string_lossy().into_owned(),
+                operation: "image_compressor".into(),
+                params: values(&[("mode", "quality"), ("format", format), ("quality", "62"), ("target_kb", "50"), ("jpeg_background", "#ffffff")]),
+            };
+            let size = estimate_image_compression(OperationRequest { input: request.input.clone(), operation: request.operation.clone(), params: request.params.clone() }).await.unwrap();
+            let result = run_image_compressor(None, &state, &request, &transparent_info).await.unwrap();
+            assert_eq!(size, std::fs::metadata(&result.output).unwrap().len());
+            assert_eq!(Path::new(&result.output).parent().unwrap().file_name().unwrap(), "image");
+        }
         let estimated = estimate_image_compression(OperationRequest {
             input: transparent.to_string_lossy().into_owned(),
             operation: "image_compressor".into(),
@@ -13665,6 +14602,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(estimated, quality_size);
+        for png_mode in ["lossless", "palette"] {
+            let result = run_image_compressor(None, &state, &OperationRequest {
+                input: transparent.to_string_lossy().into_owned(), operation: "image_compressor".into(),
+                params: values(&[("mode","target"),("format","source"),("png_mode",png_mode),("quality","82"),("target_kb","1")]),
+            }, &transparent_info).await.unwrap();
+            let png = PathBuf::from(result.output);
+            assert_eq!(png.extension().unwrap(), "png");
+            let decoded = image::open(&png).unwrap().into_rgba8();
+            let original = image::open(&transparent).unwrap().into_rgba8();
+            assert_eq!(decoded.dimensions(), original.dimensions());
+            assert!(std::fs::metadata(&png).unwrap().len() <= std::fs::metadata(&transparent).unwrap().len());
+            if png_mode == "lossless" { assert_eq!(decoded, original); }
+        }
         let target = run_image_compressor(
             None,
             &state,
