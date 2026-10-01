@@ -210,7 +210,8 @@ test("Stack result preview shows the completed file without reapplying Clipper o
 
 test("Stack scales text pixels after Clipper without mutating editable layers",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  const font=readFileSync("C:/Windows/Fonts/arial.ttf").toString("base64");
+  // This test checks raster scaling, not system-font fidelity; use a portable fixture.
+  const font=readFileSync(new URL("../../../src-tauri/resources/fonts/Montserrat-ExtraBoldItalic.ttf",import.meta.url)).toString("base64");
   await page.evaluate(font=>{
     const previous=(window as any).__TEST_HANDLER__;
     (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
@@ -506,7 +507,8 @@ test("late async listeners are cleaned after twenty downloader mount cycles",asy
 });
 
 test("Watermark finishes loading after a language change during font loading",async({page})=>{
-  const font=readFileSync("C:/Windows/Fonts/arial.ttf").toString("base64");
+  // Font-loading races must also run on the Linux frontend runner.
+  const font=readFileSync(new URL("../../../src-tauri/resources/fonts/Montserrat-ExtraBoldItalic.ttf",import.meta.url)).toString("base64");
   await mockDesktop(page);await openFixture(page);
   await page.evaluate(encoded=>{
     (window as any).__TEST_HANDLER__=(cmd:string)=>{

@@ -82,6 +82,8 @@ jobs:
       - run: pnpm check
       - run: pnpm test:ui
       - run: pnpm exec playwright install chromium --with-deps
+      - name: Install FFmpeg for real-media browser fixtures
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - run: pnpm test:e2e
       - run: pnpm build
 
