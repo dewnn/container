@@ -240,7 +240,7 @@ export const tools: Tool[] = [
     fields:[number("start","Start",0,0,86400,0.01,"s"),number("end","End",10,0.01,86400,0.01,"s"),select("cut_mode","Cut mode","lossless",[["lossless","Fast / lossless stream copy"],["exact","Frame accurate / re-encode"]]),number("crf","Quality / CRF",18,0,30,1),select("audio_mode","Audio tracks","main",[["main","Main track"],["all","All tracks"],["selected","Selected track"],["merge","Merge all to one"],["none","No audio"]]),select("audio_track","Selected audio track","0",[["0","Track 1"]])],
   },
   {
-    id:"remux", title:"Remux", category:"Export", kind:["video"], accent:"yellow", description:"Yeniden kodlamadan yalnızca kapsayıcıyı değiştirir.", detail:"Çok hızlı ve kayıpsızdır; codec hedef kapsayıcıyla uyumlu olmalıdır.",
+    id:"remux", title:"Remux", category:"Export", kind:["video"], accent:"yellow", description:"Görüntüyü yeniden kodlamadan dosya biçimini değiştirir.", detail:"MP4, MKV ve MOV; görüntü, ses ve altyazı akışlarını taşıyan dosya kapsayıcılarıdır. Görüntü aynen kopyalanır. Hedef biçim codec'leri desteklemelidir; ses birleştirme ve bazı altyazı dönüşümleri yeniden kodlama gerektirebilir.",
     fields:[select("format","Container","mkv",[["mp4","MP4"],["mkv","MKV"],["mov","MOV"]]),select("audio_mode","Audio tracks","all",[["main","Main track"],["all","All tracks"],["selected","Selected track"],["merge","Merge all to one"],["none","No audio"]]),select("audio_track","Selected audio track","0",[["0","Track 1"]])],
   },
   {
@@ -308,7 +308,7 @@ const enText: Record<string, [string, string]> = {
   fix_timestamps:["Attempts to repair broken or negative timestamps.","Fast Repair copies streams without changing quality. Deep Repair is more compatible but re-encodes video; use it only when the fast method is not enough."],
   file_hash:["Calculates the file's SHA-256 digital fingerprint.","It changes nothing and creates no output file. Identical files have the same SHA-256 value, which is useful for checking whether a download or copy was damaged."],
   cut:["Exports only the selected time range.","Start and end are in seconds; the original remains untouched."],
-  remux:["Changes only the container without re-encoding.","Very fast and lossless; codecs must be compatible with the target container."],
+  remux:["Switches the file format without re-encoding video.","MP4, MKV and MOV are file containers: they hold video, audio and subtitle streams. Video is copied unchanged. The target format must support the codecs; merging audio or converting subtitles may require re-encoding those streams."],
   screenshot:["Saves one frame at the selected timestamp.","PNG is lossless, JPG is small, and WebP is balanced."],
   gif:["Turns part of the video into a palette GIF.","High resolution and FPS can make the file very large."],
   remove_audio:["Removes the audio stream from the video.","The picture is copied without re-encoding."],

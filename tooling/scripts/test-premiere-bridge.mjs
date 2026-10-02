@@ -1,0 +1,171 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const jsx=readFileSync(new URL('../../src-tauri/premiere/host.jsx',import.meta.url),'utf8');
+const bridge=readFileSync(new URL('../../src-tauri/premiere/bridge.js',import.meta.url),'utf8');
+let imports=0,inserts=0,importOK=true,insertOK=true,missing=false;
+const items=[];
+const sequence={sequenceID:'sequence',name:'Test timeline',end:'254016000000',videoTracks:{numTracks:2},audioTracks:{numTracks:2},insertClip(item,time,v,a){assert.equal(time.ticks,this.end);assert.equal(v,1);assert.equal(a,1);inserts++;return insertOK}};
+const app={setExtensionPersistent(){},project:{documentID:'project',activeSequence:sequence,rootItem:{children:items},importFiles(paths){imports++;if(importOK){items.push({type:1,getMediaPath:()=>paths[0]});items.numItems=items.length}return importOK}}};
+function fixtureFile(path){this.fsName=path;this.exists=!missing;this.name=path.split('/').pop();this.parent={fsName:path.slice(0,path.lastIndexOf('/')),exists:true}}
+const context=vm.createContext({app,ProjectItemType:{BIN:2},File:fixtureFile,Time:function(){}});
+vm.runInContext(jsx,context);
+const host=context.ContainerPremiere;
+const invoke=(path='C:/output/clip.mp4',project='project',seq='sequence',expires=Date.now()+10000)=>JSON.parse(host.insert(path,project,seq,expires));
+assert.equal(JSON.parse(host.status()).connected,true);
+assert.equal(JSON.parse(host.status()).protocol,3);
+assert.equal(invoke().ok,true);assert.equal(imports,1);assert.equal(inserts,1);
+assert.equal(invoke().ok,true);assert.equal(imports,1); // Existing project item reused.
+assert.equal(invoke(undefined,'different').code,'sequence_changed');assert.equal(inserts,2);
+assert.equal(invoke(undefined,undefined,undefined,0).code,'expired');
+app.project.activeSequence=null;let created=0;
+app.project.createNewSequenceFromClips=(name,clips)=>{assert.equal(clips.length,1);created++;return {sequenceID:'created'}};
+app.project.openSequence=id=>assert.equal(id,'created');
+assert.equal(invoke(undefined,undefined,'').code,'sequence_created');assert.equal(created,1);assert.equal(inserts,2);
+app.project.createNewSequenceFromClips=()=>null;assert.equal(invoke(undefined,undefined,'').code,'sequence_create_failed');
+const oldProject=app.project.documentID;app.project.documentID='';assert.equal(invoke(undefined,'','').code,'invalid_project_path');
+const originalFile=context.File;
+context.File=function(path){fixtureFile.call(this,path);this.exists=!path.endsWith('.prproj')};
+let newProjects=0,saves=0;
+app.newProject=path=>{assert.equal(path,'C:/projects/new.prproj');newProjects++;app.project.documentID='new';return true};
+app.project.createNewSequenceFromClips=()=>({sequenceID:'created'});
+app.project.save=()=>{saves++;return 0};
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'sequence_created');
+assert.equal(newProjects,1);assert.equal(saves,1);
+// Reproduce the real Adobe void return: undefined must not be treated as failure.
+app.project.documentID='';app.project.save=()=>{saves++};
+let savedResult=JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj'));
+assert.equal(savedResult.code,'sequence_created');assert.equal(savedResult.ok,true);
+assert.ok(savedResult.timings.some(entry=>entry.stage==='save'&&entry.ms>=0));
+app.project.documentID='';app.project.save=()=>{throw Error('disk save failed')};
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'sequence_created_save_failed');
+app.project.documentID='';app.project.save=()=>false;
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'sequence_created_save_failed');
+app.project.documentID='';app.project.save=()=>1;
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'sequence_created_save_failed');
+app.project.documentID='';app.project.save=()=>0;app.project.openSequence=()=>false;
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'sequence_created_open_failed');
+app.project.openSequence=id=>assert.equal(id,'created');
+app.project.documentID='new';
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'sequence_changed');
+app.project.documentID='';context.File=originalFile;
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj')).code,'project_exists');assert.equal(newProjects,6);
+app.project.documentID=oldProject;
+assert.equal(invoke().code,'sequence_changed');app.project.activeSequence=sequence;
+const silentTrack={clips:{numItems:0},insertClip(item,ticks){assert.equal(ticks,sequence.end);this.clips.numItems++}};
+sequence.videoTracks[1]=silentTrack;sequence.audioTracks.numTracks=0;
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','project','sequence',Date.now()+10000,'',false)).code,'inserted');
+assert.equal(silentTrack.clips.numItems,1);
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','project','sequence',Date.now()+10000,'',true)).code,'no_tracks');
+sequence.audioTracks.numTracks=2;
+// A custom project directory must win over the native fallback.
+context.File=function(path){fixtureFile.call(this,path);this.exists=!path.endsWith('.prproj')};
+app.properties={getProperty:key=>{assert.equal(key,'BE.Prefs.MRU.Document.0');return 'D:/my-projects/previous.prproj'}};
+app.project.documentID='';app.project.activeSequence=null;
+app.newProject=path=>{assert.equal(path,'D:/my-projects/new.prproj');app.project.documentID='new';return true};
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj',false)).code,'sequence_created');
+// Deleted MRU folder: use the active Premiere profile's version folder instead.
+context.File=function(path){fixtureFile.call(this,path);this.exists=!path.endsWith('.prproj');if(path==='D:/my-projects/previous.prproj')this.parent.exists=false};
+context.Folder=function(path){this.exists=true;this.name='Profile-user';this.parent={exists:true,fsName:'E:/Adobe/Premiere Pro/26.4'}};
+app.getPProPrefPath='E:/Adobe/Premiere Pro/26.4/Profile-user';app.project.documentID='';
+app.newProject=path=>{assert.equal(path,'E:/Adobe/Premiere Pro/26.4/new.prproj');app.project.documentID='new';return true};
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj',false)).code,'sequence_created');
+context.Folder=function(path){this.exists=true;this.name='Profile-user';this.parent={exists:true,fsName:'E:/Adobe/Premiere Pro/25.0'}};
+app.getPProPrefPath='E:/Adobe/Premiere Pro/25.0/Profile-user';app.project.documentID='';
+app.newProject=path=>{assert.equal(path,'E:/Adobe/Premiere Pro/25.0/new.prproj');app.project.documentID='new';return true};
+assert.equal(JSON.parse(host.insert('C:/output/clip.mp4','','',Date.now()+10000,'C:/projects/new.prproj',false)).code,'sequence_created');
+delete context.Folder;delete app.getPProPrefPath;
+delete app.properties;context.File=originalFile;app.project.documentID=oldProject;app.project.activeSequence=sequence;
+missing=true;assert.equal(invoke().code,'missing_file');missing=false;
+importOK=false;assert.equal(invoke('C:/other.mp4').code,'import_failed');importOK=true;
+insertOK=false;assert.equal(invoke().code,'insert_failed');insertOK=true;
+// Product workflow: a second video must create a different project, never append.
+context.File=function(path){fixtureFile.call(this,path);this.exists=!path.endsWith('.prproj')};
+let separateCount=0;const beforeInserts=inserts;
+app.newProject=()=>{separateCount++;app.project.documentID='separate'+separateCount;app.project.activeSequence=null;return true};
+app.project.createNewSequenceFromClips=()=>({sequenceID:'created'});app.project.save=()=>{};
+assert.equal(JSON.parse(host.insert('C:/output/first.mp4','project','sequence',Date.now()+10000,'C:/projects/first.prproj',true,true)).ok,true);
+assert.equal(JSON.parse(host.insert('C:/output/second.mp4','separate1','',Date.now()+10000,'C:/projects/second.prproj',true,true)).ok,true);
+assert.equal(separateCount,2);assert.equal(inserts,beforeInserts);
+app.newProject=()=>{throw Error('host failed')};
+assert.equal(JSON.parse(host.insert('C:/output/third.mp4','separate2','',Date.now()+10000,'C:/projects/third.prproj',true,true)).code,'host_error');
+context.File=originalFile;app.project.documentID='project';app.project.activeSequence=sequence;
+// Project creation and import run in separate, once-only host calls.
+context.File=function(path){fixtureFile.call(this,path);this.exists=!path.endsWith('.prproj')};
+app.newProject=()=>{app.project.documentID='staged';app.project.activeSequence=null;return true};
+const beforePrepareImports=imports;
+app.newProject=()=>true;
+assert.equal(JSON.parse(host.prepare('C:/output/staged.mp4','project','sequence',Date.now()+10000,'C:/projects/staged.prproj',true,'bad')).code,'project_switch_failed');
+app.newProject=()=>{app.project.documentID='staged';app.project.path='C:/wrong.prproj';app.project.activeSequence=null;return true};
+assert.equal(JSON.parse(host.prepare('C:/output/staged.mp4','project','sequence',Date.now()+10000,'C:/projects/staged.prproj',true,'bad')).code,'project_switch_failed');
+delete app.project.path;app.project.documentID='project';app.project.activeSequence=sequence;
+app.newProject=()=>{app.project.documentID='staged';app.project.activeSequence=null;return true};
+assert.equal(JSON.parse(host.prepare('C:/output/staged.mp4','project','sequence',Date.now()+10000,'C:/projects/staged.prproj',true,'token')).code,'project_prepared');
+assert.equal(imports,beforePrepareImports);
+assert.equal(JSON.parse(host.finish('wrong')).code,'invalid_continuation');
+const finished=JSON.parse(host.finish('token'));assert.equal(finished.ok,true);
+assert.ok(finished.timings.some(t=>t.stage==='create_project'));
+assert.ok(finished.timings.some(t=>t.stage==='import'));
+assert.equal(JSON.parse(host.finish('token')).code,'invalid_continuation');
+app.project.documentID='project';app.project.activeSequence=sequence;context.File=originalFile;
+
+// Exercise CEP mailbox without touching disk, registry, Premiere or a real timeline.
+const files=new Map();let tick;
+const fs={existsSync(path){return files.has(path)},readFileSync(path){if(!files.has(path))throw Error('missing');return files.get(path)},writeFileSync(path,data){files.set(path,data)},renameSync(from,to){files.set(to,files.get(from));files.delete(from)},unlinkSync(path){files.delete(path)}};
+const path={join:(...parts)=>parts.join('/')};
+const root='user/dev.dean.container/premiere-bridge';
+const put=(name,value)=>files.set(`${root}/${name}`,JSON.stringify(value));
+const get=name=>JSON.parse(files.get(`${root}/${name}`));
+let evaluations=0;
+const cepContext=vm.createContext({window:{cep_node:{process:{env:{APPDATA:'user'}},require:name=>name==='fs'?fs:path},__adobe_cep__:{evalScript(script,callback){if(script.includes('.insert('))evaluations++;callback(vm.runInContext(script,context))}}},setInterval(callback){tick=callback}});
+put('session.json',{id:'session',updated:Date.now()});
+vm.runInContext(bridge,cepContext);
+assert.equal(get('heartbeat.json').connected,true);
+const id='a'.repeat(64),payload={session:'session',id,operation:'append',path:'C:/output/quote";throw new Error("injection").mp4',project:'project',sequence_id:'sequence',has_audio:true,expires:Date.now()+10000};
+put('request.json',payload);tick();assert.equal(get('response.json').ok,true);assert.equal(evaluations,1);
+tick();assert.equal(evaluations,1); // Claimed requests cannot execute twice.
+put('request.json',{...payload,session:'old'});tick();assert.equal(evaluations,1);
+put('request.json',{...payload,expires:0});tick();assert.equal(evaluations,1);
+put('request.json',{...payload,operation:'eval'});tick();assert.equal(evaluations,1);
+put('request.json',{...payload,path:'C:/file.jsx'});tick();assert.equal(evaluations,1);
+put('session.json',{id:'session',updated:0});put('request.json',payload);tick();assert.equal(evaluations,1);
+const manifest=readFileSync(new URL('../../src-tauri/premiere/manifest.xml',import.meta.url),'utf8');
+assert.match(manifest,/Version="\[25\.0,26\.99\]"/);
+assert.match(manifest,/RequiredRuntime Name="CSXS" Version="12\.0"/);
+// A hung status query recovers, and its late callback cannot process a request.
+let clock=10000,watchTick;const callbacks=[];
+const watchContext=vm.createContext({Date:{now:()=>clock},window:{cep_node:{process:{env:{APPDATA:'user'}},require:name=>name==='fs'?fs:path},__adobe_cep__:{evalScript(script,callback){callbacks.push({script,callback})}}},setInterval(fn){watchTick=fn}});
+put('session.json',{id:'session',updated:clock});files.delete(`${root}/request.json`);
+vm.runInContext(bridge,watchContext);assert.equal(callbacks.length,1);
+clock+=6000;put('session.json',{id:'session',updated:clock});watchTick();assert.equal(callbacks.length,2);
+clock+=6000;put('session.json',{id:'session',updated:clock});watchTick();assert.equal(callbacks.length,2); // At most one replacement status query.
+put('request.json',{...payload,expires:clock+10000});callbacks[0].callback('{"connected":true}');assert.equal(callbacks.length,2);
+callbacks[1].callback('{"connected":true}');assert.equal(callbacks.length,3);assert.match(callbacks[2].script,/\.insert\(/);
+clock+=40000;put('session.json',{id:'session',updated:clock});watchTick();assert.equal(callbacks.length,3); // Insertion is never retried.
+callbacks[2].callback('{"ok":true,"code":"inserted"}');watchTick();assert.equal(callbacks.length,4);
+// A malformed cleanup ledger cannot turn a completed transfer into a timeout.
+put('created-projects.json',{invalid:true});
+put('request.json',{...payload,expires:clock+10000});
+callbacks[3].callback('{"connected":true}');assert.equal(callbacks.length,5);
+callbacks[4].callback('{"ok":true,"code":"sequence_created","created_project_path":"C:/projects/generated.prproj","timings":[{"stage":"save","ms":12}]}');
+assert.equal(get('response.json').ok,true);assert.equal(get('response.json').ownership_record_failed,true);
+assert.equal(get('response.json').timings[0].ms,12);
+// Corrupt JSON must not be treated as a missing ledger and overwritten.
+files.set(`${root}/created-projects.json`,'{broken');
+put('request.json',{...payload,expires:clock+10000});watchTick();
+callbacks[5].callback('{"connected":true}');
+callbacks[6].callback('{"ok":true,"code":"sequence_created","created_project_path":"C:/projects/another.prproj"}');
+assert.equal(files.get(`${root}/created-projects.json`),'{broken');
+assert.equal(get('response.json').ownership_record_failed,true);
+// CEP must yield between project creation and import and must not replay either stage.
+const deferred=[],stageCalls=[];let stageTick;
+put('session.json',{id:'session',updated:Date.now()});
+put('request.json',{...payload,separate_project:true,project_path:'C:/projects/next.prproj',expires:Date.now()+10000});
+const stagedContext=vm.createContext({window:{cep_node:{process:{env:{APPDATA:'user'}},require:name=>name==='fs'?fs:path},__adobe_cep__:{evalScript(script,callback){stageCalls.push(script);callback(script.includes('.status(')?'{"connected":true,"protocol":3}':script.includes('.prepare(')?'{"ok":true,"code":"project_prepared"}':'{"ok":true,"code":"sequence_created","project_id":"new"}')}}},setInterval(fn){stageTick=fn},setTimeout(fn,delay){assert.equal(delay,250);deferred.push(fn)}});
+vm.runInContext(bridge,stagedContext);assert.equal(stageCalls.length,2);assert.match(stageCalls[1],/\.prepare\(/);
+stageTick();assert.equal(stageCalls.length,2);assert.equal(deferred.length,1);
+deferred[0]();assert.equal(stageCalls.length,3);assert.match(stageCalls[2],/\.finish\(/);
+assert.equal(get('response.json').ok,true);assert.equal(get('response.json').project_id,'new');
+stageTick();assert.equal(stageCalls.filter(s=>s.includes('.prepare(')).length,1);
+assert.match(manifest,/<AutoVisible>false<\/AutoVisible>/);assert.match(manifest,/com.adobe.csxs.events.ApplicationActivate/);
+console.log('Premiere bridge: host append/errors, quoted paths, stale sessions, expiry, no replay and hidden startup passed');

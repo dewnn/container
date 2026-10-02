@@ -43,6 +43,7 @@
   let panelWorkspaceWidth=$state(0);
   let controlPanelWidth=$state<number|null>(null);
   let activeProbes=0;
+  let disposed=false;
   const pendingProbes:string[]=[];
   const queuedProbes=new Set<string>();
   const panelStorageKey="container-batch-panel-widths";
@@ -117,17 +118,20 @@
   onMount(()=>{
     try{const saved=JSON.parse(localStorage.getItem(panelStorageKey)??"null");if(saved&&typeof saved==="object"&&Number.isFinite(saved.left)&&saved.left>=235&&saved.left<=600)controlPanelWidth=saved.left}catch{}
     addPaths(initialPaths);history=[snapshot()];historyIndex=0;
+    return()=>{disposed=true;pendingProbes.length=0;queuedProbes.clear()};
   });
   const params=()=>Object.fromEntries(selected.fields.filter(field=>field.key!=="audio_track").map(field=>[field.key,String(field.value)]));
   async function inspectPath(path:string){
+    if(disposed)return;
     items=items.map(item=>item.path===path?{...item,inspecting:true,probeError:undefined}:item);
     try{
       const info=await invoke<{kind:MediaKind;fps:number|null;duration:number|null;width:number|null;height:number|null}>("probe_media",{path});
+      if(disposed)return;
       items=items.map(item=>item.path===path?{...item,kind:info.kind,fps:info.fps,duration:info.duration,width:info.width,height:info.height,inspecting:false}:item);
-    }catch(reason){items=items.map(item=>item.path===path?{...item,inspecting:false,probeError:String(reason)}:item)}
+    }catch(reason){if(!disposed)items=items.map(item=>item.path===path?{...item,inspecting:false,probeError:String(reason)}:item)}
   }
   function drainProbes(){
-    while(activeProbes<3&&pendingProbes.length){
+    while(!disposed&&activeProbes<3&&pendingProbes.length){
       const next=pendingProbes.shift()!;activeProbes++;
       void inspectPath(next).finally(()=>{activeProbes--;queuedProbes.delete(next);drainProbes()});
     }

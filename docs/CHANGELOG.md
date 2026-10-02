@@ -6,6 +6,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-10-02
+
+- Added an optional Premiere Pro 2025/2026 Windows connection. Send a completed render to a separate, video-named project and matching timeline; normal CONTAINER use does not require Premiere.
+- Added themed connection setup, compact status indicators, transfer guards, staged project/import handling and recoverable cleanup of CONTAINER-created Premiere project files. Slow Adobe project creation can still delay transfers.
+- Hardened cleanup against repeated clicks, partial Windows recycle results, corrupt ownership records and large project lists; blocking cleanup runs off the UI thread.
+- Added a typed Screenshot timestamp and an approximate live Visual Noise comparison; clarified Remux and improved audio/subtitle explanation layout across tool panels.
+- Kept the Tools menu permanently visible and stopped queued Batch probes after leaving the workspace, ignoring late results safely.
+- Expanded regression coverage for connection setup, cleanup, workspace disposal and preview/export consistency. Real-host Premiere transfers were checked on 2025 (25.5) and 2026.
+
 ## [0.19.1] - 2026-10-02
 
 - Hardened release validation by compiling the native harness before real-media browser tests; made font fixtures portable across Windows and Linux. The v0.19.0 build attempt was not published.

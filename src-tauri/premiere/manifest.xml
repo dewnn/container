@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="dev.dean.container.premiere" ExtensionBundleVersion="1.0.0" ExtensionBundleName="CONTAINER Premiere Bridge">
+  <ExtensionList><Extension Id="dev.dean.container.premiere.bridge" Version="1.0.0"/></ExtensionList>
+  <ExecutionEnvironment>
+    <HostList><Host Name="PPRO" Version="[25.0,26.99]"/></HostList>
+    <LocaleList><Locale Code="All"/></LocaleList>
+    <RequiredRuntimeList><RequiredRuntime Name="CSXS" Version="12.0"/></RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList><Extension Id="dev.dean.container.premiere.bridge"><DispatchInfo>
+    <Resources><MainPath>./index.html</MainPath><ScriptPath>./host.jsx</ScriptPath><CEFCommandLine><Parameter>--enable-nodejs</Parameter></CEFCommandLine></Resources>
+    <Lifecycle><AutoVisible>false</AutoVisible><StartOn><Event>com.adobe.csxs.events.ApplicationActivate</Event></StartOn></Lifecycle>
+    <UI><Type>Custom</Type><Menu>CONTAINER Premiere Bridge</Menu><Geometry><Size><Width>100</Width><Height>100</Height></Size></Geometry></UI>
+  </DispatchInfo></Extension></DispatchInfoList>
+</ExtensionManifest>

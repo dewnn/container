@@ -42,6 +42,9 @@
   import {rasterText,type TextAppearance} from "./lib/textRaster";
   import {stackOutputDimensions,scaleStackText} from "./lib/stackGeometry";
   import BlurBackdropPreview from "./lib/BlurBackdropPreview.svelte";
+  import NoisePreview from "./lib/NoisePreview.svelte";
+  import PremiereSend from "./lib/PremiereSend.svelte";
+  import {watchPremiere} from "./lib/premiereBridge.svelte";
   import kickMark from "./assets/kick-mark.svg";
   import twitchMark from "./assets/twitch-mark.svg";
   import kickBanner from "../src-tauri/resources/social-tags/kick-banner.png";
@@ -582,6 +585,11 @@
     else if(numbers.length===2){if(numbers[1]>=60)return null;seconds=numbers[0]*60+numbers[1]}
     else{if(numbers[1]>=60||numbers[2]>=60)return null;seconds=numbers[0]*3600+numbers[1]*60+numbers[2]}
     return Number.isFinite(seconds)?seconds:null;
+  }
+  function setScreenshotTime(value:string){
+    const seconds=parseTimecode(value),duration=media?.duration??0;
+    if(seconds===null||seconds>duration){showToast(language==="tr"?"Video süresi içinde geçerli bir zaman gir.":"Enter a valid timestamp within the video duration.","error");return}
+    setToolNumber("timestamp",seconds);seekToolbox(seconds);
   }
   function setTimelineRange(start:number,end:number){
     setToolNumber("start",start);
@@ -2352,6 +2360,7 @@
 
   onMount(() => {
     let disposed=false;
+    const stopPremiere=watchPremiere();
     void document.fonts.load('32px "Gotham XNarrow Black"').then(()=>{if(!disposed)bannerFontReady=true}).catch(()=>{});
     try{
       const savedPresets=JSON.parse(localStorage.getItem("container-text-presets-v1")??"[]");
@@ -2486,7 +2495,7 @@
       }
     }).then((fn) => {if(disposed)fn();else unlistenDrop=fn});
 
-    return () => { disposed=true;unlistenProgress?.(); unlistenDrop?.(); unlistenTrayUpdate?.(); unlistenSecondOpen?.(); unlistenTrayHidden?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
+    return () => { disposed=true;stopPremiere();unlistenProgress?.(); unlistenDrop?.(); unlistenTrayUpdate?.(); unlistenSecondOpen?.(); unlistenTrayHidden?.(); window.clearTimeout(outputCleanupMessageTimer);window.clearTimeout(toastTimer); window.removeEventListener("keydown", playerKeys); window.removeEventListener("contextmenu", blockBrowserMenu); window.removeEventListener("beforeunload", persistRecovery);window.removeEventListener("container-toast",toastEvent);window.removeEventListener("error",browserError);window.removeEventListener("unhandledrejection",rejected); };
   });
 
   function setLanguage(next:"tr"|"en"){
@@ -2737,8 +2746,9 @@
               {#if selected?.id==="clipper"&&toolValue("vertical_layout")==="original"}<div style={originalCanvasStyle()}></div>{/if}
               <!-- svelte-ignore a11y_media_has_caption -->
               <div style={blurForegroundBoxStyle()}>
-                <video bind:this={toolboxVideo} style={previewVideoStyle()} src={mediaUrl} preload={clipperOutputVisible?"auto":"metadata"} onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime;  }} onplay={() => {toolboxPlaying=true;}} onpause={() => {toolboxPlaying=false;}} onended={() => {toolboxPlaying=false;}}></video>
+                <video bind:this={toolboxVideo} crossorigin="anonymous" style={previewVideoStyle()} src={mediaUrl} preload={clipperOutputVisible?"auto":"metadata"} onloadedmetadata={handleToolboxMetadata} ontimeupdate={() => { if (toolboxVideo) toolboxCurrent = toolboxVideo.currentTime;  }} onplay={() => {toolboxPlaying=true;}} onpause={() => {toolboxPlaying=false;}} onended={() => {toolboxPlaying=false;}}></video>
               </div>
+              {#if selected?.id==="noise"}<NoisePreview video={toolboxVideo} amount={toolNumber("amount")} {language}/>{/if}
               {#if clipperOutputVisible}
                 {@const outputBox=verticalOutputBox()}
                 {#if outputBox}<ClipperLayoutPreview video={toolboxVideo} input={clipperLayoutInput()} box={outputBox} />{/if}
@@ -2913,6 +2923,7 @@
           <div class="tool-timeline panel">
             <header><div><h3>{language==="tr"?"ZAMAN ÇİZELGESİ":"TIMELINE"}</h3><p>{selected?.id === "screenshot" ? (language==="tr"?"kare zamanını seç":"choose frame time") : (language==="tr"?"çıktı aralığını seç":"choose export range")}</p></div>{#if selected?.id==="cut"}<span class="timeline-current mono"><i>▶</i> {language==="tr"?"KONUM":"PLAYHEAD"} {editableTime(toolboxCurrent)}</span>{/if}<b class="mono">{selected?.id === "screenshot" ? playerTime(timelineBounds().start) : `${timelineTime(timelineBounds().start)} — ${timelineTime(timelineBounds().end)}`}</b></header>
             {#if rangeTimelineTool()}<div class="cut-timecodes"><div class="cut-timecode"><span>{language==="tr"?"BAŞLANGIÇ":"START"} <i>H:M:S</i></span><input aria-label={language==="tr"?"Başlangıç zamanı":"Start time"} class="mono" bind:value={cutStartInput} onfocus={()=>cutTimeEditing="start"} onblur={()=>commitCutTime("start")} onkeydown={(event)=>handleCutTimeKey(event,"start")} placeholder="0:05:14"><button onclick={()=>markCutAtPlayhead("start")} title={language==="tr"?"Geçerli oynatma zamanını başlangıç yap (I)":"Set IN to current playhead time (I)"}><b>IN</b><kbd>I</kbd></button></div><div class="cut-timecode"><span>{language==="tr"?"BİTİŞ":"END"} <i>H:M:S</i></span><input aria-label={language==="tr"?"Bitiş zamanı":"End time"} class="mono" bind:value={cutEndInput} onfocus={()=>cutTimeEditing="end"} onblur={()=>commitCutTime("end")} onkeydown={(event)=>handleCutTimeKey(event,"end")} placeholder="0:05:46"><button onclick={()=>markCutAtPlayhead("end")} title={language==="tr"?"Geçerli oynatma zamanını bitiş yap (O)":"Set OUT to current playhead time (O)"}><b>OUT</b><kbd>O</kbd></button></div><small class="cut-seek-help mono">{language==="tr"?"PLAYER ÇUBUĞU: tekerlek ±1 sn · Ctrl+tekerlek ±5 sn · Shift+tık tam saniye":"PLAYER BAR: wheel ±1 sec · Ctrl+wheel ±5 sec · Shift+click whole second"}</small></div>{/if}
+            {#if selected?.id==="screenshot"}<div class="screenshot-timecode"><label for="screenshot-time">{language==="tr"?"Kare zamanı":"Frame timestamp"}</label><input id="screenshot-time" class="mono" aria-label={language==="tr"?"Kare zamanı":"Frame timestamp"} value={editableTime(toolNumber("timestamp"))} placeholder="0:00:05.250" onblur={(event)=>{setScreenshotTime(event.currentTarget.value);event.currentTarget.value=editableTime(toolNumber("timestamp"))}} onkeydown={(event)=>{if(event.key==="Enter"){event.preventDefault();event.currentTarget.blur()}if(event.key==="Escape"){event.currentTarget.value=editableTime(toolNumber("timestamp"));event.currentTarget.blur()}}}/><small>{language==="tr"?"Saniye, M:S veya H:M:S · örnek: 5.250":"Seconds, M:S or H:M:S · example: 5.250"}</small></div>{/if}
             <div class="tool-wave" bind:this={toolboxTimeline} onclick={seekTimeline} onpointermove={hoverTimeline} onpointerleave={()=>timelineHover=null} role="presentation">
               {#if toolboxFilmstripUrl}<img class="filmstrip" src={toolboxFilmstripUrl} alt="Video filmstrip" draggable="false">{:else}<span class="wave-loading">{toolboxFilmstripLoading ? (language==="tr"?"video kareleri hazırlanıyor…":"building video frames…") : "—"}</span>{/if}
               {#if selected?.id === "screenshot"}
@@ -2939,7 +2950,7 @@
                 <button class="ghost job-action" onclick={() => {if(outputStale)showToast(language==="tr"?"Bu eski çıktı. Yeni ayarları görmek için yeniden işle.":"This is the old output. Render again to see the new settings.","info");revealItemInDir(output)}}>{outputStale?(language==="tr"?"eski çıktı · güncellenmedi":"old output · not updated"):t("showOutput")}</button><button class="ghost job-action" disabled={operationBusy||outputStale} title={outputStale?(language==="tr"?"Ayarlar değişti; önce yeniden işle.":"Settings changed; render again first."):undefined} onclick={()=>continueEditingOutput()}>{language==="tr"?"Kaynak olarak aç":"Open as source"}</button>{/if}{#if busy}<button class="danger job-action" onclick={cancelJob}>{t("cancelJob")}</button>{/if}</div>{/if}
             </div>
           </div>
-          <div class="job-feedback"><RenderFeedback running={busy} {progress} {language} {speed} {elapsed} {output}/></div>
+          <div class="job-feedback"><PremiereSend path={output} {language} disabled={operationBusy||outputStale}/><RenderFeedback running={busy} {progress} {language} {speed} {elapsed} {output}/></div>
           <div class="progress-track"><div style:width={`${progress}%`}></div></div>
           {#if error}<div class="error-box"><ProblemDetails reason={error} {language}/></div>{/if}
         </div>

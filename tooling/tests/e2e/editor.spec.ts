@@ -5,6 +5,170 @@ import { spawnSync } from "node:child_process";
 
 const dialogMessagesAllowed = JSON.parse(readFileSync(new URL("../../../src-tauri/capabilities/default.json", import.meta.url), "utf8")).permissions.includes("dialog:allow-message");
 
+test("Batch stops queued probes after leaving the workspace and restores pending rows",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.getByRole("button",{name:"BATCH",exact:true}).click();
+  await expect(page.locator(".batch-items article")).toHaveCount(1);
+  await page.evaluate(fixture=>{
+    (window as any).__PROBE_FINISH__=[];
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+      if(cmd==="probe_media"&&args.path.includes("pending-"))return new Promise(resolve=>(window as any).__PROBE_FINISH__.push(()=>resolve({...fixture,path:args.path})));
+    };
+    (window as any).__TEST_DROP__(Array.from({length:12},(_,i)=>`C:\\fixtures\\pending-${i}.mp4`));
+  },sample);
+  await expect(page.locator(".batch-items article")).toHaveCount(13);
+  await expect.poll(()=>page.evaluate(()=>(window as any).__PROBE_FINISH__.length)).toBe(3);
+  await page.getByRole("button",{name:"TOOLBOX",exact:true}).click();
+  const before=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="probe_media"&&c.args.path.includes("pending-")).length);
+  await page.evaluate(()=>{const pending=(window as any).__PROBE_FINISH__.splice(0);for(const finish of pending)finish()});
+  await page.waitForTimeout(150);
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="probe_media"&&c.args.path.includes("pending-")).length)).toBe(before);
+  await page.evaluate(()=>(window as any).__TEST_HANDLER__=undefined);
+  await page.getByRole("button",{name:"BATCH",exact:true}).click();
+  await expect(page.locator(".batch-items article")).toHaveCount(13);
+  await expect(page.getByRole("button",{name:/START QUEUE/})).toBeEnabled();
+});
+
+test("Premiere cleanup rejects repeated confirmation and locks connection mutations",async({page})=>{
+  await page.addInitScript(()=>(window as any).isTauri=true);
+  await mockDesktop(page);await openFixture(page);
+  await page.evaluate(()=>{
+    const previous=(window as any).__TEST_HANDLER__;
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+      if(cmd==="premiere_status")return {supported:true,installed:true,connected:false,project:"",sequence_id:"",sequence_name:""};
+      if(cmd==="premiere_clean_projects")return new Promise(resolve=>(window as any).__CLEAN_FINISH__=resolve);
+      return previous?.(cmd,args);
+    };
+  });
+  await page.getByRole("button",{name:"General settings",exact:true}).click();
+  const clean=page.getByRole("button",{name:"Clean project files",exact:true});await expect(clean).toBeVisible();await clean.click();
+  const confirm=page.getByRole("dialog",{name:"Clean project files",exact:true}).getByRole("button",{name:"Clean",exact:true});
+  await confirm.evaluate(button=>{(button as HTMLButtonElement).click();(button as HTMLButtonElement).click()});
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="premiere_clean_projects").length)).toBe(1);
+  await expect(clean).toBeDisabled();
+  await expect(page.getByRole("button",{name:"Update",exact:true})).toBeDisabled();
+  await expect(page.getByRole("button",{name:"Disconnect",exact:true})).toBeDisabled();
+  await page.evaluate(()=>(window as any).__CLEAN_FINISH__(0));
+  await expect(clean).toBeEnabled();await expect(page.getByRole("status")).toContainText("0 project files moved");
+});
+
+test("Premiere transfer is opt-in, connected-only and targets the completed render",async({page})=>{
+  await page.addInitScript(()=>(window as any).isTauri=true);
+  await mockDesktop(page);await openFixture(page);await stageMocks(page);
+  await expect(page.locator(".premiere-connected")).toHaveCount(0);
+  await page.evaluate(()=>{
+    const previous=(window as any).__TEST_HANDLER__;
+    (window as any).__PREMIERE_STATUS__={supported:true,installed:true,connected:true,project:"project",sequence_id:"sequence",sequence_name:"Launch"};
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>{
+      if(cmd==="premiere_status")return (window as any).__PREMIERE_STATUS__;
+      if(cmd==="premiere_send")return new Promise(resolve=>(window as any).__PREMIERE_FINISH__=resolve);
+      return previous?.(cmd,args);
+    };
+  });
+  await expect(page.locator(".general-settings-trigger")).toHaveClass(/premiere-ready/);
+  await expect(page.getByRole("button",{name:"Send to Premiere",exact:true})).toHaveCount(0);
+  await page.getByRole("button",{name:/render transform/i}).click();
+  const send=page.getByRole("button",{name:"Send to Premiere",exact:true});await expect(send).toBeEnabled();
+  await expect(page.locator(".topbar .premiere-connected")).toHaveCount(0);
+  const headBox=(await page.locator(".job-head").boundingBox())!,rowBox=(await page.locator(".premiere-output-row").boundingBox())!;
+  expect(rowBox.y).toBeGreaterThanOrEqual(headBox.y+headBox.height);
+  await page.screenshot({path:resolve("test-results","premiere-output-layout.png")});
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="premiere_send").length)).toBe(0);
+  await send.click();await expect(page.getByRole("button",{name:"Sending…"})).toBeDisabled();
+  await page.evaluate(()=>(window as any).__PREMIERE_STATUS__={supported:true,installed:true,connected:false,project:"",sequence_id:"",sequence_name:""});
+  await page.waitForTimeout(2500);
+  await expect(page.getByRole("button",{name:"Sending…"})).toBeVisible();
+  await expect(page.locator(".general-settings-trigger")).toHaveClass(/premiere-ready/);
+  const call=await page.evaluate(()=>(window as any).__TEST_CALLS__.find((c:any)=>c.cmd==="premiere_send"));
+  expect(call.args.project).toBe("project");expect(call.args.sequenceId).toBe("sequence");expect(call.args.path).toMatch(/\.mp4$/);
+  await page.evaluate(()=>{(window as any).__PREMIERE_FINISH__(null);(window as any).__PREMIERE_STATUS__={supported:true,installed:true,connected:false,project:"",sequence_id:"",sequence_name:""}});
+  await expect(page.locator(".general-settings-trigger")).not.toHaveClass(/premiere-ready/);await expect(send).toHaveCount(0);
+});
+
+test("Premiere creates a matching timeline on demand and installation needs themed confirmation",async({page})=>{
+  await page.addInitScript(()=>(window as any).isTauri=true);
+  await mockDesktop(page);await openFixture(page);await stageMocks(page);
+  await page.evaluate(()=>{
+    const previous=(window as any).__TEST_HANDLER__;
+    (window as any).__PREMIERE_STATUS__={supported:true,installed:true,connected:true,project:"project",sequence_id:"",sequence_name:""};
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="premiere_status"?(window as any).__PREMIERE_STATUS__:previous?.(cmd,args);
+  });
+  await expect(page.locator(".general-settings-trigger")).toHaveClass(/premiere-ready/);await page.getByRole("button",{name:/render transform/i}).click();
+  await expect(page.getByRole("button",{name:"Send to Premiere",exact:true})).toBeEnabled();
+  await expect(page.getByRole("button",{name:"Send to Premiere",exact:true})).toHaveAttribute("title",/Create a separate Premiere project/);
+  await page.evaluate(()=>(window as any).__PREMIERE_STATUS__={supported:true,installed:false,connected:false,project:"",sequence_id:"",sequence_name:""});
+  await expect(page.locator(".premiere-connected")).toHaveCount(0);
+  await page.getByRole("button",{name:"General settings",exact:true}).click();
+  const setup=page.getByRole("button",{name:"Connect",exact:true});await expect(setup).toBeVisible();await setup.click();
+  const confirmation=page.getByRole("dialog",{name:"Connect Premiere",exact:true});await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText("other unsigned CEP extensions");await confirmation.getByRole("button",{name:"Cancel",exact:true}).click();
+  await expect(confirmation).not.toBeVisible();
+  await setup.click();await page.screenshot({path:resolve("test-results","premiere-themed-confirmation.png")});await page.keyboard.press("Escape");
+  await expect(confirmation).not.toBeVisible();
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="premiere_install").length)).toBe(0);
+  const clean=page.getByRole("button",{name:"Clean project files",exact:true});await clean.click();
+  expect((await clean.boundingBox())!.height).toBeGreaterThanOrEqual(40);
+  const cleanup=page.getByRole("dialog",{name:"Clean project files",exact:true});
+  await expect(cleanup).toContainText("including any edits");
+  await cleanup.getByRole("button",{name:"Cancel",exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="premiere_clean_projects").length)).toBe(0);
+  await page.evaluate(()=>{const previous=(window as any).__TEST_HANDLER__;(window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="premiere_clean_projects"?3:previous?.(cmd,args)});
+  await clean.click();await cleanup.getByRole("button",{name:"Clean",exact:true}).click();
+  await expect(page.getByRole("status")).toContainText("3 project files moved to Recycle Bin");
+  expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((c:any)=>c.cmd==="premiere_clean_projects").length)).toBe(1);
+});
+
+test("Tools menu stays visible and Screenshot accepts typed time",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await expect(page.locator(".tool-pane")).toBeVisible();
+  await expect(page.getByRole("button",{name:"Collapse tools menu"})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"Expand tools menu"})).toHaveCount(0);
+  await page.getByPlaceholder("search tools...").fill("Screenshot");
+  await page.locator(".tool-row").click();
+  const time=page.getByRole("textbox",{name:"Frame timestamp"});
+  await time.fill("0:00:12.250");await time.press("Enter");
+  await expect(page.getByRole("slider",{name:"Timestamp",exact:true})).toHaveAttribute("aria-valuenow","12.25");
+  await time.fill("99:00");await time.press("Enter");
+  await expect(time).toHaveValue("0:00:12.250");
+});
+
+test("Audio and subtitle explanations fit every shared tool panel",async({page})=>{
+  await page.setViewportSize({width:1000,height:850});
+  await mockDesktop(page,{fixture:{...sample,audio_tracks:[{index:1,codec:"aac",channels:2,channel_layout:"stereo",language:null,bitrate:128000,is_default:true}]} as any});
+  await openFixture(page);
+  for(const name of ["Encoding Engine","Cut Video","Remux","Extract Audio","Subtitles"]){
+    await page.locator(".tool-pane .tabs").getByRole("button",{name:name==="Extract Audio"?/^audio$/i:/^video$/i}).click();
+    await page.getByPlaceholder("search tools...").fill(name);
+    const tool=page.locator(".tool-row").filter({has:page.getByText(name,{exact:true})});
+    await expect(tool).toHaveCount(1);
+    await tool.click();
+    if(name==="Subtitles")await page.getByRole("combobox").first().selectOption("extract");
+    await expect(page.locator(".settings .codec-note")).not.toHaveCount(0);
+    for(const heading of await page.locator(".settings .codec-note b").all()){
+      const fits=await heading.evaluate(element=>element.scrollWidth<=element.clientWidth+1);
+      expect(fits,name).toBe(true);
+    }
+  }
+});
+
+test("Visual Noise exposes a live comparison without changing export strength",async({page})=>{
+  const root=resolve("test-results","noise-preview");mkdirSync(root,{recursive:true});
+  const source=resolve(root,"source.mp4");
+  expect(spawnSync("ffmpeg",["-v","error","-y","-f","lavfi","-i","color=gray:s=640x360:r=30:d=1","-c:v","libx264","-pix_fmt","yuv420p",source]).status).toBe(0);
+  await page.route("http://asset.localhost/**",route=>route.fulfill({body:readFileSync(source),contentType:"video/mp4",headers:{"Access-Control-Allow-Origin":"*"}}));
+  await mockDesktop(page,{fixture:{...sample,width:640,height:360,duration:1}});await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Visual Noise");await page.locator(".tool-row").click();
+  await expect(page.getByRole("slider",{name:"Noise comparison divider"})).toBeVisible();
+  await expect(page.getByText("Approximate live preview · export is processed by FFmpeg")).toBeVisible();
+  await page.getByRole("slider",{name:"Noise comparison divider"}).fill("25");
+  await expect(page.getByRole("slider",{name:"Noise comparison divider"})).toHaveValue("25");
+  await expect.poll(()=>page.locator(".noise-preview canvas").evaluate((element:any)=>{
+    const ctx=element.getContext("2d"),pixels=ctx.getImageData(0,0,element.width,element.height).data;
+    const samples=new Set<number>();for(let x=Math.round(element.width*.6);x<element.width;x++)samples.add(pixels[x*4]);return samples.size;
+  })).toBeGreaterThan(3);
+  await page.screenshot({path:resolve(root,"comparison.png")});
+});
+
 const sample = {
   path: "C:\\fixtures\\sample.mp4", name: "sample.mp4", kind: "video", duration: 60,
   width: 1920, height: 1080, fps: 30, codec: "h264", audio_codec: "aac",

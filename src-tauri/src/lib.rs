@@ -30,6 +30,7 @@ mod auto_encoder;
 mod face_detection;
 mod job_inspector;
 mod png_compression;
+mod premiere_bridge;
 mod processing_stack;
 
 use auto_encoder::{
@@ -9400,10 +9401,16 @@ pub fn run() {
         .manage(JobState::default())
         .manage(DownloadHistoryState::default())
         .manage(RuntimeMigrationState::default())
+        .manage(premiere_bridge::PremiereBridge::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             job_inspector::job_inspector,
+            premiere_bridge::premiere_status,
+            premiere_bridge::premiere_install,
+            premiere_bridge::premiere_remove,
+            premiere_bridge::premiere_clean_projects,
+            premiere_bridge::premiere_send,
             probe_media,
             authorize_media_preview,
             read_project,

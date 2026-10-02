@@ -3,6 +3,13 @@ dist/
 .svelte-kit/
 test-results/
 playwright-report/
+benchmark-results/
+release-assets/
+portable-package/
+updater-manifest/
+release-notes.md
+docs/DEV_AUDIT_*.md
+docs/DEV_REAUDIT_*.md
 
 src-tauri/target/
 src-tauri/gen/

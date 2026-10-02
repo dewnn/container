@@ -2,7 +2,7 @@
   "name": "container-studio",
   "private": true,
   "license": "MIT",
-  "version": "0.19.1",
+  "version": "0.19.2",
   "description": "Local-first FFmpeg media toolbox with SmartCut, batch processing and visual previews.",
   "homepage": "https://github.com/dewnn/container#readme",
   "bugs": {
@@ -23,7 +23,7 @@
     "test:project-resources": "node --experimental-strip-types tooling/scripts/test-project-resources.ts",
     "test:visual-geometry": "node --experimental-strip-types tooling/scripts/test-visual-geometry.ts && node --experimental-strip-types tooling/scripts/test-stack-geometry.ts",
     "test:release-channel": "node --experimental-strip-types tooling/scripts/test-release-channel.ts",
-    "test:contracts": "node --experimental-strip-types tooling/scripts/test-ui-contracts.ts && node --experimental-strip-types tooling/scripts/test-render-feedback.ts",
+    "test:contracts": "node --experimental-strip-types tooling/scripts/test-ui-contracts.ts && node --experimental-strip-types tooling/scripts/test-render-feedback.ts && node tooling/scripts/test-premiere-bridge.mjs",
     "test:ui": "pnpm test:timeline && pnpm test:recovery && pnpm test:editor-safety && pnpm test:project-resources && pnpm test:visual-geometry && pnpm test:release-channel && pnpm test:contracts",
     "test:e2e": "playwright test --config tooling/playwright.config.ts",
     "test:windows-icons": "powershell -NoProfile -ExecutionPolicy Bypass -File tooling/scripts/test-windows-icons.ps1",

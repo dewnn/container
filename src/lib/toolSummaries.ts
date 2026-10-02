@@ -30,7 +30,7 @@ const summaries: Record<string, [string, string]> = {
   fix_timestamps: ["Repair media timestamps", "Medya zaman damgalarını düzelt"],
   file_hash: ["Calculate a SHA-256 checksum", "SHA-256 dosya özeti hesapla"],
   cut: ["Export a selected time range", "Seçili zaman aralığını çıkar"],
-  remux: ["Change container without encoding", "Kodlamadan kapsayıcı değiştir"],
+  remux: ["Change video file format", "Video dosya biçimini değiştir"],
   screenshot: ["Save a video frame", "Bir video karesini kaydet"],
   gif: ["Turn a clip into a GIF", "Klipten GIF oluştur"],
   remove_audio: ["Remove the audio track", "Ses parçasını kaldır"],

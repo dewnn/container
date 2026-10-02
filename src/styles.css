@@ -146,6 +146,11 @@ footer .status-dot.missing{background:var(--red);box-shadow:0 0 12px rgba(250,10
 .batch-workspace.resizable{grid-template-columns:minmax(0,var(--batch-left)) 8px minmax(0,1fr);gap:0}.batch-workspace.resizable>.batch-control,.batch-workspace.resizable>.batch-list{min-width:0}
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; min-height: 0; overflow: hidden; }
 .tool-pane, .settings { display: flex; flex-direction: column; }
+.screenshot-timecode{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:0 0 8px;font-size:11px;color:var(--muted)}.screenshot-timecode input{width:150px;max-width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}.screenshot-timecode small{font-size:10px}.tool-timeline:has(.screenshot-timecode){grid-template-rows:39px auto 1fr 15px}
+.noise-preview{position:absolute;inset:0;pointer-events:none;z-index:3}.noise-preview canvas{width:100%;height:100%;object-fit:contain}.noise-preview-controls{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);width:min(460px,calc(100% - 24px));padding:8px 12px;border:1px solid var(--border);border-radius:7px;background:var(--panel);display:flex;align-items:center;gap:10px;flex-wrap:wrap;pointer-events:auto;color:var(--text);font-size:11px}.noise-preview-controls input{flex:1;min-width:80px}.noise-preview-controls small{width:100%;color:var(--muted);font-size:10px}
+.settings .codec-note{grid-template-columns:minmax(85px,max-content) minmax(0,1fr);column-gap:12px;row-gap:8px;align-items:start;font-size:11px;line-height:1.55}.settings .codec-note b{font-family:var(--sans);font-size:10px;white-space:nowrap;color:var(--text)}.settings .codec-note span{min-width:0;overflow-wrap:break-word}
+.settings{container-type:inline-size}
+@container(max-width:300px){.settings .codec-note{grid-template-columns:minmax(0,1fr);gap:4px}}
 .pane-head, .preview-head, .job-head { min-height: 72px; padding: 16px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
 h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; color: var(--muted); }
 .pane-head h3,
@@ -726,6 +731,19 @@ h3, h4 { margin: 0; font-size: 11px; font-weight:600; letter-spacing: .08em; col
 :root[data-theme] :is(button,input,select,textarea,a[href],[tabindex]):focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .general-settings-trigger{flex:none;width:30px;height:30px;padding:5px!important;display:grid;place-items:center}
 .general-settings-trigger svg{width:18px;height:18px}
+.premiere-connected{display:inline-flex;align-items:center;gap:6px;flex:none;font:500 10px var(--sans);color:var(--text)}
+.premiere-connected::before{content:"";width:6px;height:6px;border-radius:50%;background:#24b66b}
+.premiere-connected small{color:var(--muted);font-size:10px}
+.general-settings-trigger{position:relative}.general-settings-trigger.premiere-ready::after{content:"";position:absolute;right:3px;bottom:3px;width:5px;height:5px;background:#24b66b;border-radius:50%;box-shadow:0 0 0 2px var(--panel)}
+.premiere-output-row{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--border);padding:7px 0;margin:4px 0 0;flex-basis:100%;width:100%;min-width:0}
+.premiere-output-row .premiere-send{font:500 10px var(--sans);padding:5px 9px;white-space:nowrap}
+.premiere-confirm-dialog{width:min(410px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;margin:auto;padding:20px;border:1px solid var(--border-strong);border-radius:10px;background:var(--panel);color:var(--text);box-shadow:0 20px 70px #0008}
+.premiere-confirm-dialog::backdrop{background:#0009;backdrop-filter:blur(3px)}
+.general-settings-dialog .premiere-confirm-dialog header{display:flex;justify-content:flex-start;gap:12px;align-items:center;margin-bottom:14px}
+.premiere-confirm-dialog h2{font:650 16px var(--sans);margin:0}.premiere-mark{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:7px;background:var(--surface);color:var(--blue);border:1px solid var(--border);font:700 15px var(--sans)}
+.general-settings-dialog .premiere-confirm-dialog p{font:12px/1.65 var(--sans);color:var(--muted);margin:8px 0}.premiere-setup-warning{padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);margin:14px 0}.premiere-setup-warning b{font:600 12px var(--sans)}
+.premiere-confirm-dialog small{font:11px/1.5 var(--sans);color:var(--muted)}.general-settings-dialog .premiere-confirm-dialog footer{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}.general-settings-dialog .premiere-confirm-dialog button{width:auto;padding:8px 12px;font:500 12px var(--sans)}
+.premiere-confirm-install{border:1px solid var(--blue);color:var(--blue);background:hsl(var(--accent-hue) var(--accent-saturation) var(--accent-lightness) / .1);border-radius:5px}
 .general-settings-dialog{width:min(390px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;margin:auto;padding:18px;color:var(--text);background:var(--panel);border:1px solid var(--border-strong);border-radius:10px;box-shadow:0 20px 70px #0005}
 .general-settings-dialog::backdrop{background:#0009;backdrop-filter:blur(3px)}
 .general-settings-dialog header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
@@ -832,6 +850,8 @@ input[type=checkbox],input[type=radio]{accent-color:var(--blue)}
 .general-settings-dialog .workspace-layout h3{margin:0;font:600 12px var(--sans)}
 .general-settings-dialog .workspace-layout p{color:var(--muted);font:11px/1.5 var(--sans);margin:6px 0 10px}
 .general-settings-dialog .workspace-layout button{width:100%;white-space:normal}
+.general-settings-dialog .premiere-settings > button{display:block;min-height:40px;padding:10px 16px;font:500 12px/1.4 var(--sans)}
+.general-settings-dialog .premiere-settings > button + button{margin-top:8px}
 .landing footer.landing-engine-status{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);margin:0;min-height:36px;display:flex;align-items:center;justify-content:center;white-space:nowrap}
 @media(min-width:1900px){
   .topbar>.file-summary{position:absolute;left:50%;transform:translateX(-50%);width:830px;justify-content:center}
