@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tools as toolDefinitions, localizedTool } from "../../src/lib/tools.ts";
 
@@ -7,12 +7,37 @@ for (const tool of toolDefinitions) {
   const texts=[localized.title,localized.category,localized.description,localized.detail,...localized.fields.flatMap(field=>[field.label,field.hint??"",...(field.options??[]).map(option=>option.label)])];
   if(texts.some(text=>/[ğüşİıĞÜŞ]/u.test(text)))throw new Error(`Turkish text leaked into English tool: ${tool.id}`);
 }
+// Turkish mode must not silently fall back to English labels. Product names
+// and technical format names are the only labels allowed to stay the same.
+const sameInBothLanguages=new Set(["Kick","Twitch","1080p Full HD","Intel H.264","Intel AV1","10-bit 4:2:0","Podcast","Opus"]);
+for (const tool of toolDefinitions) {
+  const turkish=localizedTool(tool,"tr");
+  tool.fields.forEach((field,index)=>{
+    const localized=turkish.fields[index];
+    const pairs:[string,string][]=[[field.label,localized.label],...(field.options??[]).map((option,optionIndex):[string,string]=>[option.label,localized.options![optionIndex].label])];
+    if(field.hint)pairs.push([field.hint,localized.hint??""]);
+    for(const [english,translated] of pairs){
+      if(english===translated&&/[a-z]{3}/.test(english)&&!sameInBothLanguages.has(english))throw new Error(`Missing Turkish text in ${tool.id}: ${english}`);
+    }
+  });
+}
 const interpolation=toolDefinitions.find(tool=>tool.id==="interpolation")!;
 if(!localizedTool(interpolation,"tr").fields[0].hint?.includes("Dosya açıldığında"))throw new Error("Interpolation Turkish hint missing");
 
-const app = readFileSync(new URL("../../src/App.svelte", import.meta.url), "utf8");
+// App.svelte delegates panels and dialogs to components; contracts look at all of them.
+const app = [readFileSync(new URL("../../src/App.svelte", import.meta.url), "utf8"),
+  ...(readdirSync(new URL("../../src/lib/", import.meta.url), { recursive: true }) as string[])
+    .filter(name => name.endsWith(".svelte"))
+    .sort()
+    .map(name => readFileSync(new URL(`../../src/lib/${name.replaceAll("\\", "/")}`, import.meta.url), "utf8"))].join("\n");
 const css = readFileSync(new URL("../../src/styles.css", import.meta.url), "utf8");
-const backend = readFileSync(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
+// The backend is split into modules; contracts look at all Rust sources.
+const updaterModule = readFileSync(new URL("../../src/lib/appUpdater.svelte.ts", import.meta.url), "utf8");
+const backend = (readdirSync(new URL("../../src-tauri/src/", import.meta.url), { recursive: true }) as string[])
+  .filter(name => name.endsWith(".rs"))
+  .sort()
+  .map(name => readFileSync(new URL(`../../src-tauri/src/${name.replaceAll("\\", "/")}`, import.meta.url), "utf8"))
+  .join("\n");
 const kickLogo = readFileSync(new URL("../../src/assets/kick-mark.svg", import.meta.url), "utf8");
 const twitchLogo = readFileSync(new URL("../../src/assets/twitch-mark.svg", import.meta.url), "utf8");
 const tools = readFileSync(new URL("../../src/lib/tools.ts", import.meta.url), "utf8");
@@ -72,7 +97,7 @@ const contracts: Array<[string, boolean]> = [
   ["installer no longer copies loose icons", !/^\s*File\s.*\.ico/m.test(installerHooks) && installerHooks.includes('Delete "$INSTDIR\\container-brand-rounded-*.ico"') && installerHooks.includes('Delete "$INSTDIR\\container-cproj-v2-*.ico"')],
   ["release verifies actual embedded resources before publishing", releaseWorkflow.includes('test-windows-icons.ps1 -Executable src-tauri/target/release/container-studio.exe')],
   ["closing hides the editor in the tray and Exit really terminates", backend.includes('api.prevent_close()') && backend.includes('window.hide()') && backend.includes('"tray-exit" => app.exit(0)')],
-  ["tray update action uses the existing updater UI and DEV keeps it hidden", backend.includes('"tray-updates"') && backend.includes('app.emit("tray-check-updates", ())') && backend.includes('if is_development_build()') && app.includes('listen("tray-check-updates",()=>{void checkForUpdates(true)})')],
+  ["tray update action uses the existing updater UI and DEV keeps it hidden", backend.includes('"tray-updates"') && backend.includes('app.emit("tray-check-updates", ())') && backend.includes('if is_development_build()') && app.includes('listen("tray-check-updates",()=>{void updater.check(true)})')],
   ["tray menu follows the selected TR/EN language", app.includes('invoke("set_tray_language",{language:next})') && backend.includes('fn set_tray_language(language: &str')],
   ["release packaging chooses the exact current executable and installer", releaseWorkflow.includes("Get-Item -LiteralPath 'src-tauri/target/release/container-studio.exe'") && releaseWorkflow.includes('Filter "CONTAINER_${version}_x64-setup.exe"')],
   ["native confirmation dialogs have their required IPC permission", desktopPermissions.includes("dialog:allow-message")],
@@ -80,7 +105,7 @@ const contracts: Array<[string, boolean]> = [
   ["Windows installer publisher is dewn", stableConfig.bundle.publisher === "dewn"],
   ["DEV uses an isolated application identifier", devConfig.identifier === "dev.dean.container.dev"],
   ["camera detection ships visibly with a localized experimental label", !app.includes("{#if experimentalFeatures}") && app.includes("AUTO-DETECT CAMERA") && app.includes('"DENEYSEL":"EXPERIMENTAL"')],
-  ["DEV builds never query or offer the production updater", app.includes("updatesAllowedForVersion(appVersion)") && app.includes("{#if updaterEnabled}")],
+  ["DEV builds never query or offer the production updater", updaterModule.includes("updatesAllowedForVersion(this.version)") && updaterModule.includes("if (!updatesAllowedForVersion(this.version)) return;") && app.includes("{#if updater.enabled}")],
   ["recovery uses a freshly authorized media URL", app.includes("recoveredMediaUrl(preparedMediaUrl)")],
   ["compact SmartCut layout has a 900px breakpoint", css.includes("@media(max-height:900px)")],
   ["compact SmartCut layout has a 700px breakpoint", css.includes("@media(max-height:700px)")],

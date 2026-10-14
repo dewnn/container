@@ -1,6 +1,6 @@
 # Security audit
 
-Review date: 2026-09-23
+Review date: 2026-10-10 (v0.19.2 plus the Unreleased changes). Earlier review: 2026-09-23.
 
 This document records security checks performed for CONTAINER. It is not a guarantee that software can never contain a vulnerability.
 
@@ -13,13 +13,15 @@ This document records security checks performed for CONTAINER. It is not a guara
 - Opener permissions reveal completed output files and permit only the exact official FFmpeg download URL used by the interface.
 - Tauri permissions are limited to core defaults, file selection, window icon changes, the signed updater and the two opener actions above.
 - The Content Security Policy blocks arbitrary remote scripts and connections.
-- Downloader URLs must use HTTPS, reject credentials, control characters, localhost and literal private/link-local addresses. yt-dlp is launched with configuration and plugin loading disabled and never imports browser cookies.
+- Downloader URLs must use HTTPS, reject credentials, control characters, localhost (including a trailing-dot form) and literal private, link-local, carrier-grade NAT, `0.0.0.0/8`, multicast, IPv4-mapped and NAT64 IPv6 addresses. Host names are not resolved before the check, so this is a first-hop guard rather than full DNS-rebinding protection. yt-dlp is launched with configuration and plugin loading disabled and never imports browser cookies.
 
 ## Filesystem behavior
 
 - The user chooses input files through the system picker or drag and drop.
 - Asset-protocol access starts empty and is granted at runtime only to user-selected, drag-and-dropped, Send To, and newly rendered files.
 - Processing creates a unique output under `Downloads/CONTAINER Output/<category>`.
+- Output cleanup reserves the job slot for its whole duration, so it cannot recycle files while a job is still writing between FFmpeg stages, and no job can start mid-cleanup.
+- Values that enter FFmpeg filter graphs are escaped or allowlisted; SmartCut export resolution uses the same allowlist as the Processing Stack.
 - Downloader thumbnails are held only in a single system-temporary file and removed immediately after the preview loads; the former thumbnail cache is cleaned on startup.
 - Source media is not overwritten.
 - Repository rules exclude build output, environment files, logs, FFmpeg executables and temporary files.
@@ -42,8 +44,8 @@ This document records security checks performed for CONTAINER. It is not a guara
 
 - Common API-token/private-key patterns: none found.
 - Unignored files larger than 10 MB: none found.
-- Frontend type/diagnostic check: 0 errors and 0 warnings.
-- Rust tests: 70 passed, 0 failed; the opt-in real-media camera and VAD parity reports are intentionally ignored unless their media paths are supplied.
-- Clean Windows release build and NSIS packaging: passed.
+- Frontend type/diagnostic check: 0 errors and 0 warnings across 170 files.
+- Rust tests: 135 defined. On a Linux check with FFmpeg 6.1, 110 passed and the 20 real-media/Windows-path tests that target the bundled FFmpeg 9 build were not applicable; the full suite runs on Windows CI. The 5 opt-in real-media camera and VAD parity reports are ignored unless their media paths are supplied.
+- Clean Windows release build and NSIS packaging: passed in the 2026-09-23 review; not re-run for this update.
 
 Security reports should use GitHub's private vulnerability reporting and avoid attaching private media or personal paths.

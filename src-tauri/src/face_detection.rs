@@ -246,6 +246,72 @@ pub fn normalize_faces(
         .collect()
 }
 
+/// Each sample is analysed once as a whole and once as four overlapping
+/// corner tiles. A tile covers this fraction of the frame in each direction,
+/// so small webcam faces reach the detector at about 1.8x the resolution.
+pub const TILE_FRACTION: f32 = 0.55;
+/// Number of 640x640 images per sample: the full frame plus four tiles.
+pub const IMAGES_PER_SAMPLE: usize = 5;
+
+/// Origin of tile `index` (0..4: top-left, top-right, bottom-left,
+/// bottom-right) in normalized source coordinates.
+pub fn tile_origin(index: usize) -> (f32, f32) {
+    let far = 1.0 - TILE_FRACTION;
+    (
+        if index % 2 == 1 { far } else { 0.0 },
+        if index >= 2 { far } else { 0.0 },
+    )
+}
+
+/// Maps faces found in a tile back to whole-frame coordinates and merges them
+/// with the faces found on the whole frame. Faces cut by an inner tile edge are
+/// dropped: the neighbouring tile or the whole frame sees them complete.
+pub fn merge_tile_faces(
+    mut whole: Vec<NormalizedFace>,
+    tiles: Vec<(usize, Vec<NormalizedFace>)>,
+) -> Vec<NormalizedFace> {
+    for (index, faces) in tiles {
+        let (origin_x, origin_y) = tile_origin(index);
+        for face in faces {
+            let inner_left = origin_x > 0.0 && face.x < 0.01;
+            let inner_top = origin_y > 0.0 && face.y < 0.01;
+            let inner_right = origin_x == 0.0 && face.x + face.width > 0.99;
+            let inner_bottom = origin_y == 0.0 && face.y + face.height > 0.99;
+            if inner_left || inner_top || inner_right || inner_bottom {
+                continue;
+            }
+            let mapped = NormalizedFace {
+                x: origin_x + face.x * TILE_FRACTION,
+                y: origin_y + face.y * TILE_FRACTION,
+                width: face.width * TILE_FRACTION,
+                height: face.height * TILE_FRACTION,
+                confidence: face.confidence,
+            };
+            match whole
+                .iter_mut()
+                .find(|existing| normalized_overlap(existing, &mapped) > 0.3)
+            {
+                Some(existing) if existing.confidence >= mapped.confidence => {}
+                Some(existing) => *existing = mapped,
+                None => whole.push(mapped),
+            }
+        }
+    }
+    whole
+}
+
+fn normalized_overlap(left: &NormalizedFace, right: &NormalizedFace) -> f32 {
+    let x1 = left.x.max(right.x);
+    let y1 = left.y.max(right.y);
+    let x2 = (left.x + left.width).min(right.x + right.width);
+    let y2 = (left.y + left.height).min(right.y + right.height);
+    if x2 <= x1 || y2 <= y1 {
+        return 0.0;
+    }
+    let intersection = (x2 - x1) * (y2 - y1);
+    intersection / (left.width * left.height + right.width * right.height - intersection).max(1e-6)
+}
+
 fn cluster_match(cluster: &FaceCluster, face: &NormalizedFace) -> Option<f32> {
     let mean = cluster.representative();
     let center_x = face.x + face.width / 2.0;
@@ -358,13 +424,17 @@ pub fn choose_camera_region(
     // Streamer webcams are normally 16:9 overlays. The detector sees the face,
     // but the useful crop is the full webcam card around it: include the chair,
     // shoulders and deliberate headroom while stopping before the chat below.
-    // A fixed face multiplier over-expands close-up webcams and under-expands
-    // wide shots. Use a base panel allowance plus a smaller face-dependent
-    // term instead: small faces still retain their room/chair context, while a
-    // close face cannot make the crop swallow half of the source frame.
-    let width_from_face = 0.145 + mean.width * 2.05;
-    let width_from_height = (0.10 + mean.height * 1.20) * (16.0 / 9.0) / source_ratio;
-    let mut width = width_from_face.max(width_from_height).clamp(0.18, 0.36);
+    // A base panel allowance plus a face term keeps room/chair context for
+    // normal webcams without letting a close face swallow half of the frame.
+    // Small webcams are about 5.5-7x the face width, which that base overstates,
+    // so the smaller of the two estimates wins. The edge search below then
+    // snaps to the actual border.
+    let height_scale = (16.0 / 9.0) / source_ratio;
+    let panel_estimate =
+        (0.145 + mean.width * 2.05).max((0.10 + mean.height * 1.20) * height_scale);
+    let proportional_estimate =
+        (0.02 + mean.width * 5.5).max((0.01 + mean.height * 2.6) * height_scale);
+    let mut width = panel_estimate.min(proportional_estimate).clamp(0.06, 0.36);
     let mut height = width * source_ratio * 9.0 / 16.0;
     if height > 0.78 {
         height = 0.78;
@@ -419,27 +489,39 @@ pub fn refine_camera_region(
     let right = (region.x + region.width) / 100.0;
     let bottom = (region.y + region.height) / 100.0;
     let geometry = SampleGeometry::new(source_width, source_height);
-    let horizontal_start = left + 0.02;
-    let horizontal_end = right - 0.02;
+    let motion_map = scene_motion_map(&frames, geometry);
+    let motion = motion_map.as_deref().map(|map| MotionContext {
+        map,
+        camera: region_motion(map, geometry, left, top, right, bottom),
+    });
+    let reach_y = ((bottom - top) * 0.6).clamp(0.04, 0.13);
+    let reach_x = ((right - left) * 0.6).clamp(0.04, 0.13);
+    let inset_x = ((right - left) * 0.1).min(0.02);
+    let horizontal_start = left + inset_x;
+    let horizontal_end = right - inset_x;
     let best_top = find_boundary(
         &frames,
+        motion,
         geometry,
         true,
-        (top - 0.13).max(0.0),
-        (face_y - 0.025).min(top + 0.13),
+        (top - reach_y).max(0.0),
+        (face_y - 0.025).min(top + reach_y),
         horizontal_start,
         horizontal_end,
         top,
+        face_y,
     );
     let best_bottom = find_boundary(
         &frames,
+        motion,
         geometry,
         true,
-        (face_y + 0.025).max(bottom - 0.13),
-        (bottom + 0.13).min(1.0),
+        (face_y + 0.025).max(bottom - reach_y),
+        (bottom + reach_y).min(1.0),
         horizontal_start,
         horizontal_end,
         bottom,
+        face_y,
     );
     let y1 = best_top.unwrap_or(top);
     let y2 = if bottom > 0.975 && best_bottom.is_none_or(|edge| edge > 0.99) {
@@ -447,27 +529,32 @@ pub fn refine_camera_region(
     } else {
         best_bottom.unwrap_or(bottom)
     };
-    let vertical_start = y1 + 0.02;
-    let vertical_end = y2 - 0.02;
+    let inset_y = ((y2 - y1) * 0.1).min(0.02);
+    let vertical_start = y1 + inset_y;
+    let vertical_end = y2 - inset_y;
     let best_left = find_boundary(
         &frames,
+        motion,
         geometry,
         false,
-        (left - 0.13).max(0.0),
-        (face_x - 0.025).min(left + 0.13),
+        (left - reach_x).max(0.0),
+        (face_x - 0.025).min(left + reach_x),
         vertical_start,
         vertical_end,
         left,
+        face_x,
     );
     let best_right = find_boundary(
         &frames,
+        motion,
         geometry,
         false,
-        (face_x + 0.025).max(right - 0.13),
-        (right + 0.13).min(1.0),
+        (face_x + 0.025).max(right - reach_x),
+        (right + reach_x).min(1.0),
         vertical_start,
         vertical_end,
         right,
+        face_x,
     );
     let left_attached =
         left < 0.015 && boundary_strength(&frames, geometry, true, y1, 0.005, 0.035) >= 11.0;
@@ -485,7 +572,7 @@ pub fn refine_camera_region(
     };
     // A texture edge inside the camera can be stronger than its actual border.
     // Reject implausibly small or large boxes and keep the face-only fallback.
-    if x2 - x1 < 0.11 || y2 - y1 < 0.10 || x2 - x1 > 0.65 || y2 - y1 > 0.75 {
+    if x2 - x1 < 0.045 || y2 - y1 < 0.045 || x2 - x1 > 0.65 || y2 - y1 > 0.75 {
         return region;
     }
     region.x = x1 * 100.0;
@@ -532,6 +619,7 @@ impl SampleGeometry {
 #[allow(clippy::too_many_arguments)]
 fn find_boundary(
     frames: &[&[u8]],
+    motion: Option<MotionContext>,
     geometry: SampleGeometry,
     horizontal: bool,
     start: f32,
@@ -539,6 +627,7 @@ fn find_boundary(
     line_start: f32,
     line_end: f32,
     expected: f32,
+    inside: f32,
 ) -> Option<f32> {
     if start >= end || line_start >= line_end {
         return None;
@@ -558,9 +647,25 @@ fn find_boundary(
         }
         let strength =
             boundary_strength(frames, geometry, horizontal, position, line_start, line_end);
+        // Colour contrast cannot tell the webcam's own border from a stronger
+        // line just outside it (the edge of a chat bar or of chat text). The
+        // webcam side of the real border is calm, while a line beyond the
+        // webcam has gameplay or scrolling chat on its inner side.
+        let outside_penalty = motion.map_or(0.0, |context| {
+            let inner = band_motion(
+                context.map,
+                geometry,
+                horizontal,
+                position,
+                position > inside,
+                line_start,
+                line_end,
+            );
+            (inner - context.camera * 1.5 - 3.0).max(0.0) * 2.0
+        });
         // A small prior favours the existing face-based estimate when several
         // similarly strong UI lines appear near the camera.
-        let rank = strength - (position - expected).abs() * 35.0;
+        let rank = strength - (position - expected).abs() * 35.0 - outside_penalty;
         candidates.push((position, strength, rank));
     }
     let &(position, strength, _) = candidates
@@ -615,6 +720,124 @@ fn boundary_strength(
         frame_scores.push(contrasts[6] * 0.5 + median(contrasts.into_iter()) * 0.5);
     }
     median(frame_scores.into_iter())
+}
+
+/// Per-pixel temporal change across the sampled frames (mean absolute
+/// deviation from the per-pixel median, in grey levels).
+fn motion_map(frames: &[&[u8]]) -> Vec<f32> {
+    let pixels = INPUT_SIZE * INPUT_SIZE;
+    let mut map = vec![0.0_f32; pixels];
+    if frames.len() < 3 {
+        return map;
+    }
+    let mut values = Vec::with_capacity(frames.len());
+    for (pixel, slot) in map.iter_mut().enumerate() {
+        values.clear();
+        for frame in frames {
+            let offset = pixel * 3;
+            values.push(
+                frame[offset] as f32 * 0.299
+                    + frame[offset + 1] as f32 * 0.587
+                    + frame[offset + 2] as f32 * 0.114,
+            );
+        }
+        values.sort_by(f32::total_cmp);
+        let middle = values[values.len() / 2];
+        *slot = values
+            .iter()
+            .map(|value| (value - middle).abs())
+            .sum::<f32>()
+            / values.len() as f32;
+    }
+    map
+}
+
+/// The motion map is only meaningful when the content actually moves between
+/// samples. Paused games, menus and slideshows fall back to colour edges.
+fn scene_motion_map(frames: &[&[u8]], geometry: SampleGeometry) -> Option<Vec<f32>> {
+    if frames.len() < 5 {
+        return None;
+    }
+    let map = motion_map(frames);
+    let mut samples = Vec::with_capacity(32 * 18);
+    for row in 0..18 {
+        for column in 0..32 {
+            let x = (column as f32 + 0.5) / 32.0;
+            let y = (row as f32 + 0.5) / 18.0;
+            samples.push(motion_at(&map, geometry, x, y));
+        }
+    }
+    (median(samples.into_iter()) >= 3.0).then_some(map)
+}
+
+fn motion_at(map: &[f32], geometry: SampleGeometry, x: f32, y: f32) -> f32 {
+    let px = (geometry.pad_x + x.clamp(0.0, 1.0) * geometry.scaled_width)
+        .round()
+        .clamp(0.0, (INPUT_SIZE - 1) as f32) as usize;
+    let py = (geometry.pad_y + y.clamp(0.0, 1.0) * geometry.scaled_height)
+        .round()
+        .clamp(0.0, (INPUT_SIZE - 1) as f32) as usize;
+    map[py * INPUT_SIZE + px]
+}
+
+#[derive(Clone, Copy)]
+struct MotionContext<'a> {
+    map: &'a [f32],
+    /// Typical motion inside the face-based webcam guess.
+    camera: f32,
+}
+
+fn region_motion(
+    map: &[f32],
+    geometry: SampleGeometry,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+) -> f32 {
+    let mut samples = Vec::with_capacity(16 * 12);
+    for row in 0..12 {
+        for column in 0..16 {
+            let x = left + (right - left) * (column as f32 + 0.5) / 16.0;
+            let y = top + (bottom - top) * (row as f32 + 0.5) / 12.0;
+            samples.push(motion_at(map, geometry, x, y));
+        }
+    }
+    median(samples.into_iter())
+}
+
+/// Median motion of a thin band beside a line, on the side that would be
+/// inside the webcam if the line were its border.
+fn band_motion(
+    map: &[f32],
+    geometry: SampleGeometry,
+    horizontal: bool,
+    position: f32,
+    before: bool,
+    line_start: f32,
+    line_end: f32,
+) -> f32 {
+    let resolution = if horizontal {
+        geometry.scaled_height
+    } else {
+        geometry.scaled_width
+    };
+    let direction = if before { -1.0 } else { 1.0 };
+    let mut samples = Vec::with_capacity(24);
+    for sample in 0..24 {
+        let along = line_start + (line_end - line_start) * (sample as f32 + 0.5) / 24.0;
+        let mut total = 0.0;
+        for step in 2..=7 {
+            let offset = direction * step as f32 / resolution;
+            total += if horizontal {
+                motion_at(map, geometry, along, position + offset)
+            } else {
+                motion_at(map, geometry, position + offset, along)
+            };
+        }
+        samples.push(total / 6.0);
+    }
+    median(samples.into_iter())
 }
 
 #[cfg(test)]
@@ -804,6 +1027,7 @@ mod tests {
         let frames = vec![frame.as_slice()];
         let boundary = find_boundary(
             &frames,
+            None,
             SampleGeometry::new(1920, 1080),
             false,
             0.65,
@@ -811,9 +1035,46 @@ mod tests {
             0.77,
             0.98,
             0.70,
+            0.90,
         )
         .unwrap();
         assert!((boundary - 0.81).abs() < 0.012, "{boundary}");
+    }
+
+    #[test]
+    fn tile_faces_map_to_the_whole_frame_and_merge_duplicates() {
+        let whole = vec![confident_face(0.80, 0.80, 0.70)];
+        let tiles = vec![
+            // Bottom-right tile sees the same face at higher confidence.
+            (
+                3,
+                vec![NormalizedFace {
+                    x: (0.80 - (1.0 - TILE_FRACTION)) / TILE_FRACTION,
+                    y: (0.80 - (1.0 - TILE_FRACTION)) / TILE_FRACTION,
+                    width: 0.08 / TILE_FRACTION,
+                    height: 0.14 / TILE_FRACTION,
+                    confidence: 0.95,
+                }],
+            ),
+            // A small face only the top-left tile can see.
+            (0, vec![confident_face(0.10, 0.20, 0.90)]),
+            // A face cut by the inner edge of the top-left tile is ignored.
+            (
+                0,
+                vec![NormalizedFace {
+                    x: 0.95,
+                    y: 0.40,
+                    width: 0.05,
+                    height: 0.10,
+                    confidence: 0.9,
+                }],
+            ),
+        ];
+        let merged = merge_tile_faces(whole, tiles);
+        assert_eq!(merged.len(), 2);
+        assert!((merged[0].x - 0.80).abs() < 1e-4 && merged[0].confidence > 0.9);
+        assert!((merged[1].x - 0.10 * TILE_FRACTION).abs() < 1e-4);
+        assert!((merged[1].width - 0.08 * TILE_FRACTION).abs() < 1e-4);
     }
 
     #[test]

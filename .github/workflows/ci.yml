@@ -113,6 +113,12 @@ jobs:
             Sort-Object Length -Descending |
             Select-Object -First 1
           if (-not $ffmpeg -or -not $ffprobe) { throw "Real FFmpeg binaries were not found under $tools." }
+          # The Chocolatey package is community-maintained: pin the exact
+          # binaries that ship inside CONTAINER, not only the version number.
+          foreach ($pair in @(@($ffmpeg, $config.FFMPEG_SHA256), @($ffprobe, $config.FFPROBE_SHA256))) {
+            $actual = (Get-FileHash -LiteralPath $pair[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $pair[1]) { throw "$($pair[0].Name) checksum mismatch: $actual" }
+          }
           $ffmpeg.DirectoryName >> $env:GITHUB_PATH
       - name: Prepare verified yt-dlp
         shell: pwsh
@@ -158,7 +164,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Set-Content -Path dist/index.html -Value '<!doctype html><title>CONTAINER CI</title>'
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:

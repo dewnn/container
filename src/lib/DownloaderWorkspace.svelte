@@ -7,6 +7,7 @@
   import { armCompletionSound, playCompletionSound } from "./completionSound";
   import { reportProblem } from "./toast";
   import { untrack } from "svelte";
+  import { formatTimecode, parseTimecode } from "./timecode";
 
   let { language, hasMedia, onback, onbusychange, onopenmedia }: { language: "tr" | "en"; hasMedia:boolean; onback:()=>void; onbusychange?: (value:boolean)=>void; onopenmedia: (path:string)=>Promise<void> } = $props();
   interface DownloaderStatus { ready:boolean; version:string|null }
@@ -21,6 +22,8 @@
   let analysis:DownloadAnalysis|null=$state(null);
   let analyzing=$state(false);
   let busy=$state(false);
+  // Choosing or updating yt-dlp is not a download: no progress bar or Cancel.
+  let binaryBusy=$state(false);
   let downloadJobId=0;
   let activeJobToken="";
   let message=$state("");
@@ -36,8 +39,23 @@
   let preferredHeight=$state<number|null>(null);
   let unlisten:UnlistenFn|undefined;
   let temporaryThumbnail:string|null=null;
+  // Optional part of the video to download (for example one minute of a VOD).
+  let sectionEnabled=$state(false);
+  let sectionStart=$state("");
+  let sectionEnd=$state("");
+  const section=$derived.by(()=>{
+    if(!sectionEnabled)return {valid:true,request:null as {start:number;end:number}|null,problem:""};
+    const start=parseTimecode(sectionStart),end=parseTimecode(sectionEnd),limit=analysis?.duration??null;
+    const tr=language==="tr";
+    if(start===null||end===null)return {valid:false,request:null,problem:tr?"Başlangıç ve bitişi 1:23:45, 83:20 veya 5025 gibi yaz.":"Enter start and end like 1:23:45, 83:20 or 5025."};
+    // The backend clamps the end to the video length, so check the clamped part.
+    if((limit?Math.min(end,limit):end)-start<1)return {valid:false,request:null,problem:tr?"Bitiş, başlangıçtan en az 1 saniye sonra olmalı.":"The end must be at least 1 second after the start."};
+    if(limit&&start>=limit)return {valid:false,request:null,problem:tr?`Başlangıç videonun süresini (${formatTimecode(limit)}) aşıyor.`:`The start is past the video length (${formatTimecode(limit)}).`};
+    if(limit&&end>limit+0.5)return {valid:false,request:null,problem:tr?`Bitiş videonun süresini (${formatTimecode(limit)}) aşıyor.`:`The end is past the video length (${formatTimecode(limit)}).`};
+    return {valid:true,request:{start,end:limit?Math.min(end,limit):end},problem:""};
+  });
 
-  $effect(()=>onbusychange?.(busy||analyzing||!!deletingPath));
+  $effect(()=>onbusychange?.(busy||binaryBusy||analyzing||!!deletingPath));
 
   function releaseThumbnail(path:string|null|undefined){
     if(!path||path!==temporaryThumbnail)return;
@@ -75,14 +93,23 @@
   async function chooseBinary(){
     const path=await open({multiple:false,directory:false,filters:[{name:"yt-dlp",extensions:["exe"]}]});
     if(typeof path!=="string")return;
-    busy=true;message="";
-    try{status=await invoke<DownloaderStatus>("set_downloader_binary",{path});message=language==="tr"?"yt-dlp hazır.":"yt-dlp is ready."}catch(error){message="";reportProblem(error)}finally{busy=false}
+    binaryBusy=true;message="";
+    try{status=await invoke<DownloaderStatus>("set_downloader_binary",{path});message=language==="tr"?"yt-dlp hazır.":"yt-dlp is ready."}catch(error){message="";reportProblem(error)}finally{binaryBusy=false}
+  }
+  async function updateBinary(){
+    if(busy||binaryBusy||analyzing)return;
+    binaryBusy=true;message=language==="tr"?"yt-dlp güncelleniyor…":"Updating yt-dlp…";
+    try{
+      const before=status?.version??null;
+      status=await invoke<DownloaderStatus>("update_downloader");
+      message=status.version&&status.version!==before?(language==="tr"?`yt-dlp ${status.version} sürümüne güncellendi.`:`yt-dlp updated to ${status.version}.`):(language==="tr"?"yt-dlp zaten güncel.":"yt-dlp is already up to date.");
+    }catch(error){message="";reportProblem(error)}finally{binaryBusy=false}
   }
   async function download(){
-    if(busy)return;armCompletionSound();busy=true;message="";outputFile="";downloadProgress={percent:0,downloaded:language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…",speed:""};
+    if(busy||binaryBusy||!section.valid)return;armCompletionSound();busy=true;message="";outputFile="";downloadProgress={percent:0,downloaded:section.request?(language==="tr"?"Seçilen bölüm indiriliyor…":"Downloading the selected part…"):(language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…"),speed:""};
     ++downloadJobId;
     activeJobToken=crypto.randomUUID();
-    try{const result=await invoke<DownloaderResult>("download_media",{url,format,jobId:activeJobToken});outputFile=result.output_file??"";message=language==="tr"?"İndirme tamamlandı.":"Download finished.";await refreshHistory();await playCompletionSound()}catch(error){message="";reportProblem(error)}finally{busy=false;downloadProgress=null}
+    try{const result=await invoke<DownloaderResult>("download_media",{url,format,jobId:activeJobToken,section:section.request});outputFile=result.output_file??"";message=language==="tr"?"İndirme tamamlandı.":"Download finished.";await refreshHistory();await playCompletionSound()}catch(error){message="";reportProblem(error)}finally{busy=false;downloadProgress=null}
   }
   async function cancelDownload(){
     if(!busy)return;
@@ -93,12 +120,13 @@
     }catch(error){reportProblem(error)}
   }
   async function analyze(){
-    if(!url.trim()||busy||analyzing)return;
+    if(!url.trim()||busy||binaryBusy||analyzing)return;
     releaseThumbnail(analysis?.thumbnail_path);analyzing=true;message="";outputFile="";analysis=null;
     try{
       analysis=await invoke<DownloadAnalysis>("analyze_download_url",{url});
       temporaryThumbnail=analysis.thumbnail_path;
       formatKind="video";preferredCodec="auto";
+      sectionEnabled=false;sectionStart="";sectionEnd=analysis.duration?formatTimecode(analysis.duration):"";
       preferredHeight=videoHeights()[0]??null;
       chooseVideo();
     }catch(error){message="";reportProblem(error)}finally{analyzing=false}
@@ -119,7 +147,8 @@
       <b>{language==="tr"?"İNDİRME MOTORU":"DOWNLOAD ENGINE"}</b>
       <strong class:ready={!!status?.ready}>{status?.ready ? `yt-dlp ${status.version}` : (language==="tr"?"yt-dlp gerekli":"yt-dlp required")}</strong>
       <p>{language==="tr"?"CONTAINER, doğrulanmış bir yt-dlp sürümüyle gelir. İstersen kendi resmî sürümünü seçebilirsin. Tarayıcı çerezlerine erişilmez.":"A verified yt-dlp build is included with CONTAINER. You can replace it with an official build; cookies are never accessed."}</p>
-      <button class="ghost" onclick={chooseBinary} disabled={busy}>{status?.ready ? (language==="tr"?"YT-DLP’Yİ DEĞİŞTİR":"CHANGE YT-DLP") : (language==="tr"?"YT-DLP.EXE SEÇ":"CHOOSE YT-DLP.EXE")}</button>
+      <button class="ghost" onclick={chooseBinary} disabled={busy||binaryBusy}>{status?.ready ? (language==="tr"?"YT-DLP’Yİ DEĞİŞTİR":"CHANGE YT-DLP") : (language==="tr"?"YT-DLP.EXE SEÇ":"CHOOSE YT-DLP.EXE")}</button>
+      {#if status?.ready}<button class="ghost" onclick={updateBinary} disabled={busy||binaryBusy||analyzing}>{language==="tr"?"YT-DLP’Yİ GÜNCELLE":"UPDATE YT-DLP"}</button>{/if}
       <a href="https://github.com/yt-dlp/yt-dlp/releases/latest" target="_blank" rel="noreferrer">{language==="tr"?"Resmî indirme sayfası ↗":"Official download page ↗"}</a>
     </div>
   </details>
@@ -137,7 +166,24 @@
       </section>
     {/if}
     {#if analysis}<section class="download-options"><div class="format-categories"><button class:active={formatKind==="video"} onclick={()=>{formatKind="video";preferredCodec="auto";chooseVideo()}}>{language==="tr"?"VİDEO + SES":"VIDEO + AUDIO"}</button><button class:active={formatKind==="audio"} onclick={()=>{formatKind="audio";preferredCodec="auto";format="audio-format:m4a"}}>{language==="tr"?"SADECE SES":"AUDIO ONLY"}</button></div>{#if formatKind==="video"}<h4>{language==="tr"?"VİDEO KALİTESİ":"VIDEO QUALITY"}</h4><div class="option-pills">{#each videoHeights() as height}<button class:active={preferredHeight===height} onclick={()=>{preferredHeight=height;chooseVideo()}}>{height}p</button>{:else}<span>{language==="tr"?"En iyi mevcut kalite otomatik seçilecek.":"Best available quality will be selected automatically."}</span>{/each}</div>{#if isYouTube()}<h4>{language==="tr"?"TERCİH EDİLEN CODEC":"PREFERRED CODEC"}</h4><div class="option-pills"><button class:active={preferredCodec==="auto"} onclick={()=>{preferredCodec="auto";chooseVideo()}}>AUTO</button>{#each videoCodecs() as codec}<button class:active={preferredCodec===codec} onclick={()=>{preferredCodec=codec;chooseVideo()}}>{codec}</button>{/each}</div>{/if}{:else}<h4>{language==="tr"?"SES ÇIKTI FORMATI":"AUDIO OUTPUT FORMAT"}</h4><div class="option-pills"><button class:active={format==="audio-format:m4a"} onclick={()=>format="audio-format:m4a"}>M4A</button><button class:active={format==="audio-format:opus"} onclick={()=>format="audio-format:opus"}>OPUS</button></div>{/if}</section>{/if}
-    {#if analysis}<button class="downloader-run" onclick={download} disabled={!status?.ready||busy}>{busy?(language==="tr"?"İNDİRİLİYOR…":"DOWNLOADING…"):(language==="tr"?"↓ İNDİR":"↓ DOWNLOAD")}</button>{/if}
+    {#if analysis}
+      <section class="download-section" class:open={sectionEnabled}>
+        <label class="download-section-toggle">
+          <input type="checkbox" bind:checked={sectionEnabled} disabled={busy}>
+          <span><b>{language==="tr"?"Sadece bir bölüm indir":"Download a part only"}</b><small>{language==="tr"?"Sadece seçtiğin aralık indirilir. Görüntü, başlangıçtan birkaç saniye önce başlayabilir.":"Only the chosen range is downloaded. The video may begin a few seconds before the start."}</small></span>
+        </label>
+        {#if sectionEnabled}
+          <div class="download-section-range">
+            <label><span>{language==="tr"?"Başlangıç":"Start"}</span><input class="mono" placeholder="0:00" bind:value={sectionStart} disabled={busy}></label>
+            <i aria-hidden="true">→</i>
+            <label><span>{language==="tr"?"Bitiş":"End"}</span><input class="mono" placeholder="1:00" bind:value={sectionEnd} disabled={busy}></label>
+            <em class="mono">{section.request?`${language==="tr"?"Süre":"Length"} ${formatTimecode(section.request.end-section.request.start)}`:""}</em>
+          </div>
+          {#if section.problem}<p class="download-section-problem">{section.problem}</p>{/if}
+        {/if}
+      </section>
+    {/if}
+    {#if analysis}<button class="downloader-run" onclick={download} disabled={!status?.ready||busy||binaryBusy||!section.valid}>{busy?(language==="tr"?"İNDİRİLİYOR…":"DOWNLOADING…"):(language==="tr"?"↓ İNDİR":"↓ DOWNLOAD")}</button>{/if}
     {#if busy}<div class="downloader-live" class:pending={!downloadProgress||downloadProgress.percent===0}><i style:width={`${downloadProgress?.percent??0}%`}></i><span>{`${(downloadProgress?.percent??0).toFixed(1)}%`}</span><small class="download-transfer"><em>{downloadProgress?.downloaded??(language==="tr"?"Kaynağa bağlanılıyor…":"Connecting to source…")}</em>{#if downloadProgress?.speed}<b>·</b><strong>{downloadProgress.speed}</strong>{/if}</small><button onclick={cancelDownload}>{language==="tr"?"İPTAL":"CANCEL"}</button></div>{/if}
     {#if message}<div class:failure={message.toLowerCase().includes("failed")||message.toLowerCase().includes("valid")||message.toLowerCase().includes("gerekli")} class="downloader-message">{message}</div>{/if}
     {#if outputFile}<OutputActions path={outputFile} {language} onedit={path=>void onopenmedia(path)} editDisabled={busy}/>{/if}
@@ -148,7 +194,7 @@
       {:else}<p>{language==="tr"?"Henüz indirilen dosya yok.":"No downloads yet."}</p>{/if}
     </section>
     <div class="download-back-actions">
-      <button class="downloader-back" class:editor={hasMedia} onclick={onback} disabled={busy||analyzing||!!deletingPath} title={busy||analyzing||!!deletingPath?(language==="tr"?"İşlem tamamlanana veya iptal edilene kadar bekle":"Wait until the operation finishes or is cancelled"):(hasMedia?(language==="tr"?"Açık çalışmaya dön":"Return to current work"):(language==="tr"?"Ana menüye dön":"Back to main menu"))}>
+      <button class="downloader-back" class:editor={hasMedia} onclick={onback} disabled={busy||binaryBusy||analyzing||!!deletingPath} title={busy||binaryBusy||analyzing||!!deletingPath?(language==="tr"?"İşlem tamamlanana veya iptal edilene kadar bekle":"Wait until the operation finishes or is cancelled"):(hasMedia?(language==="tr"?"Açık çalışmaya dön":"Return to current work"):(language==="tr"?"Ana menüye dön":"Back to main menu"))}>
         <span class="download-back-arrow" aria-hidden="true">←</span>
         <span class="download-back-label">{hasMedia?(language==="tr"?"ÇALIŞMAYA DÖN":"BACK TO EDITOR"):(language==="tr"?"GERİ":"BACK")}</span>
       </button>
@@ -167,7 +213,7 @@
 
 <style>
   .compact-downloader{height:auto;min-height:calc(100dvh - 64px);display:flex;flex-direction:column;align-items:center;gap:0;padding:24px 24px 20px;overflow:auto}
-  .engine-details{width:min(100%,680px);flex:none;color:var(--muted);font:10px var(--mono)}
+  .engine-details{width:min(100%,680px);flex:none;color:var(--muted);font:11px var(--mono)}
   .engine-details summary{display:flex;align-items:center;justify-content:center;gap:9px;cursor:pointer;padding:8px;list-style:none}
   .engine-details summary::-webkit-details-marker{display:none}
   .engine-details .status-dot{background:var(--green);box-shadow:0 0 12px color-mix(in srgb,var(--green) 65%,transparent)}
@@ -188,16 +234,34 @@
   .compact-downloader .downloader-main input{font-size:12px;padding:15px}
   .compact-downloader .download-analysis{margin:18px 0 0;background:var(--panel);border-color:var(--border);padding:12px;gap:12px}
   .download-analysis>div{min-width:0;overflow-wrap:anywhere}
+  .download-section{margin:14px 0 0;padding:12px 14px;border:1px solid var(--border);border-radius:7px;background:var(--panel)}
+  .download-section.open{border-color:color-mix(in srgb,var(--blue) 45%,var(--border))}
+  .downloader-main .download-section-toggle{display:flex;align-items:center;gap:12px;margin:0;cursor:pointer}
+  .downloader-main .download-section-toggle input{flex:none;appearance:none;width:18px;height:18px;min-width:18px;margin:0;padding:0;border:1.5px solid var(--border-strong);border-radius:4px;background:var(--surface);cursor:pointer;display:grid;place-content:center}
+  .downloader-main .download-section-toggle input::after{content:"";width:9px;height:5px;margin-top:-2px;border:2px solid var(--panel);border-top:0;border-right:0;transform:rotate(-45deg);opacity:0}
+  .downloader-main .download-section-toggle input:checked{border-color:var(--blue);background:var(--blue)}
+  .downloader-main .download-section-toggle input:checked::after{opacity:1}
+  .downloader-main .download-section-toggle input:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  .download-section-toggle span{display:grid;gap:2px;text-align:left}
+  .download-section-toggle b{color:var(--text);font-size:12.5px;font-weight:600}
+  .download-section-toggle small{color:var(--muted);font-size:11px}
+  .download-section-range{display:flex;align-items:flex-end;gap:10px;margin:12px 0 0 30px;flex-wrap:wrap}
+  .downloader-main .download-section-range label{display:grid;gap:5px;margin:0}
+  .download-section-range label span{color:var(--muted);font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase}
+  .downloader-main .download-section-range input{width:112px;height:36px;padding:0 10px;font-size:13px}
+  .download-section-range i{padding-bottom:9px;color:var(--muted-2);font-style:normal}
+  .download-section-range em{padding-bottom:10px;color:var(--text);font-style:normal;font-size:12px}
+  .download-section-problem{margin:8px 0 0 30px!important;color:var(--red)!important;font-size:11px!important}
   .compact-downloader .download-analysis img{width:96px;height:60px;flex:none}
   .compact-downloader .download-options{margin:14px 0 0;padding:14px}
   .compact-downloader .option-pills{font-size:12px;color:var(--muted);line-height:1.5}
   .compact-downloader .downloader-run{margin:14px 0 0;background:var(--text);color:var(--panel);padding:14px}
   .compact-downloader .downloader-live{margin:12px 0 0}
   .compact-downloader .downloader-message{margin:12px 0 0}
-  .download-note{flex:none;text-align:center;color:var(--muted-2);font:10px var(--mono);line-height:1.7;padding-top:16px}
+  .download-note{flex:none;text-align:center;color:var(--muted-2);font:11px var(--mono);line-height:1.7;padding-top:16px}
   .download-history{margin:28px 0 0;border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow:hidden}
   .download-history header{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border)}
-  .download-history h3{margin:0;color:var(--text);font:700 10px var(--mono);letter-spacing:.08em}
+  .download-history h3{margin:0;color:var(--text);font:700 11px var(--mono);letter-spacing:.08em}
   .download-history header button{border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
   .download-history ul{list-style:none;margin:0;padding:0;max-height:210px;overflow:auto}
   .download-history li{display:flex;align-items:center;gap:8px;min-width:0;padding:9px 12px;border-bottom:1px solid var(--border)}
@@ -205,13 +269,13 @@
   .download-history li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font:11px var(--sans)}
   .download-history li button{flex:none;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--muted);cursor:pointer}
   .download-history li button:hover:not(:disabled){color:var(--text);border-color:var(--muted)}
-  .download-history li .history-show{padding:6px 8px;font:9px var(--mono)}
+  .download-history li .history-show{padding:6px 8px;font:10px var(--mono)}
   .download-history li .history-delete{display:grid;place-items:center;width:28px;height:28px;padding:4px}
   .download-history li .history-delete:hover:not(:disabled){color:var(--red);border-color:var(--red)}
   .download-history li svg{width:16px;height:16px}
   .download-history>p{padding:13px 14px;color:var(--muted);font:11px var(--sans)}
   .download-back-actions{display:flex;justify-content:center;margin:32px 0 0}
-  .download-back-actions .downloader-back{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:100px;min-height:36px;padding:0 16px;font-size:10px;font-weight:600}
+  .download-back-actions .downloader-back{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:100px;min-height:36px;padding:0 16px;font-size:11px;font-weight:600}
   .download-back-actions .downloader-back.editor{min-width:166px}
   .download-back-arrow{font:14px/1 var(--sans)}
   .download-back-label{white-space:nowrap}

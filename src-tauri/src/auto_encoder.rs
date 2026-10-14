@@ -310,34 +310,48 @@ pub async fn auto_encoder_configured() -> bool {
     read_auto_encoder_cache().is_some_and(|cache| cache.fingerprint == fingerprint)
 }
 
+/// Resolve PowerShell from System32 instead of PATH, so a `powershell.exe`
+/// placed earlier on PATH is never run.
+#[cfg(target_os = "windows")]
+fn windows_powershell() -> std::path::PathBuf {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    std::path::PathBuf::from(root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
+
 async fn encoder_environment_fingerprint() -> String {
     if let Some(fingerprint) = ENCODER_ENVIRONMENT_FINGERPRINT.get() {
         return fingerprint.clone();
     }
-    let ffmpeg = hidden_command("ffmpeg")
-        .args(["-hide_banner", "-version"])
-        .output()
-        .await
-        .ok()
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .to_string()
-        })
-        .unwrap_or_default();
+    let ffmpeg = crate::process_timeout::output_within(
+        hidden_command("ffmpeg").args(["-hide_banner", "-version"]),
+        crate::process_timeout::VERSION_CHECK,
+    )
+    .await
+    .ok()
+    .map(|output| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string()
+    })
+    .unwrap_or_default();
     #[cfg(target_os = "windows")]
-    let hardware = hidden_command("powershell")
-        .args([
+    let hardware = crate::process_timeout::output_within(
+        crate::hidden_path_command(&windows_powershell()).args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
             "Get-CimInstance Win32_VideoController | Sort-Object PNPDeviceID | ForEach-Object { \"$($_.PNPDeviceID)|$($_.DriverVersion)\" }",
-        ])
-        .output()
-        .await
-        .ok()
+        ]),
+        crate::process_timeout::VERSION_CHECK,
+    )
+    .await
+    .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .unwrap_or_default();
     #[cfg(not(target_os = "windows"))]

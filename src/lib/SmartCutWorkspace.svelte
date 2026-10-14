@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isFormFieldTarget, keyOwnedByControl, playerAction } from "./playerShortcuts";
   import { onMount, tick, type Snippet } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -16,6 +17,8 @@
   interface Result { output:string; elapsed:number }
   interface Progress { job_id?:string; percent:number; status:string }
   let activeJobToken="";
+  let analysisJobToken="";
+  let analysisCancelled=false;
   interface Recommendation { threshold:number; min_silence:number; min_speech:number; minimum_pause:number; keep_before_speech:number; keep_after_speech:number; noise_floor_db:number; speech_level_db:number }
   interface Preset { id:"natural"|"balanced"|"tight"; minimum_pause:number; keep_before_speech:number; keep_after_speech:number }
   interface LinkedTrack { path:string; offset:number; timecode:boolean }
@@ -31,6 +34,17 @@
   let stage:HTMLElement|null = $state(null);
   let panelWorkspace:HTMLElement|null = $state(null);
   let panelWorkspaceWidth=$state(0);
+  // Left column can overflow in short windows; show a fade while content remains below.
+  let leftScroll:HTMLDivElement|null=$state(null);
+  let leftMoreBelow=$state(false);
+  function updateLeftMore(){if(leftScroll)leftMoreBelow=leftScroll.scrollTop+leftScroll.clientHeight<leftScroll.scrollHeight-2}
+  $effect(()=>{
+    const node=leftScroll;if(!node)return;
+    const observer=new ResizeObserver(updateLeftMore);
+    observer.observe(node);for(const child of Array.from(node.children))observer.observe(child);
+    updateLeftMore();
+    return()=>observer.disconnect();
+  });
   let panelWorkspaceHeight=$state(0);
   let leftPanelWidth=$state<number|null>(null);
   let rightPanelWidth=$state<number|null>(null);
@@ -264,29 +278,38 @@
     if(analyzing||exporting||(autoTuning&&!fromAutoTune))return;
     if(!analysisInput&&!media.audio_codec){error=language==="tr"?"Bu videoda ses yok. Ses içeren bir video açın veya Kaynak geçmişinden önceki videoya dönün.":"This video has no audio. Open a video with audio or return to the previous video in Source history.";return;}
     analyzing=true;error="";output="";
+    if(!fromAutoTune)analysisCancelled=false;
     try{
       // Controls remain responsive, but only a result for the current settings
       // may replace the cuts. Coalesce in-flight edits into a fresh analysis.
-      while(true){
+      while(!analysisCancelled){
         const analyzedKey=settingsKey;
-        const result=await invoke<Analysis>("analyze_autocut",{request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});
+        analysisJobToken=crypto.randomUUID();
+        const result=await invoke<Analysis>("analyze_autocut",{jobId:analysisJobToken,request:{input:media.path,analysis_input:analysisInput||null,threshold,min_silence:minSilence,min_speech:minSpeech,minimum_pause:minimumPause,keep_before_speech:keepBeforeSpeech,keep_after_speech:keepAfterSpeech,boundary_refinement:true}});
+        if(analysisCancelled)break;
         if(analyzedKey!==settingsKey)continue;
         cuts=result.cuts;waveform=result.waveform;hasAnalyzed=true;lastAnalyzedKey=analyzedKey;
         break;
       }
     }
-    catch(reason){error=String(reason);reportProblem(reason)}finally{analyzing=false}
+    catch(reason){if(!analysisCancelled){error=String(reason);reportProblem(reason)}}finally{analyzing=false}
+  }
+  async function cancelAnalysis(){
+    analysisCancelled=true;
+    await invoke("cancel_job",{jobId:analysisJobToken}).catch(()=>{});
   }
   async function autoTune(){
     if(autoTuning||analyzing||exporting)return;
     if(!analysisInput&&!media.audio_codec){error=language==="tr"?"Bu videoda ses yok. Ses içeren bir video açın veya Kaynak geçmişinden önceki videoya dönün.":"This video has no audio. Open a video with audio or return to the previous video in Source history.";return;}
-    autoTuning=true;error="";autoSummary="";
+    autoTuning=true;error="";autoSummary="";analysisCancelled=false;
     try{
-      const result=await invoke<Recommendation>("recommend_autocut_settings",{path:analysisInput||media.path});
+      analysisJobToken=crypto.randomUUID();
+      const result=await invoke<Recommendation>("recommend_autocut_settings",{path:analysisInput||media.path,jobId:analysisJobToken});
+      if(analysisCancelled)return;
       threshold=result.threshold;minSilence=result.min_silence;minSpeech=result.min_speech;minimumPause=result.minimum_pause;keepBeforeSpeech=result.keep_before_speech;keepAfterSpeech=result.keep_after_speech;preset="auto";
       autoSummary=`${t("noise")} ${result.noise_floor_db.toFixed(1)} dB · ${t("voice")} ${result.speech_level_db.toFixed(1)} dB`;
       await tick(); await analyze(true);
-    }catch(reason){error=String(reason);reportProblem(reason)}finally{autoTuning=false}
+    }catch(reason){if(!analysisCancelled){error=String(reason);reportProblem(reason)}}finally{autoTuning=false}
   }
   async function exportCuts(){
     if(exporting||analyzing||autoTuning||analysisStale||!cuts.length)return;
@@ -349,7 +372,7 @@
     }catch{}
     let disposed=false;
     listen<Progress>("container-progress",e=>{if(exporting&&(!e.payload.job_id||e.payload.job_id===activeJobToken))progress=e.payload.percent}).then(fn=>{if(disposed)fn();else unlisten=fn});
-    const key=(e:KeyboardEvent)=>{if(e.defaultPrevented||document.querySelector("dialog[open]"))return;const tag=(document.activeElement as HTMLElement)?.tagName;if(["INPUT","SELECT","TEXTAREA"].includes(tag))return;if(e.code==="Space"){e.preventDefault();togglePlay()}else if(e.key==="ArrowLeft")seek(current-5);else if(e.key==="ArrowRight")seek(current+5)};
+    const key=(e:KeyboardEvent)=>{if(e.defaultPrevented||document.querySelector("dialog[open]")||isFormFieldTarget(document.activeElement)||keyOwnedByControl(e))return;const action=playerAction(e,{marks:false});if(!action)return;e.preventDefault();if(action.kind==="toggle")togglePlay();else if(action.kind==="seek")seek(current+action.seconds);else if(action.kind==="frame"){video?.pause();seek(current+action.direction/(media.fps||30))}else if(action.kind==="start")seek(0);else if(action.kind==="end")seek(duration)};
     window.addEventListener("keydown",key);
     viewStart=0; viewEnd=duration<=90?duration:Math.min(duration,Math.max(60,Math.min(240,duration/5)));
     resetHistory();
@@ -361,11 +384,12 @@
 
 <section class="ac-layout resizable" bind:this={panelWorkspace} style={`--ac-left:${sizes.left}px;--ac-right:${sizes.right}px;--ac-timeline:${timelineSize}px`}>
   <aside class="ac-side ac-left">
-    <div class="ac-left-scroll">
+    <div class="ac-left-scroll" class:more-below={leftMoreBelow} bind:this={leftScroll} onscroll={updateLeftMore}>
     <div class="ac-card ac-detect-panel">
       <header><div><h3>{t("detection")}</h3><p>{language==="tr"?"Konuşma aralarını bul":"silence parameters"}</p></div></header>
       <div class="ac-fields ac-detect-fields">
         <button class="ac-primary ac-detect-trigger" title={autoSummary} onclick={autoTune} disabled={analyzing||autoTuning||exporting}>{analyzing||autoTuning?t("analyzing"):(hasAnalyzed?t("redetect"):t("detect"))}</button>
+        {#if analyzing||autoTuning}<button class="ac-secondary danger ac-detect-cancel" onclick={cancelAnalysis}>{language==="tr"?"Analizi iptal et":"Cancel analysis"}</button>{/if}
         <label class="ac-parameter"><span>{t("threshold")} <b>{threshold.toFixed(2)}</b></span><input aria-label={t("threshold")} type="range" style={`--range-pct:${rangePct(threshold,.05,.95)}`} min="0.05" max="0.95" step="any" bind:value={threshold} oninput={()=>preset="custom"} onpointerdown={(event)=>fineSliderDrag(event,threshold,.05,.95,value=>{threshold=value;preset="custom"})} onkeydown={(event)=>fineSliderKey(event,threshold,.05,.95,.001,value=>{threshold=value;preset="custom"})}></label>
         <label class="ac-parameter"><span>{t("padding")} <b>{totalPadding.toFixed(2)}s</b></span><input aria-label={t("padding")} title={`${t("before")}: ${Math.round(keepBeforeSpeech*1000)}ms · ${t("after")}: ${Math.round(keepAfterSpeech*1000)}ms`} type="range" style={`--range-pct:${rangePct(totalPadding,0,1.1)}`} min="0" max="1.1" step="any" value={totalPadding} oninput={(event)=>setPadding(Number(event.currentTarget.value))} onpointerdown={(event)=>fineSliderDrag(event,totalPadding,0,1.1,setPadding)} onkeydown={(event)=>fineSliderKey(event,totalPadding,0,1.1,.001,setPadding)}></label>
         <label class="ac-parameter"><span>{t("minSilence")} <b>{Math.round(minSilence*1000)}ms</b></span><input aria-label={t("minSilence")} type="range" style={`--range-pct:${rangePct(minSilence,.05,.5)}`} min="0.05" max="0.5" step="any" bind:value={minSilence} oninput={()=>preset="custom"} onpointerdown={(event)=>fineSliderDrag(event,minSilence,.05,.5,value=>{minSilence=value;preset="custom"})} onkeydown={(event)=>fineSliderKey(event,minSilence,.05,.5,.001,value=>{minSilence=value;preset="custom"})}></label>
@@ -384,16 +408,10 @@
     <div class="ac-card ac-export">
       <header><div><h3>{t("export")}</h3><p>{time(kept)} {t("kept")} · {time(removed)} {t("removed")}</p></div>{@render historyControl?.()}</header>
       <div class="ac-fields">
-        {#if onaddstack}
-          <div class="processing-stack">
-            <header><b>{language==="tr"?"İŞLEM LİSTESİ":"PROCESSING STACK"}</b><small>{stackCount}</small></header>
-            <small>{language==="tr"?"Kesimler kaynak videoya uygulanır, ardından Clipper ve diğer adımlar işlenir. Listeye ekleyince Toolbox'a dönersin.":"Cuts apply to the source before Clipper and other steps. Adding them returns you to Toolbox."}</small>
-          </div>
-        {/if}
         <label><span>{t("format")}</span><select bind:value={exportFormat}><option value="mp4">MP4 Video</option><option value="fcpxml">Final Cut Pro XML</option></select></label>
         {#if exportFormat==="mp4"}
-          <label><span>{t("quality")}</span><select bind:value={quality}><option value="lossless">{language==="tr"?"Kayıpsız":"Lossless"}</option><option value="preserve">{language==="tr"?"Çok yüksek":"Very high"}</option><option value="high">{t("high")} · CRF 18</option><option value="medium">{t("medium")} · CRF 22</option><option value="small">{t("small")} · CRF 26</option></select></label>
-          <label><span>{t("resolution")}</span><select bind:value={resolution}><option value="source">{t("source")}</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select></label>
+          <div class="ac-field-pair"><label><span>{t("quality")}</span><select bind:value={quality}><option value="lossless">{language==="tr"?"Kayıpsız":"Lossless"}</option><option value="preserve">{language==="tr"?"Çok yüksek":"Very high"}</option><option value="high">{t("high")} · CRF 18</option><option value="medium">{t("medium")} · CRF 22</option><option value="small">{t("small")} · CRF 26</option></select></label>
+          <label><span>{t("resolution")}</span><select bind:value={resolution}><option value="source">{t("source")}</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select></label></div>
         {/if}
         <div class="linked-head"><span>{t("linked")}</span><button onclick={addTrack}>{t("add")}</button></div>
         {#each linkedTracks as track,index}
@@ -407,7 +425,7 @@
     </div>
     </div>
     <div class="ac-export-actions">
-      {#if onaddstack}<button class="processing-stack-add" onclick={()=>onaddstack?.(snapshot())} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.some(cut=>cut.enabled)}>{stackHasCuts?(language==="tr"?"Listedeki kesimleri güncelle":"Update cuts in stack"):(language==="tr"?"+ Kesimleri listeye ekle":"+ Add cuts to stack")}</button>{/if}
+      {#if onaddstack}<button class="processing-stack-add" title={`${language==="tr"?"Kesimler kaynak videoya uygulanır, ardından Clipper ve diğer adımlar işlenir. Listeye ekleyince Toolbox'a dönersin.":"Cuts apply to the source before Clipper and other steps. Adding them returns you to Toolbox."} (${stackCount} ${language==="tr"?"adım listede":"in stack"})`} onclick={()=>onaddstack?.(snapshot())} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.some(cut=>cut.enabled)}>{stackHasCuts?(language==="tr"?"Listedeki kesimleri güncelle":"Update cuts in stack"):(language==="tr"?"+ Kesimleri listeye ekle":"+ Add cuts to stack")}</button>{/if}
       <button class="ac-primary" onclick={exportCuts} disabled={exporting||analyzing||autoTuning||analysisStale||!cuts.some(cut=>cut.enabled)}>{exporting?`${t("exporting")} ${progress.toFixed(0)}%`:`${t("export")} ${exportFormat==="mp4"?"MP4":"FCPXML"}`}</button>
       {#if exporting}<button class="ac-secondary danger" onclick={cancel}>{t("cancelExport")}</button>{/if}
     </div>
@@ -451,7 +469,7 @@
       <div class="navigator" bind:this={navEl} onclick={navSeek} role="presentation">
         {#if fullWave}<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d={fullWave}></path></svg>{/if}
         {#each cuts as cut}<span class:off={!cut.enabled} style:left={pct(cut.start)} style:width={pct(cut.end-cut.start)}></span>{/each}
-        <div class="nav-window" style:left={pct(viewStart)} style:width={pct(viewSpan)} onpointerdown={e=>startNavDrag(e,"pan")} role="presentation"><i role="separator" aria-label="Resize timeline view from left" class="nav-left" onpointerdown={e=>startNavDrag(e,"left")}></i><i role="separator" aria-label="Resize timeline view from right" class="nav-right" onpointerdown={e=>startNavDrag(e,"right")}></i></div>
+        <div class="nav-window" style:left={pct(viewStart)} style:width={pct(viewSpan)} onpointerdown={e=>startNavDrag(e,"pan")} role="presentation"><i role="separator" aria-label={language==="tr"?"Zaman çizelgesi görünümünü soldan boyutlandır":"Resize timeline view from left"} class="nav-left" onpointerdown={e=>startNavDrag(e,"left")}></i><i role="separator" aria-label={language==="tr"?"Zaman çizelgesi görünümünü sağdan boyutlandır":"Resize timeline view from right"} class="nav-right" onpointerdown={e=>startNavDrag(e,"right")}></i></div>
         <b style:left={pct(current)}></b>
       </div>
     </div>

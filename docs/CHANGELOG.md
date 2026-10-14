@@ -4,7 +4,54 @@ All notable user-facing changes will be documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.20.0] - 2026-10-14
+
+### Interface
+- Moved language and theme switches from the start screen into General settings, and moved Clean output folder from the unlabeled trash icon into General settings.
+- The link downloader opens from a clear "Download from link" button; its page keeps the DWLNDR title.
+- Tool categories that contain a single tool no longer repeat the tool name as a heading; removed the duplicate media-type pill above the tool tabs.
+- Searching for a tool that lives in another section now says where it is and, when possible, opens it directly.
+- An empty Processing Stack is now a compact single row with a secondary Add to stack button.
+- Consistent button casing: primary actions are uppercase (RENDER …, RENDER STACK), secondary actions use sentence case (Play, Show in folder, Cancel job, Defaults); the top-bar close button now reads CLOSE FILE.
+- Frame, speed and elapsed counters stay hidden until a job has run.
+- Fixed the Tools pane header and tabs shifting by a few pixels when switching between Video, Audio and Image.
+- SmartCut export controls fit 1440×880 windows: Quality and Resolution share a row, the Stack explanation moved to the button tooltip, and shorter windows show a fade where more settings are below. The detect button now uses uppercase like other primary actions.
+- Fixed English text appearing in Turkish mode (colour groups, deinterlace modes, player controls, camera/content region labels, recommendations, job status, several error messages) and Turkish validation messages appearing in English mode.
+- Turkish mode now also translates Frame Extractor modes, Audio Lab options, Clipper zoom/framing labels, the Watermark and Social Tag switches, screen-reader labels, and common error messages from the media engine. A UI test fails if a tool option falls back to English.
+- Clipper has a Safe area option (TikTok, Instagram Reels, YouTube Shorts) that shades the parts of the vertical output the platform interface covers. It is a preview aid only and does not change the render.
+- The start screen lists recently opened videos, audio, images and projects. Moved files are marked as not found, and entries can be removed one by one or all at once.
+- Download from link can fetch only part of a video: tick Download a part only and enter a start and end such as 1:23:45 or 83:20. Only that range is downloaded, without re-encoding, so it is quick; the file may begin a few seconds before the chosen start (at the previous keyframe), and the file name records the range. Progress now shows the percentage and the downloaded time instead of staying at 0%.
+- Keyboard shortcuts in the Toolbox and SmartCut players: Space/K play or pause, J/L jump 10 seconds, Shift+arrows move 1 second, comma/period step one frame, Home/End go to the start or end. Press ? (or General settings → Show shortcuts) for the full list. Sliders keep their own arrow keys, and Space or Enter on a focused checkbox or button presses it.
+- Readability: the smallest interface text is now 10px (small labels grew by 1px), secondary grey text has more contrast in both themes, hints and descriptions use the regular interface font instead of the monospace font, and the light theme uses softer off-white panels on a slightly darker background.
+- SmartCut analysis can be cancelled with Cancel analysis; a cancelled run never replaces the cuts.
+- The file details in the top bar no longer slide under the Toolbox/SmartCut/Batch tabs on wide screens.
+- Tool categories use clearly distinct colours in both themes.
+- Image outputs show Open image instead of Play, and the before/after image comparison no longer shows a render made with another tool or older settings.
+- Auto-detect camera finds small webcams (it now also scans the four corners at higher resolution), sizes the box to small webcams instead of a fixed minimum, and no longer extends the box over a chat bar or chat text directly below or beside the webcam. Faces inside a watched video in the middle of the screen do not replace the streamer's corner webcam.
+- Download from link has an UPDATE YT-DLP button that runs yt-dlp's own verified updater.
+- General settings has Open log folder: CONTAINER now keeps a small error log (`container.log`) to attach to bug reports.
+- The update, project files, FFmpeg notice and output cleanup dialogs close with Escape.
+
+### Reliability and security
+- Projects with more than 24 Processing Stack steps reopen instead of being rejected as invalid.
+- SmartCut export now validates its resolution against the same allowlist as the Processing Stack.
+- Output cleanup reserves the job slot, so it cannot run while a job is still writing output or let a new job start mid-cleanup.
+- The link downloader also rejects IPv4-mapped/NAT64 IPv6, carrier-grade NAT, 0.0.0.0/8, multicast and trailing-dot localhost hosts.
+- Invalid media durations, very small Split output heights and extremely narrow Freecam camera regions now return an error instead of crashing.
+- Batch tracks the running row by path so removing other rows cannot misattribute progress or output.
+- App updates now refresh the bundled yt-dlp when the installed copy is older; a slow first start is not mistaken for a broken copy. A yt-dlp chosen by the user is never replaced.
+- Temporary files left behind by a crashed or force-closed session (Processing Stack intermediates, Discord pass logs, previews) are removed at the next start.
+- SmartCut analysis holds the job slot, so it cannot run beside a render, and it decodes audio once instead of keeping two copies in memory.
+- Media probing, previews, waveforms, filmstrips, camera detection and encoder checks now give up after a time limit instead of waiting forever on a damaged file. The GPU check runs PowerShell from System32 instead of PATH.
+- FFmpeg and yt-dlp diagnostic output is capped to its last 200 lines, so very long jobs no longer grow memory.
+- Panics, unexpected interface errors and the errors shown to the user are written to the log file.
+- Project and recovery files are checked in full before they are restored: a damaged Toolbox state is rejected with a clear message, and an outdated SmartCut or Batch part is skipped instead of breaking the editor.
+- Undo history serializes the editor once per change instead of several times, which keeps slider dragging lighter.
+- CI and release verify the SHA-256 of the bundled FFmpeg and FFprobe, CI fails on clippy warnings, and the release build runs without repository write access; only a separate publish job can create the release.
+- THIRD_PARTY_NOTICES links the exact FFmpeg 9.0.1 source and Gyan.dev build that ship with CONTAINER.
+- Removed about 100 unused style rules and layout rules for window sizes the app cannot reach.
+- About 100 hard-coded interface colours now use the theme palette (only near-identical greys were merged, so the look is unchanged).
+- Internal restructuring with no behaviour change: the Rust backend is split into topic modules (downloader, media probe, SmartCut, output, project, runtime and one module per Toolbox operation), and the editor's dialogs, start screen, tool panels, preview overlays, updater, image viewer and text presets are separate components and modules.
 
 ## [0.19.2] - 2026-10-02
 
@@ -17,7 +64,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [0.19.1] - 2026-10-02
 
-- Hardened release validation by compiling the native harness before real-media browser tests; made font fixtures portable across Windows and Linux. The v0.19.0 build attempt was not published.
+- Hardened release validation by compiling the native harness before real-media browser tests; made font fixtures portable across Windows and Linux.
+
+v0.19.0 was tagged but its build was not published, so its changes first shipped in this release:
 
 - Added Processing Stack with editable, reorderable steps and combined rendering. Compatible SmartCut/Clipper chains use a fused FFmpeg graph to reduce intermediate encoding; source-time cuts and overlay geometry are preserved.
 - Improved automatic AMD, NVIDIA, Intel and CPU encoder profiling and fallback contracts. NVIDIA and Intel profiles remain unverified on physical hardware in this development cycle; performance depends on the workload and device.
@@ -29,29 +78,20 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Bundled Montserrat ExtraBold Italic (800) for Text preview and export without installing a Windows font.
 - Corrected Remove Audio output categorization, improved no-audio guidance, and fixed English tool hints and language switching.
 - Hardened job cancellation, stale responses and atomic project saves, with expanded source-history, geometry, media and responsive-interface regression coverage.
-
 - PNG compression now embeds a local lossless optimizer and an optional quality-guarded palette encoder. PNG target sizes are no longer blocked in Toolbox or Batch; unreachable targets save the best result without resizing or forcing severe degradation. Colour profiles, alpha endpoints, 16-bit samples and APNG frames are covered by regression tests.
-
 - Fixed Image Compressor size-summary layout, explained lossless formats, blocked unsupported target sizes before rendering, and added retryable/stale-safe trial-encode estimates. All still-image output formats now share the `image` output folder across tools.
 - Color sliders now work directly without enable checkboxes, with neutral displays, individual resets and undo; refined the link-download button to a balanced rectangular control.
-
 - Added global language/theme/completion-alert preferences without closing the current media; compacted tool headings and clarified multi-video import, link downloads, empty searches and empty queues.
 - Unified output action wording, added Play/Open to SmartCut and Downloader, and kept completed Batch outputs playable/revealable while later jobs run. Active-row cancellation now has its own label and stop icon.
 - Renamed SmartCut's default quality to Very high / Çok yüksek and ordered quality choices without changing encoding settings; clarified Text's Add from preset action and improved keyboard focus and Turkish player labels.
-
 - Clipper Watermark now accepts Text presets, provides compact font/size/color/opacity controls, and supports dragging/resizing in output preview. Advanced preset styling is preserved and composited in the same Clipper render.
-
 - Added Text preset update/rename actions without expanding the default compact controls; duplicate names no longer create extra presets.
 - Added estimated remaining time to Toolbox, SmartCut and the current Batch file, plus opt-in completion messages/taskbar alerts and Batch outcome counts.
 - Render failures now show actionable disk-space, file-lock, missing-file and permission guidance with expandable technical details.
 - Expanded font pixel checks to Impact, Arial and Georgia in portrait/landscape media, and Clipper encoded-output comparisons to 31% banner distance.
-
 - Isolated Text preview typography from UI OpenType alternates, fixing changed letter shapes and widths in fonts such as Impact.
-
 - Text presets now remember source width and scale font, outline, shadow and padding for different video resolutions. Legacy presets retain their saved pixel size and explain how to enable scaling.
-
 - Added persistent Text presets that save the selected layer's text, position, font and appearance, and apply it as a new editable layer.
-
 - Fixed gray Kick banner backgrounds on full-range video by converting the pixel range before drawing; preview/export tests now include the encoded MP4.
 - Text and Image / Logo Overlay now encode video losslessly to avoid accumulating compression loss while editing. Intermediate files may be larger.
 

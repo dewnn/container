@@ -36,7 +36,7 @@ jobs:
     needs: secrets
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
@@ -71,6 +71,12 @@ jobs:
             Sort-Object Length -Descending |
             Select-Object -First 1
           if (-not $ffmpeg -or -not $ffprobe) { throw "Real FFmpeg binaries were not found under $tools." }
+          # The Chocolatey package is community-maintained: pin the exact
+          # binaries that ship inside CONTAINER, not only the version number.
+          foreach ($pair in @(@($ffmpeg, $config.FFMPEG_SHA256), @($ffprobe, $config.FFPROBE_SHA256))) {
+            $actual = (Get-FileHash -LiteralPath $pair[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $pair[1]) { throw "$($pair[0].Name) checksum mismatch: $actual" }
+          }
           $ffmpeg.DirectoryName >> $env:GITHUB_PATH
 
       - name: Prepare verified yt-dlp
@@ -130,7 +136,8 @@ jobs:
         run: pnpm tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          # Empty until a password-protected key is stored in this secret.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Verify embedded Windows icons
         shell: pwsh
@@ -246,6 +253,30 @@ jobs:
           name: CONTAINER-Windows-${{ steps.assets.outputs.version }}
           path: release-assets/*
 
+      - name: Upload publish bundle
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publish-bundle
+          path: |
+            release-assets/
+            updater-manifest/
+            release-notes.md
+
+  # Only this job can write to the repository. It runs no project code: it
+  # takes the finished files from the build job and publishes them.
+  publish:
+    needs: build-windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download publish bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: publish-bundle
+
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -262,7 +293,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $manifestPath = Join-Path $PWD 'updater-manifest\latest.json'
+          $manifestPath = Join-Path $PWD 'updater-manifest/latest.json'
           if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'Updater manifest was not created.' }
 
           $headers = @{
