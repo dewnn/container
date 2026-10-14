@@ -1981,8 +1981,7 @@ async fn kick_banner_renders_supplied_art_font_and_camera_seam() {
             .unwrap()
             .unwrap();
         if let Some(directory) = std::env::var_os("CONTAINER_KICK_BANNER_SNAPSHOT_DIR") {
-            let image =
-                PathBuf::from(directory).join(format!("kick-banner-long-{distance}.png"));
+            let image = PathBuf::from(directory).join(format!("kick-banner-long-{distance}.png"));
             let snapshot = hidden_command("ffmpeg")
                 .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
                 .arg("color=c=0x303844:s=360x640:r=1:d=1")
