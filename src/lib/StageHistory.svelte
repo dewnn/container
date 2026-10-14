@@ -121,12 +121,12 @@
 
 <style>
   .stage-history{position:relative;flex-shrink:0}
-  .stage-trigger{font:10px var(--mono);padding:6px 8px;white-space:nowrap;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:5px;cursor:pointer}
+  .stage-trigger{font:11px var(--mono);padding:6px 8px;white-space:nowrap;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:5px;cursor:pointer}
   .stage-trigger[aria-expanded="true"]{border-color:var(--border-strong);background:var(--surface-2)}
   .stage-menu{position:fixed;box-sizing:border-box;width:min(320px,calc(100vw - 24px));z-index:50;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border-strong);border-radius:9px;padding:5px;box-shadow:0 12px 35px #0003;color:var(--text);font-family:var(--sans)}
   .stage-heading{display:flex;align-items:center;gap:8px;padding:5px 5px 9px;flex-shrink:0}
   .stage-heading strong{font:600 12px var(--sans)}
-  .stage-heading>span{color:var(--muted);font:10px var(--sans);margin-left:auto}
+  .stage-heading>span{color:var(--muted);font:11px var(--sans);margin-left:auto}
   .stage-close{display:grid;place-items:center;width:25px;height:25px;border:0;border-radius:4px;background:transparent;color:var(--muted);font:20px/1 var(--sans);cursor:pointer}
   .stage-close:hover{background:var(--surface-2);color:var(--text)}
   .stage-list{min-height:0;max-height:300px;overflow:auto;overscroll-behavior:contain}
@@ -139,9 +139,9 @@
   .stage-details{flex:1;min-width:0}
   .stage-label,.stage-details small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .stage-label{font:500 12px/1.4 var(--sans)}
-  .stage-details small{color:var(--muted);font:10px/1.4 var(--sans);margin-top:2px}
-  .stage-current{font:10px var(--sans);color:var(--blue);white-space:nowrap}
-  .stage-branch{font:10px var(--mono);color:var(--muted);white-space:nowrap}
-  .stage-menu p{flex-shrink:0;border-top:1px solid var(--border);padding:10px 7px 5px;margin:5px 0 0;color:var(--muted);font:10px/1.5 var(--sans)}
+  .stage-details small{color:var(--muted);font:11px/1.4 var(--sans);margin-top:2px}
+  .stage-current{font:11px var(--sans);color:var(--blue);white-space:nowrap}
+  .stage-branch{font:11px var(--mono);color:var(--muted);white-space:nowrap}
+  .stage-menu p{flex-shrink:0;border-top:1px solid var(--border);padding:10px 7px 5px;margin:5px 0 0;color:var(--muted);font:11px/1.5 var(--sans)}
   .stage-menu p span{display:block;margin-top:2px}
 </style>

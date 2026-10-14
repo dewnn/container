@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "container-studio"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -589,6 +589,7 @@ dependencies = [
  "tokio",
  "trash",
  "url",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

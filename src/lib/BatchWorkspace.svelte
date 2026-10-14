@@ -34,7 +34,7 @@
   let selected:Tool=$state(initialTool());
   let items:BatchItem[]=$state([]);
   let running=$state(false),cancelAll=$state(false),recursive=$state(false),aggregate=$state(0);
-  let currentIndex=$state(-1);
+  let currentIndex=$state(-1),currentPath=$state("");
   let activeJobToken="";
   let currentProgress=$state(0),batchSummary=$state("");
   let history:HistorySnapshot[]=$state([]),historyIndex=$state(-1);
@@ -152,23 +152,24 @@
     items=items.map(item=>targetSet.has(item.path)?{...item,status:"waiting",progress:0,output:undefined,error:undefined}:item);
     aggregate=items.length?items.reduce((sum,item)=>sum+item.progress,0)/items.length:0;
     let unlisten:UnlistenFn|null=null;
-    try{unlisten=await listen<{job_id?:string;percent:number}>("container-progress",event=>{if(currentIndex>=0&&(!event.payload.job_id||event.payload.job_id===activeJobToken)){currentProgress=Math.max(0,Math.min(100,event.payload.percent));items[currentIndex].progress=currentProgress;aggregate=items.reduce((sum,item)=>sum+item.progress,0)/items.length;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
+    try{unlisten=await listen<{job_id?:string;percent:number}>("container-progress",event=>{if(currentIndex>=0&&items[currentIndex]&&(!event.payload.job_id||event.payload.job_id===activeJobToken)){currentProgress=Math.max(0,Math.min(100,event.payload.percent));items[currentIndex].progress=currentProgress;aggregate=items.reduce((sum,item)=>sum+item.progress,0)/items.length;items=[...items]}})}catch(reason){running=false;reportProblem(reason);return}
     for(const path of targets){
       const index=items.findIndex(item=>item.path===path);if(index<0)continue;
-      if(cancelAll)break;currentIndex=index;currentProgress=0;items[index]={...items[index],status:"running",progress:0,output:undefined,error:undefined};items=[...items];
+      if(cancelAll)break;currentIndex=index;currentPath=path;currentProgress=0;items[index]={...items[index],status:"running",progress:0,output:undefined,error:undefined};items=[...items];
       activeJobToken=crypto.randomUUID();
-      try{const result=await invoke<{output:string}>("run_operation",{jobId:activeJobToken,request:{input:items[index].path,operation,params:operationParams}});items[index]={...items[index],status:"complete",progress:100,output:result.output};completed++}
-      catch(reason){items[index]={...items[index],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)};reportProblem(reason)}
+      // Rows above this one may be removed while the job runs, so locate the row by path again after awaiting.
+      try{const result=await invoke<{output:string}>("run_operation",{jobId:activeJobToken,request:{input:path,operation,params:operationParams}});const at=items.findIndex(item=>item.path===path);if(at>=0)items[at]={...items[at],status:"complete",progress:100,output:result.output};completed++}
+      catch(reason){const at=items.findIndex(item=>item.path===path);if(at>=0)items[at]={...items[at],status:String(reason).toLowerCase().includes("cancel")?"cancelled":"failed",error:String(reason)};reportProblem(reason)}
       aggregate=items.reduce((sum,item)=>sum+(item.status==="failed"?100:item.progress),0)/items.length;items=[...items];
     }
-    unlisten?.();running=false;currentIndex=-1;if(!cancelAll&&completed>0)await playCompletionSound();
+    unlisten?.();running=false;currentIndex=-1;currentPath="";if(!cancelAll&&completed>0)await playCompletionSound();
     const failed=items.filter(item=>targetSet.has(item.path)&&item.status==="failed").length;
     const cancelled=targets.filter(path=>{const item=items.find(item=>item.path===path);return !item||item.status==="cancelled"||item.status==="waiting"}).length;
     batchSummary=language==="tr"?`${completed} tamamlandı · ${failed} başarısız · ${cancelled} iptal/işlenmedi`:`${completed} completed · ${failed} failed · ${cancelled} cancelled/not processed`;
-    if(!cancelAll)void completionAlert(`Batch: ${batchSummary}`);
+    if(!cancelAll)void completionAlert(`${language==="tr"?"Toplu işlem":"Batch"}: ${batchSummary}`);
   }
   async function cancel(){cancelAll=true;await invoke("cancel_job",{jobId:activeJobToken})}
-  async function removeOrCancel(index:number){if(running&&index===currentIndex){await invoke("cancel_job",{jobId:activeJobToken});return}if(!running||items[index].status==="waiting")items=items.filter((_,position)=>position!==index)}
+  async function removeOrCancel(index:number){if(running&&index===currentIndex){await invoke("cancel_job",{jobId:activeJobToken});return}if(!running||items[index].status==="waiting"){items=items.filter((_,position)=>position!==index);if(running)currentIndex=items.findIndex(item=>item.path===currentPath)}}
 </script>
 
 <section class="batch-workspace resizable" bind:this={panelWorkspace} style={`--batch-left:${sizes.left}px`}>
@@ -190,7 +191,7 @@
   </aside>
   <div class="workspace-resizer" role="slider" tabindex="0" aria-label={language==="tr"?"Batch kontrol paneli genişliği":"Batch controls panel width"} aria-orientation="horizontal" aria-valuemin={sizes.minLeft} aria-valuemax={Math.min(600,sizes.available-sizes.minRight)} aria-valuenow={Math.round(sizes.left)} onpointerdown={startPanelResize} onkeydown={panelKey} ondblclick={resetPanelWidths} title={language==="tr"?"Sürükle · sıfırla: çift tık":"Drag to resize · double-click to reset"}></div>
   <section class="batch-list panel">
-    <div class="batch-feedback">{#key currentIndex}<RenderFeedback running={running&&currentIndex>=0} progress={currentProgress} {language} scope="batch"/>{/key}{#if running}<small>{language==="tr"?"Süre tahmini işlenen dosya içindir.":"Time estimate is for the current file."}</small>{/if}{#if batchSummary}<p role="status">{batchSummary}</p>{/if}</div>
+    <div class="batch-feedback">{#key currentPath}<RenderFeedback running={running&&currentIndex>=0} progress={currentProgress} {language} scope="batch"/>{/key}{#if running}<small>{language==="tr"?"Süre tahmini işlenen dosya içindir.":"Time estimate is for the current file."}</small>{/if}{#if batchSummary}<p role="status">{batchSummary}</p>{/if}</div>
     <div class="pane-head"><div><h3>{language==="tr"?"KUYRUK":"QUEUE"}</h3><p>{items.length} {language==="tr"?"dosya":"files"}</p></div><b>{aggregate.toFixed(0)}%</b></div>
     <div class="batch-total"><i style={`width:${aggregate}%`}></i></div>
     <div class="batch-items">

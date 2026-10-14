@@ -10,4 +10,4 @@
   {#if running}<span>{language==="tr"?"Tahmini kalan":"Estimated remaining"}: {remaining===null?"—":remaining<60?`~${remaining}s`:`~${Math.ceil(remaining/60)} ${language==="tr"?"dk":"min"}`}</span>{/if}
 </div>
 <JobInspector {language} {speed} {elapsed} {output}/>
-<style>.render-feedback{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:10px;color:var(--muted);padding:5px 0}</style>
+<style>.render-feedback{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:11px;color:var(--muted);padding:5px 0}</style>

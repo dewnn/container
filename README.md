@@ -25,7 +25,8 @@
 - SmartCut silence detection with editable keep regions, timeline preview, MP4 and FCPXML export
 - Clipper layouts, social tags and experimental automatic camera-region detection
 - Batch processing, session recovery and hardware encoding with CPU fallback
-- DWLNDR for supported downloads via bundled yt-dlp
+- DWLNDR: download from a link (whole video or only a part) via bundled yt-dlp
+- Recent files on the start screen, keyboard shortcuts (press ?) and a platform safe-area preview in Clipper
 
 Automatic camera-region detection is experimental. Review its selection before exporting.
 
@@ -37,7 +38,7 @@ The app is not yet Authenticode-signed, so Windows SmartScreen may display an â€
 
 ## Premiere Pro connection
 
-Prepared for v0.19.2. The optional connection targets **Premiere Pro 2025 and 2026 on Windows** using CEP 12. Real-host transfers have been checked on 2025 (25.5) and 2026; this is not a guarantee for every Adobe patch or workstation. Keep only one Premiere version running at a time.
+Prepared for v0.20.0. The optional connection targets **Premiere Pro 2025 and 2026 on Windows** using CEP 12. Real-host transfers have been checked on 2025 (25.5) and 2026; this is not a guarantee for every Adobe patch or workstation. Keep only one Premiere version running at a time.
 
 **CONTAINER works normally without Premiere Pro.** Connecting is only required to use **Send to Premiere** after rendering.
 

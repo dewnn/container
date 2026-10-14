@@ -1,6 +1,6 @@
 <script lang="ts">
   import {rasterText,type TextAppearance} from "./textRaster";
-  let {layer,width,height,box,onchange}:{layer:TextAppearance;width:number;height:number;box:{left:number;top:number;width:number;height:number}|null;onchange:(patch:Partial<TextAppearance>)=>void}=$props();
+  let {layer,width,height,box,onchange,language="en"}:{layer:TextAppearance;width:number;height:number;box:{left:number;top:number;width:number;height:number}|null;onchange:(patch:Partial<TextAppearance>)=>void;language?:"tr"|"en"}=$props();
   let canvas:HTMLCanvasElement|undefined=$state(),bounds=$state({left:0,top:0,width:0,height:0});
   $effect(()=>{if(canvas)bounds=rasterText(canvas,layer,width,height)});
   export function raster(){if(!canvas)throw new Error("Watermark preview is not ready.");rasterText(canvas,layer,width,height);return canvas.toDataURL("image/png")}
@@ -25,6 +25,6 @@
 </script>
 <div class="watermark-canvas-layer" style={box?`left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px`:"display:none"}>
   <canvas bind:this={canvas}></canvas>
-  {#if layer.text.trim()}<div role="group" aria-label="Move watermark" class="watermark-drag" style={`left:${bounds.left/width*100}%;top:${bounds.top/height*100}%;width:${bounds.width/width*100}%;height:${bounds.height/height*100}%`} onpointerdown={event=>drag(event)}><button aria-label="Resize watermark" onpointerdown={event=>drag(event,true)}></button></div>{/if}
+  {#if layer.text.trim()}<div role="group" aria-label={language==="tr"?"Filigranı taşı":"Move watermark"} class="watermark-drag" style={`left:${bounds.left/width*100}%;top:${bounds.top/height*100}%;width:${bounds.width/width*100}%;height:${bounds.height/height*100}%`} onpointerdown={event=>drag(event)}><button aria-label={language==="tr"?"Filigranı boyutlandır":"Resize watermark"} onpointerdown={event=>drag(event,true)}></button></div>{/if}
 </div>
 <style>.watermark-canvas-layer{position:absolute;z-index:6;pointer-events:none;font-feature-settings:normal;font-variant:normal;letter-spacing:normal;text-transform:none}.watermark-canvas-layer canvas{width:100%;height:100%;display:block}.watermark-drag{position:absolute;pointer-events:auto;cursor:move;touch-action:none;outline:1px dashed var(--blue)}.watermark-drag button{position:absolute;right:-5px;bottom:-5px;width:10px;height:10px;padding:0;border:2px solid white;background:var(--blue);cursor:nwse-resize;touch-action:none}</style>

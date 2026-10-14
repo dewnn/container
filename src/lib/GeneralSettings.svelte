@@ -2,7 +2,9 @@
   import { applyAccent, readAccent, DEFAULT_ACCENT } from "./accentTheme";
   import PremiereSettings from "./PremiereSettings.svelte";
   import {premiere} from "./premiereBridge.svelte";
-  let {language,theme,onlanguage,ontheme,onresetlayout,layoutBusy=false}:{language:"tr"|"en";theme:"dark"|"light";onlanguage:(value:"tr"|"en")=>void;ontheme:(value:"dark"|"light")=>void;onresetlayout?:()=>void;layoutBusy?:boolean}=$props();
+  import {invoke} from "@tauri-apps/api/core";
+  import {reportProblem} from "./toast";
+  let {language,theme,onlanguage,ontheme,onresetlayout,oncleanoutput,onshortcuts,layoutBusy=false}:{language:"tr"|"en";theme:"dark"|"light";onlanguage:(value:"tr"|"en")=>void;ontheme:(value:"dark"|"light")=>void;onresetlayout?:()=>void;oncleanoutput?:()=>void;onshortcuts?:()=>void;layoutBusy?:boolean}=$props();
   let dialog:HTMLDialogElement;
   let alerts=$state(false);
   let accent=$state(readAccent());
@@ -21,6 +23,7 @@
       event.preventDefault();update(event.key==="Home"?0:event.key==="End"?359:accent.hue+(["ArrowRight","ArrowUp"].includes(event.key)?delta:-delta));
     }
   }
+  async function openLogs(){try{await invoke("open_log_folder")}catch(reason){reportProblem(reason)}}
   function saveAlert(){try{localStorage.setItem("container-completion-alert",String(alerts));window.dispatchEvent(new Event("container-alert-preference"))}catch{alerts=false}}
 </script>
 <button class="general-settings-trigger ghost" class:premiere-ready={premiere.status.connected} onclick={show} aria-label={language==="tr"?"Genel ayarlar":"General settings"} title={premiere.status.connected?(language==="tr"?"Genel ayarlar · Premiere bağlı":"General settings · Premiere connected"):(language==="tr"?"Genel ayarlar":"General settings")}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/><circle cx="7" cy="5" r="2" fill="var(--panel)"/><circle cx="13" cy="10" r="2" fill="var(--panel)"/><circle cx="8" cy="15" r="2" fill="var(--panel)"/></svg></button>
@@ -43,6 +46,9 @@
     </div>
   </section>
   {#if onresetlayout}<section class="workspace-layout"><h3>{language==="tr"?"Çalışma alanı düzeni":"Workspace layout"}</h3><p>{language==="tr"?"Yalnızca açık çalışma alanının panel boyutlarını sıfırlar.":"Reset panel sizes for the current workspace only."}</p><button class="ghost" disabled={layoutBusy} onclick={()=>{dialog.close();onresetlayout?.()}}>{language==="tr"?"Panel düzenini sıfırla":"Reset panel layout"}</button></section>{/if}
+  {#if oncleanoutput}<section class="workspace-layout output-folder-settings"><h3>{language==="tr"?"Çıktı klasörü":"Output folder"}</h3><p>{language==="tr"?"Downloads/CONTAINER Output içindeki çıktıları Geri Dönüşüm Kutusu’na taşır.":"Moves everything in Downloads/CONTAINER Output to the Recycle Bin."}</p><button class="ghost output-clean-open" disabled={layoutBusy} onclick={()=>{dialog.close();oncleanoutput?.()}}>{language==="tr"?"Çıktı klasörünü temizle…":"Clean output folder…"}</button></section>{/if}
+  {#if onshortcuts}<section class="workspace-layout shortcut-settings"><h3>{language==="tr"?"Klavye kısayolları":"Keyboard shortcuts"}</h3><p>{language==="tr"?"Oynatıcı, zaman çizelgesi ve düzenleme kısayolları. İstediğin an ? tuşuyla da açılır.":"Player, timeline and editing shortcuts. Press ? at any time to open them."}</p><button class="ghost" onclick={()=>{dialog.close();onshortcuts?.()}}>{language==="tr"?"Kısayolları göster":"Show shortcuts"}</button></section>{/if}
+  <section class="workspace-layout log-folder-settings"><h3>{language==="tr"?"Hata kayıtları":"Error logs"}</h3><p>{language==="tr"?"Bir sorun bildirirken bu klasördeki container.log dosyasını ekle.":"Attach container.log from this folder when reporting a problem."}</p><button class="ghost" onclick={openLogs}>{language==="tr"?"Log klasörünü aç":"Open log folder"}</button></section>
   <label class="general-alert"><input type="checkbox" bind:checked={alerts} onchange={saveAlert}><span>{language==="tr"?"İşlem bitince bildir":"Notify when finished"}<small>{language==="tr"?"Uygulama içi bildirim ve görev çubuğu uyarısı":"In-app message and taskbar alert"}</small></span></label>
   <PremiereSettings {language}/>
   <footer><button class="ghost" onclick={()=>dialog.close()}>{language==="tr"?"Tamam":"Done"}</button></footer>

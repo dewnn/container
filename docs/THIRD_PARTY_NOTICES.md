@@ -28,8 +28,12 @@ Windows release packages bundle FFmpeg and FFprobe 9.0.1 full build as separate 
 
 - Project: https://ffmpeg.org/
 - License information: https://ffmpeg.org/legal.html
-- Source: https://ffmpeg.org/download.html#get-sources
-- Windows build links: https://ffmpeg.org/download.html#build-windows
+- Exact FFmpeg source for this version: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz (Git tag `n9.0.1`: https://github.com/FFmpeg/FFmpeg/tree/n9.0.1)
+- Exact Windows build (Gyan.dev `9.0.1-full_build`): https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1, build notes at https://www.gyan.dev/ffmpeg/builds/
+- Build configuration: run `ffmpeg -version` on the bundled executable; it prints the full `configure` line, including every enabled external library.
+- Bundled file SHA-256: `ffmpeg.exe` `57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a`, `ffprobe.exe` `afe05347caaabe479b3c4eae71992b6ec1e11c57266a1d665deb0f9fe9847208`
+
+If any of these links stops working, open an issue at https://github.com/dewnn/container/issues and the corresponding source will be provided.
 
 ## yt-dlp
 

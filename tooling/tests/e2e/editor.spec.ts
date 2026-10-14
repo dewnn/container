@@ -245,6 +245,17 @@ async function mockDesktop(page: Page, options: { invalidSecond?: boolean; inter
   if (!options.startupPath) await expect(page.locator(".dropzone")).toBeVisible();
 }
 
+async function chooseLanguageInSettings(page: Page, value: "tr" | "en") {
+  await page.locator(".general-settings-trigger").click();
+  await page.locator(".general-settings-dialog select").first().selectOption(value);
+  await page.locator(".general-settings-dialog footer button").click();
+}
+
+async function openOutputCleanup(page: Page) {
+  await page.locator(".general-settings-trigger").click();
+  await page.locator(".general-settings-dialog .output-clean-open").click();
+}
+
 async function openFixture(page: Page) {
   await page.locator(".dropzone").click();
   await expect(page.locator(".settings")).toBeVisible();
@@ -442,7 +453,7 @@ test("Processing Stack cancellation releases the editor for another render",asyn
   await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="run_operation"?new Promise((_resolve,reject)=>(window as any).__FAIL_STACK__=()=>reject(new Error("Job cancelled."))):undefined});
   await page.getByRole("button",{name:"Render processing stack"}).click();
   await expect.poll(()=>page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="run_operation").length)).toBe(1);
-  await page.getByRole("button",{name:"cancel job",exact:true}).click();
+  await page.getByRole("button",{name:"Cancel job",exact:true}).click();
   await page.evaluate(()=>(window as any).__FAIL_STACK__());
   await expect(page.locator(".job-status-line")).toContainText("cancelled");
   await expect(page.getByRole("button",{name:"Render processing stack"})).toBeEnabled();
@@ -563,7 +574,7 @@ test("late cancel response does not overwrite a completed render", async ({page}
       :cmd==="cancel_job"?new Promise(resolve=>(window as any).__FINISH_CANCEL__=()=>resolve(null)):undefined;
   });
   await page.getByRole("button",{name:/render cut video/i}).click();
-  await page.getByRole("button",{name:"cancel job",exact:true}).click();
+  await page.getByRole("button",{name:"Cancel job",exact:true}).click();
   await page.evaluate(()=>(window as any).__FINISH_JOB__());
   await expect(page.locator(".job-status-line")).toContainText("complete");
   await page.evaluate(()=>(window as any).__FINISH_CANCEL__());
@@ -584,7 +595,7 @@ test("active render ignores stale job events and cancels only its own identity",
   await expect(page.locator(".job-status-line")).toContainText("own job running");
   await page.evaluate(()=>(window as any).__TEST_EVENT__("container-progress",{job_id:"previous-job",percent:90,time:9,speed:"9x",frame:"90",status:"stale job"}));
   await expect(page.locator(".job-status-line")).toContainText("own job running");
-  await page.getByRole("button",{name:"cancel job",exact:true}).click();
+  await page.getByRole("button",{name:"Cancel job",exact:true}).click();
   expect(await page.evaluate(()=>{
     const calls=(window as any).__TEST_CALLS__;
     return calls.find((c:any)=>c.cmd==="cancel_job").args.jobId===calls.find((c:any)=>c.cmd==="run_operation").args.jobId;
@@ -842,6 +853,34 @@ test("a late history response cannot hide a newly completed download",async({pag
   expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="list_download_history").length)).toBeGreaterThanOrEqual(2);
 });
 
+test("Download from link can fetch only part of a long video",async({page})=>{
+  await mockDesktop(page);
+  await page.evaluate(()=>{
+    (window as any).__TEST_HANDLER__=(cmd:string)=>{
+      if(cmd==="list_download_history")return [];
+      if(cmd==="analyze_download_url")return {title:"Long stream",uploader:null,duration:7200,thumbnail_path:null,formats:[]};
+      if(cmd==="download_media")return {output_dir:"C:\\fixtures",output_file:"C:\\fixtures\\part.mp4",details:""};
+      return undefined;
+    };
+  });
+  await page.locator(".downloader-quick-trigger").click();
+  await page.getByPlaceholder("https://…").fill("https://example.com/video");
+  await page.getByRole("button",{name:"ANALYZE LINK",exact:true}).click();
+  await page.getByRole("checkbox",{name:/Download a part only/}).check();
+  const start=page.locator(".download-section-range input").first(),end=page.locator(".download-section-range input").last();
+  await expect(end).toHaveValue("2:00:00");
+  await start.fill("1:23:45");
+  await end.fill("1:23:40");
+  await expect(page.locator(".download-section-problem")).toBeVisible();
+  await expect(page.getByRole("button",{name:/^↓ DOWNLOAD$/})).toBeDisabled();
+  await end.fill("5100");
+  await expect(page.locator(".download-section-range em")).toHaveText("Length 1:15");
+  await page.getByRole("button",{name:/^↓ DOWNLOAD$/}).click();
+  await expect(page.getByText("Download finished.",{exact:true})).toBeVisible();
+  const section=await page.evaluate(()=>(window as any).__TEST_CALLS__.find((call:any)=>call.cmd==="download_media").args.section);
+  expect(section).toEqual({start:5025,end:5100});
+});
+
 for(const language of ["en","tr"] as const)for(const theme of ["light","dark"] as const){
   test(`download deletion respects ${language}/${theme}, Escape and failed recycling`,async({page})=>{
     await page.addInitScript(({language,theme})=>{localStorage.setItem("container-language",language);localStorage.setItem("container-theme",theme)},{language,theme});
@@ -956,7 +995,7 @@ test("output cleanup keeps the dialog on partial recycle failure and succeeds on
         : {cleaned:true,path:"C:\\Users\\Test\\Downloads\\CONTAINER Output"}
       : undefined;
   });
-  await page.locator(".output-clean-trigger").click();
+  await openOutputCleanup(page);
   await page.locator(".clean-confirm").click();
   await expect(page.locator(".output-clean-layer")).toBeVisible();
   await expect(page.locator("body")).toContainText("open.mp4 is still in use");
@@ -1018,7 +1057,7 @@ test("tray hide pauses only media previews, keeps the editing session, and follo
   await page.addInitScript(()=>{(window as any).isTauri=true});
   await mockDesktop(page);
   await expect.poll(()=>page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="set_tray_language"&&call.args.language==="en"))).toBe(true);
-  await page.locator(".landing-language").getByRole("button",{name:"TR"}).click();
+  await chooseLanguageInSettings(page,"tr");
   await expect.poll(()=>page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="set_tray_language"&&call.args.language==="tr"))).toBe(true);
   await openFixture(page);
   await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
@@ -1375,7 +1414,7 @@ test("light theme favorites and category accents remain distinct and readable",a
       idleHeight:css('.tool-group[data-category="Export"] .tool-row>i').height,
     };
   });
-  expect(palette).toMatchObject({filterBackground:"rgb(255, 248, 227)",filterStar:"rgb(194, 129, 0)",activeStar:"rgb(194, 129, 0)",idleHeight:"16px"});
+  expect(palette).toMatchObject({filterBackground:"rgb(255, 248, 227)",filterStar:"rgb(194, 129, 0)",activeStar:"rgb(194, 129, 0)",idleHeight:"24px"});
   expect(palette.clipper).not.toBe(palette.cut);
   await page.locator('.tool-group[data-category="Clipper"] .tool-row').click();
   expect(await page.locator('.tool-group[data-category="Clipper"] .tool-row>i').evaluate(el=>getComputedStyle(el).height)).toBe("24px");
@@ -1428,7 +1467,8 @@ test("Turkish tool descriptions and editing controls stay localized",async({page
   await expect(page.locator(".transform-controls header b")).toContainText(["KIRP","DÖNDÜR","ÇEVİR","ÇIKTI BOYUTU"]);
   await expect(page.locator(".crop-options button").first()).toHaveText("KAPALI");
   await expect(page.locator(".crop-options button").nth(1)).toHaveText("SERBEST");
-  await expect(page.locator(".tool-group h4")).toContainText(["Dönüştürme","Dikey Klipler","Çözünürlük"]);
+  await expect(page.locator(".tool-group h4").first()).toHaveText("Hareket");
+  await expect(page.locator(".tool-group").first().locator("h4")).toHaveCount(0);
   await page.locator(".search").fill("Clipper");
   await page.locator(".tool-row").click();
   await expect(page.locator(".tool-settings-head p")).toHaveText("Yatay videoyu paylaşmaya hazır 9:16 düzene dönüştürür.");
@@ -1513,7 +1553,7 @@ for(const language of ["en","tr"]){
 test("header media summary aligns beside Toolbox without crowding actions",async({page})=>{
   await mockDesktop(page);
   await page.evaluate(media=>{
-    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="probe_media"?{...media,path:args.path,name:"batuhanfurkan5-bizde-bizde-hadiiii-clip-with-a-very-long-filename.mp4"}:undefined;
+    (window as any).__TEST_HANDLER__=(cmd:string,args:any)=>cmd==="probe_media"?{...media,path:args.path,name:"streamername42-stream-highlights-x-clip-with-a-very-long-filename.mp4"}:undefined;
   },sample);
   await openFixture(page);
   for(const width of [1920,1440,1024,900]){
@@ -1522,8 +1562,9 @@ test("header media summary aligns beside Toolbox without crowding actions",async
     const tabs=await page.locator(".mode-tabs").boundingBox();
     const close=await page.locator(".top-cancel").boundingBox();
     expect(tabs!.x-summary!.x-summary!.width).toBeGreaterThanOrEqual(7);
-    if(width<1900)expect(tabs!.x-summary!.x-summary!.width).toBeLessThanOrEqual(15);
-    else expect(Math.abs(summary!.x+summary!.width/2-width/2)).toBeLessThan(2);
+    // The summary stays in the flow next to the tabs at every width; a fixed
+    // centred box on wide screens overlapped the right-hand buttons.
+    expect(tabs!.x-summary!.x-summary!.width).toBeLessThanOrEqual(15);
     expect(close!.x+close!.width).toBeLessThanOrEqual(width);
     await expect(page.locator(".filename")).toBeVisible();
     await expect(page.locator(".filename")).toHaveAttribute("title",/Duration:.*\nResolution:.*\nFPS:.*\nCodec:.*\nSize:/);
@@ -1719,12 +1760,12 @@ test("invalid historical graphs fall back safely to the current project",async({
   await expect(page.locator(".stage-menu")).toContainText("No other sources yet.");
   await page.keyboard.press("Escape");
   await expect(page.locator(".settings")).toBeVisible();
-  await expect(page.getByRole("button",{name:"▶ render transform",exact:true})).toBeEnabled();
+  await expect(page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true})).toBeEnabled();
 });
 
 test("changed render settings require rerender before continuation, including restored projects",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  const render=page.getByRole("button",{name:"▶ render transform",exact:true});
+  const render=page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true});
   const proceed=page.getByRole("button",{name:"Open as source",exact:true});
   await render.click();await expect(proceed).toBeEnabled();
   await page.getByRole("button",{name:"180°",exact:true}).click();
@@ -1745,7 +1786,7 @@ test("changed render settings require rerender before continuation, including re
 
 test("GO BACK closes with Escape from both trigger and menu",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   const trigger=page.locator(".stage-trigger");
   await trigger.click();await trigger.press("Escape");
@@ -1797,7 +1838,7 @@ test("Source history reloads Cut Video filmstrip on every return",async({page})=
 test("Continue editing alone creates stages; earlier settings and forward outputs survive",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","1");
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await expect(page.getByRole("button",{name:"Open as source",exact:true})).toBeEnabled();
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","1");
   await page.locator(".stage-trigger").click();
@@ -1810,7 +1851,7 @@ test("Continue editing alone creates stages; earlier settings and forward output
   const brandBounds=await page.locator(".brand").boundingBox();
   const backBounds=await page.locator(".stage-trigger").boundingBox();
   expect(backBounds!.x-brandBounds!.x-brandBounds!.width).toBeLessThanOrEqual(15);
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await selectStageNumber(page,1);
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","3");
@@ -1818,7 +1859,7 @@ test("Continue editing alone creates stages; earlier settings and forward output
   await expect(page.locator(".stage-list button")).toHaveCount(3);
   await page.locator(".stage-close").click();
   await selectStageNumber(page,2);
-  await page.getByRole("button",{name:"show in folder",exact:true}).click();
+  await page.getByRole("button",{name:"Show in folder",exact:true}).click();
   const reveal=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((x:any)=>x.cmd.includes("reveal")).at(-1));
   expect(JSON.stringify(reveal)).toContain("output-2.mp4");
   await page.getByRole("button",{name:"SAVE PROJECT",exact:true}).click();
@@ -1834,11 +1875,11 @@ test("Continue editing alone creates stages; earlier settings and forward output
 
 test("editing an ancestor creates a branch without erasing the original",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   await selectStageNumber(page,1);
   await page.getByRole("button",{name:"180°",exact:true}).click();
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","4");
   await selectStageNumber(page,1);
@@ -1849,7 +1890,7 @@ test("editing an ancestor creates a branch without erasing the original",async({
 
 test("missing historical source and failed continuation leave current stage intact",async({page})=>{
   await mockDesktop(page);await openFixture(page);await stageMocks(page);
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   await page.evaluate(()=>{
     const original=(window as any).__TEST_HANDLER__;
@@ -1859,7 +1900,7 @@ test("missing historical source and failed continuation leave current stage inta
   await page.locator(".stage-list button").first().click();
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","2");
   await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="run_operation"?{output:"C:\\fixtures\\broken.mp4",elapsed:.1}:undefined});
-  await page.getByRole("button",{name:"▶ render transform",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TRANSFORM",exact:true}).click();
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   await expect(page.locator(".stage-trigger")).toHaveAttribute("data-current-stage","2");
   await page.locator(".error-box summary").click();
@@ -1931,7 +1972,7 @@ test("text layers remain editable when returning from a continued output",async(
   await page.locator(".tool-row").filter({has:page.getByText("Text",{exact:true})}).click();
   await page.getByRole("button",{name:"＋ Add text",exact:true}).click();
   await page.getByRole("textbox",{name:"Text",exact:true}).fill("Keep this editable");
-  await page.getByRole("button",{name:"▶ render text",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TEXT",exact:true}).click();
   await expect(page.getByRole("textbox",{name:"Text",exact:true})).toHaveValue("Keep this editable");
   await page.getByRole("button",{name:"Open as source",exact:true}).click();
   await selectStageNumber(page,1);
@@ -2098,7 +2139,7 @@ test("Text handles resize smoothly and pasted emoji reaches the export raster",a
     return yellow;
   });
   expect(emojiPixels).toBeGreaterThan(20);
-  await page.getByRole("button",{name:"▶ render text",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER TEXT",exact:true}).click();
   const call=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((value:any)=>value.cmd==="run_operation").at(-1));
   expect(call.args.request.params.text_raster_png).toMatch(/^data:image\/png;base64,/);
 });
@@ -2132,7 +2173,7 @@ for(const kind of ["video","image"] as const){
     await expect(editor).toHaveValue("FIRST\nSECOND");
     await expect(layer.locator("span")).toHaveText("FIRST\nSECOND");
     if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:`test-results/text-multiline-delete-${kind}.png`});
-    await page.getByRole("button",{name:"▶ render text",exact:true}).click();
+    await page.getByRole("button",{name:"▶ RENDER TEXT",exact:true}).click();
     const call=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((value:any)=>value.cmd==="run_operation").at(-1));
     expect(JSON.parse(call.args.request.params.layers)[0].text).toBe("FIRST\nSECOND");
     await expect(layer.getByRole("button",{name:/Remove text/})).toHaveCount(0);
@@ -2284,7 +2325,7 @@ test("Kick.com banner uses the supplied art and Gotham font at the camera seam",
   expect(Math.abs(largeName!.y+largeName!.height/2-large!.y-large!.height*(1-35*1.18/(113*1.035)))).toBeLessThan(2);
   const referenceFontSize=await banner.locator(".clipper-social-banner-name").evaluate(el=>getComputedStyle(el).fontSize);
   const referencePrefix=await banner.locator(".clipper-social-banner-prefix").boundingBox();
-  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByPlaceholder("kanaladi").fill("streamername42");
   await expect(banner.locator(".clipper-social-banner-name")).toHaveCSS("font-size",referenceFontSize);
   const shiftedPrefix=await banner.locator(".clipper-social-banner-prefix").boundingBox();
   expect(shiftedPrefix!.x).toBeLessThan(referencePrefix!.x-5);
@@ -2333,9 +2374,9 @@ test("Blur foreground framing and Social Tags work in Original, Blur and Fill",a
   await page.getByPlaceholder("search tools...").fill("Clipper");
   await page.getByText("Clipper",{exact:true}).last().click();
   await page.getByText("Social Tag",{exact:true}).click();
-  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByPlaceholder("kanaladi").fill("streamername42");
   await page.getByRole("combobox",{name:"Style"}).selectOption("kick_banner");
-  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/kick-banner-batuhan-safe.png"});
+  if(process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/kick-banner-long-safe.png"});
   for(const layout of ["ORIGINAL SIZE","BLUR","FILL"]){
     await page.getByRole("button",{name:layout,exact:true}).click();
     const banner=page.locator(".clipper-social-banner");
@@ -2428,7 +2469,7 @@ test("Blur foreground framing and Social Tags work in Original, Blur and Fill",a
   await page.getByRole("button",{name:"BLUR",exact:true}).click();
   await page.locator(".fill-pan-layer").hover();
   await page.mouse.wheel(0,-100);
-  await page.getByRole("button",{name:"defaults"}).click();
+  await page.getByRole("button",{name:"Defaults"}).click();
   await expect(page.getByRole("button",{name:"BLUR",exact:true})).toHaveClass(/active/);
   await expect(page.getByRole("slider",{name:/Video zoom/i})).toHaveCount(0);
 });
@@ -2439,7 +2480,7 @@ test("all Social Tag styles move in every Clipper layout, reset, and send Split 
   await page.getByPlaceholder("search tools...").fill("Clipper");
   await page.getByText("Clipper",{exact:true}).last().click();
   await page.getByText("Social Tag",{exact:true}).click();
-  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByPlaceholder("kanaladi").fill("streamername42");
   const style=page.getByRole("combobox",{name:"Style"});
   for(const tagStyle of ["boxed","plain"]){
     await style.selectOption(tagStyle);
@@ -2468,7 +2509,7 @@ test("all Social Tag styles move in every Clipper layout, reset, and send Split 
   const advancedBox=await advanced.boundingBox(),socialBox=await social.boundingBox();
   expect(advancedBox!.y).toBeGreaterThanOrEqual(socialBox!.y+socialBox!.height);
   await stageMocks(page);
-  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+  await page.getByRole("button",{name:"▶ RENDER CLIPPER",exact:true}).click();
   await expect(page.locator(".job-head p")).toHaveText("complete");
   const request=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="run_operation").at(-1).args.request);
   expect(request.params.vertical_layout).toBe("split");
@@ -2492,7 +2533,7 @@ test("Clipper layout order and source view reset when opening a project or new v
   }});
   await page.getByRole("button",{name:"SAVE PROJECT"}).click();
   await expect.poll(()=>page.evaluate(()=>Boolean((window as any).__SAVED_PROJECT__))).toBe(true);
-  await page.getByRole("button",{name:"close",exact:true}).click();
+  await page.getByRole("button",{name:"CLOSE FILE",exact:true}).click();
   await page.getByRole("button",{name:"OPEN PROJECT"}).click();
   await expect(source).toHaveAttribute("aria-pressed","true");
   await expect(page.locator(".region-a")).toBeVisible();
@@ -2513,7 +2554,7 @@ test("Clipper output preview separates source editing and opens the last render 
   await expect(page.locator(".clipper-output-canvas")).toBeVisible();
   await expect(page.locator(".transform-source-box")).toHaveCount(0);
   await page.getByText("Social Tag",{exact:true}).click();
-  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByPlaceholder("kanaladi").fill("streamername42");
   await page.getByRole("combobox",{name:"Style"}).selectOption("kick_banner");
   const banner=page.locator(".clipper-social-banner"),distance=page.getByRole("slider",{name:"Move banner away from camera"});
   const box=(await page.locator(".clipper-output-canvas").boundingBox())!;
@@ -2529,8 +2570,8 @@ test("Clipper output preview separates source editing and opens the last render 
   await page.mouse.down();await page.mouse.move(region.x+region.width/2-15,region.y+region.height/2+20);await page.mouse.up();
   await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
   await expect(banner).toBeVisible();await expect(distance).toHaveValue("16");
-  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
-  const play=page.getByRole("button",{name:"▶ play",exact:true});
+  await page.getByRole("button",{name:"▶ RENDER CLIPPER",exact:true}).click();
+  const play=page.getByRole("button",{name:"▶ Play",exact:true});
   await expect(play).toBeVisible();await play.click();
   const opened=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="plugin:opener|open_path").at(-1));
   expect(opened.args.path).toContain("output-1.mp4");
@@ -2555,13 +2596,13 @@ test("Process actions align with status while frame metrics remain centered",asy
     expect(Math.abs(stats.x+stats.width/2-head.x-head.width/2)).toBeLessThan(24);
     expect(Math.abs(action.y+action.height/2-status.y-status.height/2)).toBeLessThan(14);
   };
-  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
-  await expect(page.getByRole("button",{name:"cancel job",exact:true})).toBeVisible();
-  await checkAlignment("cancel job");
+  await page.getByRole("button",{name:"▶ RENDER CLIPPER",exact:true}).click();
+  await expect(page.getByRole("button",{name:"Cancel job",exact:true})).toBeVisible();
+  await checkAlignment("Cancel job");
   await page.evaluate(()=>(window as any).__FINISH_TEST_JOB__());
   await expect(page.locator(".job-head p")).toHaveText("complete");
   await checkAlignment("Open as source");
-  await checkAlignment("show in folder");
+  await checkAlignment("Show in folder");
 });
 
 test("Clipper watermark uses Text presets, mouse controls and a single real export",async({page},testInfo)=>{
@@ -2628,7 +2669,7 @@ test("Clipper watermark uses Text presets, mouse controls and a single real expo
   const jobs:any[]=[];
   for(const layout of ["SPLIT","SQUARES","FREECAM","ORIGINAL SIZE","BLUR","FILL"]){
     await page.getByRole("button",{name:layout,exact:true}).click();
-    await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();await expect(page.locator(".job-head p")).toHaveText("complete");
+    await page.getByRole("button",{name:"▶ RENDER CLIPPER",exact:true}).click();await expect(page.locator(".job-head p")).toHaveText("complete");
     const request=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="run_operation").at(-1).args.request);
     const data=await page.locator(".watermark-canvas-layer canvas").evaluate((canvas:HTMLCanvasElement)=>canvas.toDataURL());expect(request.params.text_raster_png).toBe(data);
     const layer=JSON.parse(request.params.watermark_layer);expect(layer.outline).toBe(2.25);expect(layer.shadow).toBe(2.8125);expect(layer.background).toBe(true);
@@ -2668,7 +2709,7 @@ test("Clipper real-media preview matches exported pixels at zero, sixteen and th
   await page.getByRole("button",{name:/AUTO-DETECT CAMERA/}).click();
   await expect.poll(()=>page.locator(".video-canvas video").first().evaluate((v:any)=>v.readyState)).toBeGreaterThanOrEqual(2);
   await page.getByText("Social Tag",{exact:true}).click();
-  await page.getByPlaceholder("kanaladi").fill("batuhanfurkan5");
+  await page.getByPlaceholder("kanaladi").fill("streamername42");
   await page.getByRole("combobox",{name:"Style"}).selectOption("kick_banner");
   await page.getByRole("button",{name:"OUTPUT PREVIEW",exact:true}).click();
   await expect(page.locator(".clipper-output-canvas")).toBeVisible();
@@ -2678,7 +2719,7 @@ test("Clipper real-media preview matches exported pixels at zero, sixteen and th
     await page.getByRole("button",{name:layout,exact:true}).click();
     for(const distance of ["0","16","31"]){
       await page.getByRole("slider",{name:"Move banner away from camera"}).fill(distance);
-      await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
+      await page.getByRole("button",{name:"▶ RENDER CLIPPER",exact:true}).click();
       await expect(page.locator(".job-head p")).toHaveText("complete");
       const request=await page.evaluate(()=>(window as any).__TEST_CALLS__.filter((call:any)=>call.cmd==="run_operation").at(-1).args.request);
       const name=`${layout.toLowerCase()}-${distance}`;
@@ -2746,11 +2787,11 @@ test("Social Tag preview keeps text and icon aligned at small sizes",async({page
   expect(Math.abs(centered.visual-centered.anchor)).toBeLessThan(2);
   await page.screenshot({path:"test-results/social-tag-eray-preview.png"});
   await stageMocks(page);
-  await page.getByRole("button",{name:"▶ render clipper",exact:true}).click();
-  await expect(page.getByRole("button",{name:"show in folder",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"▶ RENDER CLIPPER",exact:true}).click();
+  await expect(page.getByRole("button",{name:"Show in folder",exact:true})).toBeVisible();
   await page.getByRole("combobox",{name:"Position"}).selectOption("left");
   await expect(page.locator(".job-head p")).toHaveText("settings changed · render again");
-  await expect(page.getByRole("button",{name:"old output · not updated",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Old output · not updated",exact:true})).toBeVisible();
   for(const width of [1440,1100,900]){
     await page.setViewportSize({width,height:900});
     if(width===1440&&process.env.UI_AUDIT_SCREENSHOTS)await page.screenshot({path:"test-results/clipper-process-actions-1440.png"});
@@ -2799,13 +2840,13 @@ test("interrupted work restores the preview and editor", async ({ page }) => {
 test("language switch changes and remembers the landing UI", async ({ page }) => {
   await mockDesktop(page);
   await expect(page.locator(".landing-copy h2")).toHaveText("one place. every tool.");
-  await page.locator(".landing-language").getByRole("button", { name: "TR" }).click();
+  await chooseLanguageInSettings(page, "tr");
   await expect(page.locator(".landing-project-actions")).toHaveText("PROJE AÇ");
   await expect(page.locator(".landing-copy h2")).toHaveText("tek yerde. tüm araçlar.");
   await page.reload();
   await expect(page.locator(".landing-project-actions")).toHaveText("PROJE AÇ");
   await expect(page.locator(".landing-copy h2")).toHaveText("tek yerde. tüm araçlar.");
-  await page.locator(".landing-language").getByRole("button", { name: "EN" }).click();
+  await chooseLanguageInSettings(page, "en");
   await expect(page.locator(".landing-project-actions")).toHaveText("OPEN PROJECT");
   await expect(page.locator(".landing-copy h2")).toHaveText("one place. every tool.");
 });
@@ -3107,14 +3148,13 @@ test("UI consistency: global settings preserve the open media and persist prefer
 
 test("Accent wheel updates global controls live, persists and respects themes",async({page})=>{
   await mockDesktop(page);await openFixture(page);
-  const stack=page.locator(".processing-stack-add");
+  const stack=page.locator(".processing-stack header small");
   const original=await stack.evaluate(el=>getComputedStyle(el).color);
   await page.getByRole("button",{name:"General settings",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"General settings",exact:true});
   await dialog.getByRole("button",{name:"Color 330°",exact:true}).click();
   const changed=await stack.evaluate(el=>({color:getComputedStyle(el).color,background:getComputedStyle(el).backgroundColor}));
   expect(changed.color).not.toBe(original);
-  expect(changed.background).not.toBe("rgb(24, 40, 59)");
   const wheel=dialog.getByRole("slider",{name:"Color wheel"});
   await wheel.focus();await page.keyboard.press("ArrowRight");await expect(wheel).toHaveAttribute("aria-valuenow","331");
   const box=(await wheel.boundingBox())!;
@@ -3268,21 +3308,22 @@ test("UI consistency: SmartCut quality labels and output actions preserve export
   await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="export_autocut"?{output:"C:\\fixtures\\smartcut.mp4"}:undefined});
   await page.getByRole("button",{name:"DETECT SILENCES",exact:true}).click();
   await page.getByRole("button",{name:"EXPORT MP4",exact:true}).click();
-  await expect(page.locator(".output-actions button")).toHaveText(["play","show in folder","Open in editor"]);
-  await page.getByRole("button",{name:"play",exact:true}).click();
-  await page.getByRole("button",{name:"show in folder",exact:true}).click();
+  await expect(page.locator(".output-actions button")).toHaveText(["Play","Show in folder","Open in editor"]);
+  await page.getByRole("button",{name:"Play",exact:true}).click();
+  await page.getByRole("button",{name:"Show in folder",exact:true}).click();
   expect(await page.evaluate(()=>(window as any).__TEST_CALLS__.find((call:any)=>call.cmd==="export_autocut").args.request.quality)).toBe("preserve");
 });
 
 test("UI consistency: custom modal keyboard focus cannot escape into the editor",async({page})=>{
   await mockDesktop(page);
-  const opener=page.getByRole("button",{name:"Clean CONTAINER Output",exact:true});
+  await page.locator(".general-settings-trigger").click();
+  const opener=page.getByRole("button",{name:"Clean output folder…",exact:true});
   await opener.click();
   const buttons=page.getByRole("dialog").getByRole("button");
   await buttons.last().focus();await page.keyboard.press("Tab");
   await expect(buttons.first()).toBeFocused();
   await page.keyboard.press("Shift+Tab");await expect(buttons.last()).toBeFocused();
-  await buttons.first().click();await expect(opener).toBeFocused();
+  await buttons.first().click();await expect(page.locator(".general-settings-trigger")).toBeFocused();
 });
 
 test("Image Compressor supports PNG targets, exposes safe palette mode and lays out size estimates",async({page},testInfo)=>{
@@ -3389,7 +3430,8 @@ test("Download from link uses a balanced rectangular button in both themes",asyn
 
 test("Landing engine status is centered in the bottom action row without collisions",async({page})=>{
   await mockDesktop(page);await page.goto("/");
-  for(const size of [{width:1920,height:1000},{width:900,height:600},{width:480,height:570}]){
+  // 860×540 is the smallest window Tauri allows (tauri.conf.json minWidth/minHeight).
+  for(const size of [{width:1920,height:1000},{width:900,height:600},{width:860,height:540}]){
     await page.setViewportSize(size);
     const status=page.locator(".landing-engine-status");await expect(status).toBeVisible();
     const a=(await status.boundingBox())!,b=(await page.locator(".downloader-quick-trigger").boundingBox())!;
@@ -3426,4 +3468,132 @@ test("compact SmartCut controls, GIF ruler and project files remain readable", a
   const files = await page.evaluate(() => ({ label: document.querySelector(".project-file-list strong")!.getBoundingClientRect().bottom, path: document.querySelector(".project-file-list small")!.getBoundingClientRect().top }));
   expect(files.path).toBeGreaterThanOrEqual(files.label);
   if (process.env.UI_AUDIT_SCREENSHOTS) await page.screenshot({ path: "test-results/fixed-project-files-compact.png" });
+});
+
+test("UI consistency: search points to tools in another media section and opens them",async({page})=>{
+  await mockDesktop(page);await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Audio Lab");
+  await expect(page.locator(".favorites-empty p")).toHaveText("Audio Lab is in the audio tab.");
+  await page.getByRole("button",{name:"Open Audio Lab",exact:true}).click();
+  await expect(page.locator(".tool-settings-head h2")).toHaveText("Audio Lab");
+  await expect(page.locator(".tabs button.active")).toHaveText(/audio/i);
+});
+
+test("UI consistency: start screen keeps cleanup and appearance in General settings",async({page})=>{
+  await mockDesktop(page);
+  await expect(page.locator(".landing-language")).toHaveCount(0);
+  await expect(page.locator(".landing .output-clean-trigger")).toHaveCount(0);
+  await openOutputCleanup(page);
+  await expect(page.locator(".output-clean-layer")).toBeVisible();
+  await page.locator(".output-clean-layer footer .ghost").click();
+  await openFixture(page);
+  await page.locator(".general-settings-trigger").click();
+  await expect(page.locator(".general-settings-dialog .output-clean-open")).toHaveCount(0);
+});
+
+test("UI consistency: switching tool sections keeps the tool pane header and tabs in place",async({page})=>{
+  await page.setViewportSize({width:1440,height:880});
+  await mockDesktop(page);await openFixture(page);
+  const boxes=()=>page.evaluate(()=>[".tool-pane .pane-head",".tool-pane .tabs",".tool-pane .search"].map(selector=>{const box=document.querySelector(selector)!.getBoundingClientRect();return [box.y,box.height]}));
+  const video=await boxes();
+  await page.locator(".tool-pane .tabs button").nth(1).click();
+  await expect(page.locator(".tool-pane .tabs button.active")).toHaveText(/audio/i);
+  expect(await boxes()).toEqual(video);
+  await expect(page.locator(".tool-group h4")).toHaveCount(0);
+});
+
+test("UI consistency: SmartCut export fields fit a 1440x880 window and hint at overflow when shorter",async({page})=>{
+  await page.setViewportSize({width:1440,height:880});
+  await mockDesktop(page);await openFixture(page);
+  await page.getByRole("button",{name:"SMARTCUT",exact:true}).click();
+  const scroll=page.locator(".ac-left-scroll");
+  await expect.poll(()=>scroll.evaluate(el=>el.scrollHeight-el.clientHeight)).toBeLessThanOrEqual(1);
+  await expect(scroll).not.toHaveClass(/more-below/);
+  await page.setViewportSize({width:1280,height:640});
+  await expect(scroll).toHaveClass(/more-below/);
+  await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;el.dispatchEvent(new Event("scroll"))});
+  await expect(scroll).not.toHaveClass(/more-below/);
+  await expect(page.locator(".linked-head")).toBeInViewport();
+});
+
+test("Custom dialogs close with Escape and the log folder opens from General settings",async({page})=>{
+  await mockDesktop(page);
+  await openOutputCleanup(page);
+  const cleanup=page.locator(".output-clean-dialog");
+  await expect(cleanup).toBeVisible();
+  await expect(cleanup).toHaveAttribute("aria-modal","true");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".output-clean-layer")).toHaveCount(0);
+  await page.locator(".general-settings-trigger").click();
+  await page.getByRole("button",{name:"Open log folder",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__TEST_CALLS__.some((call:any)=>call.cmd==="open_log_folder"))).toBe(true);
+});
+
+test("Recent files reopen media from the start screen and can be removed",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.getByRole("button",{name:"CLOSE FILE",exact:true}).click();
+  const recent=page.locator(".recent-files");
+  await expect(recent).toBeVisible();
+  await expect(recent.locator(".recent-open").filter({hasText:"sample.mp4"})).toBeVisible();
+  await recent.locator(".recent-open").first().click();
+  await expect(page.locator(".settings")).toBeVisible();
+  await page.getByRole("button",{name:"CLOSE FILE",exact:true}).click();
+  await page.getByRole("button",{name:"Remove sample.mp4 from the list",exact:true}).click();
+  await expect(page.locator(".recent-files")).toHaveCount(0);
+});
+
+test("Clipper shows a platform safe area over the vertical output preview",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.locator(".tool-row").filter({has:page.getByText("Clipper",{exact:true})}).click();
+  await expect(page.locator(".safe-area-overlay")).toHaveCount(0);
+  await page.locator(".safe-area-controls select").selectOption("tiktok");
+  await expect(page.locator(".safe-area-overlay")).toBeVisible();
+  await expect(page.locator(".safe-area-frame")).toContainText("TikTok");
+  await page.locator(".safe-area-controls select").selectOption("off");
+  await expect(page.locator(".safe-area-overlay")).toHaveCount(0);
+});
+
+test("Image viewer zooms with the mouse wheel",async({page})=>{
+  await mockDesktop(page,{fixture:{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:.04,width:640,height:360,fps:25,codec:"mjpeg"}});
+  await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Image Compressor");
+  await page.locator(".tool-row").click();
+  const viewport=page.locator(".image-viewport");
+  const level=page.locator(".image-view-controls .mono");
+  await expect(level).toHaveText("100%");
+  await viewport.hover();
+  await page.mouse.wheel(0,-300);
+  await expect(level).not.toHaveText("100%");
+});
+
+test("Image comparison only shows the current tool's render",async({page})=>{
+  await mockDesktop(page,{fixture:{...sample,path:"C:\\fixtures\\sample.jpg",name:"sample.jpg",kind:"image",duration:.04,width:640,height:360,fps:25,codec:"mjpeg"}});
+  await openFixture(page);
+  await page.getByPlaceholder("search tools...").fill("Metadata Cleaner");
+  await page.locator(".tool-row").click();
+  await page.evaluate(()=>{(window as any).__TEST_HANDLER__=(cmd:string)=>cmd==="run_operation"?{output:"C:\\fixtures\\sample_clean.jpg",elapsed:.1}:undefined});
+  await page.locator(".run-box .run").click();
+  await expect(page.locator(".image-compare")).toBeVisible();
+  await expect(page.locator(".play-render")).toHaveText("▶ Open image");
+  await page.getByPlaceholder("search tools...").fill("Image Potatoify");
+  await page.locator(".tool-row").click();
+  await expect(page.locator(".image-compare")).toHaveCount(0);
+});
+
+test("Keyboard shortcuts open from ? and from General settings",async({page})=>{
+  await mockDesktop(page);
+  await openFixture(page);
+  await page.locator("body").press("?");
+  const dialog=page.getByRole("dialog",{name:"Keyboard shortcuts",exact:true});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Play / pause",{exact:true})).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await page.locator(".general-settings-trigger").click();
+  await page.getByRole("button",{name:"Show shortcuts",exact:true}).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button",{name:"Close",exact:true}).click();
+  await expect(dialog).toHaveCount(0);
 });

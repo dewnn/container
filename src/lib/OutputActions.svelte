@@ -6,8 +6,8 @@
   const playable=$derived(/\.(mp4|mov|mkv|webm|mp3|wav|m4a|aac|flac|ogg)$/i.test(path));
 </script>
 <div class="output-actions">
-  <button class="ghost" onclick={()=>openPath(path).catch(reportProblem)}>{playable?(language==="tr"?"oynat":"play"):(language==="tr"?"Aç":"Open")}</button>
-  <button class="ghost" onclick={()=>revealItemInDir(path).catch(reportProblem)}>{language==="tr"?"klasörde göster":"show in folder"}</button>
+  <button class="ghost" onclick={()=>openPath(path).catch(reportProblem)}>{playable?(language==="tr"?"Oynat":"Play"):(language==="tr"?"Aç":"Open")}</button>
+  <button class="ghost" onclick={()=>revealItemInDir(path).catch(reportProblem)}>{language==="tr"?"Klasörde göster":"Show in folder"}</button>
   {#if onedit}<button class="ghost" disabled={editDisabled} onclick={()=>onedit?.(path)}>{language==="tr"?"Düzenleyicide aç":"Open in editor"}</button>{/if}
   <PremiereSend {path} {language} disabled={editDisabled}/>
 </div>

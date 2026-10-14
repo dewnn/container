@@ -1,7 +1,7 @@
 <script lang="ts">
   import { drawClipperLayout, type ClipperLayoutInput } from "./clipperLayoutGeometry";
 
-  let { video,input,box }:{video:HTMLVideoElement|null;input:ClipperLayoutInput;box:{left:number;top:number;width:number;height:number}}=$props();
+  let { video,input,box,language="en" }:{video:HTMLVideoElement|null;input:ClipperLayoutInput;box:{left:number;top:number;width:number;height:number};language?:"tr"|"en"}=$props();
   let canvas:HTMLCanvasElement|undefined=$state();
 
   $effect(()=>{
@@ -27,4 +27,4 @@
   });
 </script>
 
-<canvas bind:this={canvas} class="clipper-output-canvas" aria-label="Clipper output preview" style={`position:absolute;z-index:2;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;background:#000;pointer-events:none`}></canvas>
+<canvas bind:this={canvas} class="clipper-output-canvas" aria-label={language==="tr"?"Clipper çıktı önizlemesi":"Clipper output preview"} style={`position:absolute;z-index:2;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;background:#000;pointer-events:none`}></canvas>
